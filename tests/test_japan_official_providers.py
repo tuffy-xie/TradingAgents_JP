@@ -21,9 +21,11 @@ from tradingagents.dataflows.japan.jquants import (
 from tradingagents.dataflows.japan.jsf import normalise_balances, normalise_premium_charges
 from tradingagents.dataflows.japan.models import DataStatus
 from tradingagents.dataflows.japan.tdnet import (
+    TDnetProvider,
     _parse_public_list,
     classify_tdnet_title,
     normalise_tdnet_records,
+    structure_official_disclosure,
 )
 from tradingagents.dataflows.market import resolve_market_context
 
@@ -198,7 +200,8 @@ def test_tdnet_parser_classifies_verified_disclosure():
     items = list(normalise_tdnet_records(payload, resolve_market_context("6981.T")))
     assert items[0].verified is True
     assert items[0].source_type == "guidance_revision"
-    assert classify_tdnet_title("自己株式の取得") == "share_buyback"
+    assert classify_tdnet_title("自己株式の取得") == "buyback"
+    assert items[0].metadata["extraction_status"] == "NOT_REQUESTED"
 
 
 @pytest.mark.unit
@@ -211,8 +214,60 @@ def test_tdnet_public_index_parser_keeps_only_matching_code_and_pdf_link():
     """
     items = list(_parse_public_list(html, resolve_market_context("6981.T"), __import__("datetime").date(2026, 8, 12), 1))
     assert len(items) == 1
-    assert items[0].source_type == "share_buyback"
+    assert items[0].source_type == "buyback"
     assert items[0].url.endswith("notice.pdf")
+
+
+@pytest.mark.unit
+def test_tdnet_pdf_body_wins_when_it_explicitly_conflicts_with_index_title(monkeypatch):
+    html = """
+    <tr><td class="kjTime">15:00</td><td class="kjCode">69810</td><td class="kjName">Murata</td>
+    <td class="kjTitle"><a href="notice.pdf">自己株式の取得</a></td></tr>
+    """
+    item = list(_parse_public_list(html, resolve_market_context("6981.T"), __import__("datetime").date(2026, 8, 12), 1))[0]
+
+    async def fake_get_bytes(*_args, **_kwargs):
+        return BytesResponse(DataStatus.OK, payload=b"%PDF-test")
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_bytes", fake_get_bytes)
+    monkeypatch.setattr(
+        "tradingagents.dataflows.japan.tdnet.extract_pdf_text",
+        lambda *_args: "業績予想の上方修正に関するお知らせ。売上高 100 百万円。",
+    )
+    enriched = __import__("asyncio").run(TDnetProvider()._extract_pdf(item))
+    assert enriched.source_type == "guidance_revision"
+    assert enriched.metadata["title_body_conflict"] is True
+    assert enriched.metadata["guidance_change"] == "UPWARD"
+
+
+@pytest.mark.unit
+def test_tdnet_pdf_failure_preserves_index_metadata(monkeypatch):
+    html = """
+    <tr><td class="kjTime">15:00</td><td class="kjCode">69810</td><td class="kjName">Murata</td>
+    <td class="kjTitle"><a href="notice.pdf">業績予想の修正</a></td></tr>
+    """
+    item = list(_parse_public_list(html, resolve_market_context("6981.T"), __import__("datetime").date(2026, 8, 12), 1))[0]
+
+    async def fake_get_bytes(*_args, **_kwargs):
+        return BytesResponse(DataStatus.OK, payload=b"not-a-pdf")
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_bytes", fake_get_bytes)
+    enriched = __import__("asyncio").run(TDnetProvider()._extract_pdf(item))
+    assert enriched.status == DataStatus.PARSE_FAILED
+    assert enriched.title == "業績予想の修正"
+    assert enriched.url.endswith("notice.pdf")
+    assert enriched.metadata["extraction_status"] == "PARSE_FAILED"
+
+
+@pytest.mark.unit
+def test_official_disclosure_structuring_does_not_invent_missing_values():
+    fields = structure_official_disclosure(
+        title="配当予想の修正に関するお知らせ", text="配当予想を修正します。",
+        source="TDnet", event_date="2026-08-12", extraction_status="OK",
+    )
+    assert fields["event_type"] == "dividend"
+    assert fields["dividend_change"] == "REVISED"
+    assert fields["buyback_amount"] is None
 
 
 @pytest.mark.unit

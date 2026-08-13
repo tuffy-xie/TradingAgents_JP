@@ -87,10 +87,26 @@ class TDnetProvider:
         try:
             text = extract_pdf_text(response.payload, self.max_pdf_chars)
         except Exception as exc:  # an issuer PDF parse error must not lose the index fact
-            return _with_extraction_status(item, "PARSE_FAILED", type(exc).__name__)
-        metadata = {**item.metadata, "document_downloaded": True, "extraction_status": "OK" if text else "EMPTY_TEXT"}
+            return _with_extraction_status(item, "PARSE_FAILED", type(exc).__name__, status=DataStatus.PARSE_FAILED)
+        metadata = {
+            **item.metadata,
+            "document_downloaded": True,
+            **structure_official_disclosure(
+                title=item.title,
+                text=text,
+                source=item.source,
+                event_date=item.timestamp.date().isoformat(),
+                extraction_status="OK" if text else "EMPTY_TEXT",
+            ),
+        }
         return MarketInformation(
-            **{**item.__dict__, "content": text or item.content, "content_level": "full_text" if text else "summary_only", "metadata": metadata}
+            **{
+                **item.__dict__,
+                "source_type": metadata["event_type"],
+                "content": text or item.content,
+                "content_level": "full_text" if text else "summary_only",
+                "metadata": metadata,
+            }
         )
 
     async def _fetch_authorised_feed(
@@ -173,7 +189,13 @@ def _parse_public_list(
                 "official_index": True,
                 "index_page": page,
                 "document_downloaded": False,
-                "extraction_status": "NOT_REQUESTED",
+                **structure_official_disclosure(
+                    title=title,
+                    text="",
+                    source="TDnet",
+                    event_date=day.isoformat(),
+                    extraction_status="NOT_REQUESTED",
+                ),
             },
         )
 
@@ -197,20 +219,142 @@ def normalise_tdnet_records(payload: Any, context: MarketContext) -> Iterable[Ma
             verified=True,
             layer=InformationLayer.VERIFIED_FACT,
             content_level=str(record.get("content_level") or "summary_only"),
-            metadata={"company": record.get("company"), "importance": int(record.get("importance") or 0)},
+            metadata={
+                "company": record.get("company"),
+                "importance": int(record.get("importance") or 0),
+                **structure_official_disclosure(
+                    title=title,
+                    text=str(record.get("content") or record.get("summary") or ""),
+                    source="TDnet",
+                    event_date=_parse_timestamp(record.get("date") or record.get("timestamp")).date().isoformat(),
+                    extraction_status="FEED_CONTENT" if record.get("summary") else "NOT_REQUESTED",
+                ),
+            },
         )
 
 
 def classify_tdnet_title(title: str) -> str:
     categories = (
-        ("業績予想", "guidance_revision"), ("上方修正", "upward_revision"), ("下方修正", "downward_revision"),
-        ("配当", "dividend_revision"), ("自己株式", "share_buyback"), ("自社株", "share_buyback"),
-        ("増資", "equity_financing"), ("転換社債", "convertible_bond"), ("M&A", "merger_acquisition"),
-        ("公開買付", "tob"), ("受注", "large_order"), ("新製品", "new_product"),
-        ("業務提携", "business_partnership"), ("中期経営", "midterm_plan"), ("特別損失", "extraordinary_loss"),
-        ("特別利益", "extraordinary_gain"), ("訴訟", "litigation"), ("人事", "personnel"),
+        ("financial results", "earnings_or_quarterly"), ("earnings release", "earnings_or_quarterly"),
+        ("有価証券報告書", "earnings_or_quarterly"), ("半期報告書", "earnings_or_quarterly"),
+        ("earnings forecast", "guidance_revision"), ("dividend", "dividend"), ("share repurchase", "buyback"),
+        ("業績予想", "guidance_revision"), ("上方修正", "guidance_revision"), ("下方修正", "guidance_revision"),
+        ("配当", "dividend"), ("自己株式", "buyback"), ("自社株", "buyback"),
+        ("増資", "capital_dilution"), ("新株予約権", "capital_dilution"), ("転換社債", "capital_dilution"),
+        ("M&A", "m_and_a"), ("合併", "m_and_a"), ("公開買付", "m_and_a"),
+        ("受注", "material_contract_or_order"), ("契約", "material_contract_or_order"),
+        ("業務提携", "m_and_a"), ("事業再編", "restructuring"), ("組織再編", "restructuring"),
+        ("決算", "earnings_or_quarterly"), ("四半期", "earnings_or_quarterly"),
     )
-    return next((category for keyword, category in categories if keyword in title), "timely_disclosure")
+    return next((category for keyword, category in categories if keyword in title), "other_material_disclosure")
+
+
+def structure_official_disclosure(
+    *, title: str, text: str, source: str, event_date: str, extraction_status: str,
+) -> dict[str, Any]:
+    """Extract only explicit, traceable facts from an official disclosure.
+
+    This deliberately avoids deriving forecasts or financial ratios.  The
+    metadata is shared by TDnet and Company IR, so agents receive the same
+    schema regardless of where an issuer published the official document.
+    """
+    title_type = classify_tdnet_title(title)
+    # The first page/heading is a safer conflict check than scanning every
+    # reference contained in a financial release.
+    body_head = text[:2500]
+    body_type = classify_tdnet_title(body_head) if text else title_type
+    # Financial releases often discuss dividends and buybacks in their body.
+    # Treat it as a genuine conflict only when the title's own signature is
+    # absent from the heading region and a different official event is explicit.
+    title_signature = _event_signature(title_type)
+    conflict = bool(
+        text and body_type != title_type and body_type != "other_material_disclosure"
+        and title_signature and not any(term in body_head for term in title_signature)
+    )
+    event_type = body_type if conflict else title_type
+    compact = " ".join(text.split())
+    facts = _key_facts(compact)
+    return {
+        "event_type": event_type,
+        "date": event_date,
+        "title": title,
+        "source": source,
+        "key_facts": facts,
+        "key_numbers": _key_numbers(compact),
+        "guidance_change": _guidance_change(compact or title),
+        "dividend_change": _dividend_change(compact or title),
+        "buyback_amount": _buyback_amount(compact),
+        "capital_policy_change": _capital_policy_change(compact or title),
+        "confidence": 0.98 if extraction_status in {"OK", "FEED_CONTENT"} else 0.95,
+        "extraction_status": extraction_status,
+        "title_body_conflict": conflict,
+        "title_body_conflict_reason": "official body classification differs from index title" if conflict else "",
+    }
+
+
+def _key_facts(text: str) -> list[str]:
+    terms = ("業績予想", "配当予想", "自己株式", "公開買付", "受注", "契約", "合併", "事業再編", "新株予約権")
+    sentences = re.split(r"(?<=[。．])", text)
+    return [sentence.strip()[:500] for sentence in sentences if any(term in sentence for term in terms)][:6]
+
+
+def _key_numbers(text: str) -> dict[str, str]:
+    labels = {
+        "売上高": "(?:億円|百万円|千円)", "営業利益": "(?:億円|百万円|千円)", "経常利益": "(?:億円|百万円|千円)",
+        "親会社株主に帰属する当期純利益": "(?:億円|百万円|千円)", "1株当たり配当金": "円",
+        "取得価額": "(?:億円|百万円|千円|円)", "取得し得る株式": "株",
+    }
+    values: dict[str, str] = {}
+    for label, unit in labels.items():
+        match = re.search(rf"{re.escape(label)}[^0-9０-９]{{0,40}}([0-9０-９,，.．]+\s*{unit})", text)
+        if match:
+            values[label] = match.group(1).replace("，", ",").replace("．", ".")
+    return values
+
+
+def _guidance_change(text: str) -> str:
+    if "上方修正" in text:
+        return "UPWARD"
+    if "下方修正" in text:
+        return "DOWNWARD"
+    if "業績予想" in text and ("修正" in text or "変更" in text):
+        return "REVISED"
+    return "UNDETERMINED"
+
+
+def _dividend_change(text: str) -> str:
+    if "増配" in text:
+        return "INCREASED"
+    if "減配" in text:
+        return "DECREASED"
+    if "無配" in text:
+        return "SUSPENDED"
+    if "配当" in text and ("修正" in text or "変更" in text):
+        return "REVISED"
+    return "UNDETERMINED"
+
+
+def _buyback_amount(text: str) -> str | None:
+    match = re.search(r"(?:取得価額|取得総額|取得金額)[^0-9０-９]{0,40}([0-9０-９,，.．]+\s*(?:億円|百万円|千円|円))", text)
+    return match.group(1).replace("，", ",").replace("．", ".") if match else None
+
+
+def _capital_policy_change(text: str) -> str:
+    if any(term in text for term in ("増資", "新株予約権", "第三者割当", "転換社債")):
+        return "DILUTION_OR_CAPITAL_CHANGE"
+    if "自己株式" in text:
+        return "BUYBACK"
+    return "UNDETERMINED"
+
+
+def _event_signature(event_type: str) -> tuple[str, ...]:
+    signatures = {
+        "earnings_or_quarterly": ("決算", "四半期"), "guidance_revision": ("業績予想", "上方修正", "下方修正"),
+        "dividend": ("配当",), "buyback": ("自己株式", "自社株"),
+        "capital_dilution": ("増資", "新株予約権", "転換社債"), "m_and_a": ("M&A", "合併", "公開買付", "業務提携"),
+        "material_contract_or_order": ("受注", "契約"), "restructuring": ("事業再編", "組織再編"),
+    }
+    return signatures.get(event_type, ())
 
 
 def _normalise_code(value: str) -> str:
@@ -248,7 +392,23 @@ def extract_pdf_text(payload: bytes, max_chars: int) -> str:
     return " ".join(text.split())[:max_chars]
 
 
-def _with_extraction_status(item: MarketInformation, status: str, detail: str) -> MarketInformation:
+def _with_extraction_status(
+    item: MarketInformation, extraction_status: str, detail: str, *, status: DataStatus | None = None,
+) -> MarketInformation:
     return MarketInformation(
-        **{**item.__dict__, "metadata": {**item.metadata, "extraction_status": status, "extraction_detail": detail}}
+        **{
+            **item.__dict__,
+            "status": status or item.status,
+            "metadata": {
+                **item.metadata,
+                **structure_official_disclosure(
+                    title=item.title,
+                    text="",
+                    source=item.source,
+                    event_date=item.timestamp.date().isoformat(),
+                    extraction_status=extraction_status,
+                ),
+                "extraction_detail": detail,
+            },
+        }
     )

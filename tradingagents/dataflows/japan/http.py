@@ -76,6 +76,25 @@ async def get_text(url: str, *, timeout: float = 10.0) -> tuple[DataStatus, str,
         return DataStatus.AUTH_REQUIRED, "", f"HTTP {response.status_code}"
     if not response.ok:
         return DataStatus.DATA_UNAVAILABLE, "", f"HTTP {response.status_code}"
+    # TDnet's public index is commonly CP932 while its HTTP response omits a
+    # reliable charset.  Prefer a declared/meta charset, then retain requests'
+    # normal decoding for all other public sites.
+    raw = response.content
+    declared = (response.headers.get("Content-Type", "") + raw[:2048].decode("ascii", errors="ignore")).lower()
+    if "shift_jis" in declared or "shift-jis" in declared or "windows-31j" in declared or "cp932" in declared:
+        try:
+            return DataStatus.OK, raw.decode("cp932"), ""
+        except UnicodeDecodeError:
+            pass
+    # release.tdnet.info currently sends UTF-8 bytes with an ISO-8859-1
+    # fallback chosen by requests because the response has no charset header.
+    if (response.encoding or "").lower() in {"iso-8859-1", "latin-1"}:
+        apparent = response.apparent_encoding
+        if apparent and apparent.lower().replace("_", "-") in {"utf-8", "utf8"}:
+            try:
+                return DataStatus.OK, raw.decode("utf-8"), ""
+            except UnicodeDecodeError:
+                pass
     return DataStatus.OK, response.text, ""
 
 
