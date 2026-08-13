@@ -148,6 +148,22 @@ class TraderProposal(BaseModel):
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+    entry_condition: str | None = Field(
+        default=None,
+        description="Concrete condition required before entering; include price/volume/indicator confirmation when supported by the data.",
+    )
+    stop_loss_condition: str | None = Field(
+        default=None,
+        description="Concrete stop-loss or invalidation condition, respecting the user's mandate.",
+    )
+    take_profit_condition: str | None = Field(
+        default=None,
+        description="Concrete take-profit or trim condition, respecting the user's mandate.",
+    )
+    max_position_pct: float | None = Field(
+        default=None,
+        description="Maximum recommended position as a percentage of portfolio; must not exceed the user-specified cap.",
+    )
 
     @field_validator("entry_price", "stop_loss", mode="before")
     @classmethod
@@ -173,6 +189,14 @@ def render_trader_proposal(proposal: TraderProposal) -> str:
         parts.extend(["", f"**Stop Loss**: {proposal.stop_loss}"])
     if proposal.position_sizing:
         parts.extend(["", f"**Position Sizing**: {proposal.position_sizing}"])
+    if proposal.entry_condition:
+        parts.extend(["", f"**Entry Condition**: {proposal.entry_condition}"])
+    if proposal.stop_loss_condition:
+        parts.extend(["", f"**Stop-Loss Condition**: {proposal.stop_loss_condition}"])
+    if proposal.take_profit_condition:
+        parts.extend(["", f"**Take-Profit / Trim Condition**: {proposal.take_profit_condition}"])
+    if proposal.max_position_pct is not None:
+        parts.extend(["", f"**Maximum Position**: {proposal.max_position_pct}%"])
     parts.extend([
         "",
         f"FINAL TRANSACTION PROPOSAL: **{proposal.action.value.upper()}**",
@@ -221,6 +245,10 @@ class PortfolioDecision(BaseModel):
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+    entry_condition: str | None = Field(default=None, description="Required entry condition consistent with the user mandate.")
+    stop_loss_condition: str | None = Field(default=None, description="Stop-loss or thesis-invalidation condition consistent with the user mandate.")
+    take_profit_condition: str | None = Field(default=None, description="Take-profit or trim condition consistent with the user mandate.")
+    max_position_pct: float | None = Field(default=None, description="Maximum portfolio position percentage; never exceed the user cap.")
 
     @field_validator("price_target", mode="before")
     @classmethod
@@ -247,6 +275,14 @@ def render_pm_decision(decision: PortfolioDecision) -> str:
         parts.extend(["", f"**Price Target**: {decision.price_target}"])
     if decision.time_horizon:
         parts.extend(["", f"**Time Horizon**: {decision.time_horizon}"])
+    if decision.entry_condition:
+        parts.extend(["", f"**Entry Condition**: {decision.entry_condition}"])
+    if decision.stop_loss_condition:
+        parts.extend(["", f"**Stop-Loss Condition**: {decision.stop_loss_condition}"])
+    if decision.take_profit_condition:
+        parts.extend(["", f"**Take-Profit / Trim Condition**: {decision.take_profit_condition}"])
+    if decision.max_position_pct is not None:
+        parts.extend(["", f"**Maximum Position**: {decision.max_position_pct}%"])
     return "\n".join(parts)
 
 

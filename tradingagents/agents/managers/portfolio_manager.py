@@ -14,6 +14,7 @@ from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    get_trade_constraints_from_state,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -32,6 +33,7 @@ def create_portfolio_manager(llm):
         risk_debate_state = state["risk_debate_state"]
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
+        trade_constraints = get_trade_constraints_from_state(state)
 
         past_context = state.get("past_context", "")
         lessons_line = (
@@ -60,9 +62,11 @@ def create_portfolio_manager(llm):
 **Risk Analysts Debate History:**
 {history}
 
+{trade_constraints}
+
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts.
+Be decisive and ground every conclusion in specific evidence from the analysts. The final output must explicitly cover the requested horizon, entry condition, stop-loss, take-profit/trim condition, and maximum position. If the data cannot support a safe setup within the mandate, select Hold.
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 

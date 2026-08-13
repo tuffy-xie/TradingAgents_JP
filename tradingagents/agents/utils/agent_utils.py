@@ -42,6 +42,7 @@ __all__ = [
     "build_instrument_context",
     "resolve_instrument_identity",
     "get_instrument_context_from_state",
+    "get_trade_constraints_from_state",
     "get_language_instruction",
     "create_msg_delete",
 ]
@@ -187,6 +188,48 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     )
 
 
+def get_trade_constraints_from_state(state: Mapping[str, Any]) -> str:
+    """Render the user-selected mandate into a consistent agent instruction.
+
+    Blank fields deliberately mean the model should derive a data-supported
+    condition.  Filled fields are hard constraints: agents must not recommend
+    an action that ignores them, and should choose Hold when the setup cannot
+    satisfy the mandate safely.
+    """
+    raw = state.get("trade_constraints") or {}
+    horizon = raw.get("horizon", "multi_day")
+    horizon_labels = {
+        "intraday": "日内（当日开仓、当日平仓）",
+        "multi_day": "数日（通常 2–10 个交易日）",
+        "multi_week": "数周（通常 2–12 周）",
+        "long_term": "长期（通常 3 个月以上）",
+    }
+    lines = [
+        "**User trading mandate — treat this as binding:**",
+        f"- Trading horizon: {horizon_labels.get(horizon, horizon_labels['multi_day'])}",
+    ]
+    fields = (
+        ("entry_condition", "Entry condition"),
+        ("stop_loss_condition", "Stop-loss condition"),
+        ("take_profit_condition", "Take-profit / trim condition"),
+    )
+    for key, label in fields:
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            lines.append(f"- {label}: {value.strip()}")
+        else:
+            lines.append(f"- {label}: derive a specific, data-supported condition")
+    max_position = raw.get("max_position_pct")
+    if max_position is not None:
+        lines.append(f"- Maximum position: {max_position}% of portfolio")
+    else:
+        lines.append("- Maximum position: derive a conservative portfolio percentage")
+    lines.append(
+        "- Do not invent price levels. If data cannot support the requested setup, recommend Hold / no trade and explain why."
+    )
+    return "\n".join(lines)
+
+
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add a context-anchored placeholder.
@@ -212,6 +255,5 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
 
 

@@ -6,6 +6,7 @@ from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_language_instruction,
+    get_trade_constraints_from_state,
 )
 from tradingagents.agents.utils.structured import (
     NO_EXTERNAL_TOOLS,
@@ -20,6 +21,7 @@ def create_research_manager(llm):
     def research_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
         history = state["investment_debate_state"].get("history", "")
+        trade_constraints = get_trade_constraints_from_state(state)
 
         investment_debate_state = state["investment_debate_state"]
 
@@ -42,6 +44,8 @@ Commit to a clear stance whenever the debate's strongest arguments warrant one; 
 
 **Debate History:**
 {history}
+
+{trade_constraints}
 
 {NO_EXTERNAL_TOOLS}""" + get_language_instruction()
 
