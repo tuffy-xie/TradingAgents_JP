@@ -109,6 +109,11 @@ def chinese_status(value: str | None) -> str:
     return _STATUS.get(str(value or ""), "数据不可用")
 
 
+def source_display_name(value: str | None) -> str:
+    """Return the Chinese presentation name for a data source."""
+    return _SOURCE_NAMES.get(str(value or ""), str(value or "数据源"))
+
+
 def render_japan_item_data(item: Mapping[str, Any], *, include_metadata: bool = True) -> str:
     """Render a normalized Japan item without Python dict syntax or English labels."""
     source = _SOURCE_NAMES.get(str(item.get("source") or ""), str(item.get("source") or "数据源"))

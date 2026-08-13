@@ -591,6 +591,10 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     border-radius:8px; background:var(--brand); color:#fff; cursor:pointer; }}
   .report-section {{ margin:0 0 28px; }}
   .report-section:first-of-type {{ background:#f5f3ff; border:1px solid #ddd6fe; border-radius:10px; padding:16px; }}
+  .summary-cards {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0 2px; }}
+  .summary-card {{ border:1px solid #ddd6fe; background:#fff; border-radius:8px; padding:10px 12px; min-height:66px; }}
+  .summary-card span {{ display:block; color:var(--muted); font-size:12px; margin-bottom:4px; }}
+  .summary-card strong {{ display:block; font-size:14px; overflow-wrap:anywhere; }}
   .report-section h1 {{ font-size:22px; margin:0 0 12px; }}
   .report-section h2 {{ font-size:18px; border-left:4px solid var(--brand);
     padding-left:10px; margin:28px 0 12px; }}
@@ -608,6 +612,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     .toolbar {{ display:none; }}
     .report-section {{ break-inside:avoid-page; }}
     .report-section:first-of-type {{ break-before:auto; page-break-before:auto; }}
+    .summary-card {{ background:#fff !important; }}
   }}
 </style>
 {auto}

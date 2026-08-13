@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from tradingagents.dataflows.market import Market, MarketContext
-from tradingagents.presentation import chinese_status, render_japan_item_data
+from tradingagents.presentation import chinese_status, render_japan_item_data, source_display_name
 
 from .official import build_official_japan_providers
 from .service import JapanDataService
@@ -103,15 +103,15 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     return "\n\n".join([
         "# 日本市场核心数据",
         "## 日本官方披露",
-        block("TDnet", "TDnet", "披露属于官方事实；应重点比较利润、EPS、全年指引及资本政策变化，不能只根据标题判断利多或利空。"),
-        block("Company IR", "公司 IR", "公司 IR 是官方资料。若只有摘要或解析失败，应降低结论置信度，而不是补造财务结论。"),
+        block("TDnet", "适时开示（TDnet）", "披露属于官方事实；应重点比较利润、EPS、全年指引及资本政策变化，不能只根据标题判断利多或利空。"),
+        block("Company IR", "公司投资者关系（IR）", "公司 IR 是官方资料。若只有摘要或解析失败，应降低结论置信度，而不是补造财务结论。"),
         "## 信用与需给",
         block("JSF", "日证金", "融资与贷株数据反映证券金融层面的需给。单日变化不足以确认趋势，应与价格、成交量和多期余额联合判断。", metadata=True),
         "## 空卖与机构行为",
-        block("JPX", "JPX 机构空卖", "未发现达到公开申报门槛的净空头，只代表没有 ≥0.5% 的公开申报仓位，不代表不存在其他空头。", metadata=True),
+        block("JPX", "东京证券交易所（JPX）机构空卖", "未发现达到公开申报门槛的净空头，只代表没有 ≥0.5% 的公开申报仓位，不代表不存在其他空头。", metadata=True),
         "## 财务与持仓披露",
-        block("EDINET", "EDINET", "大量保有报告可识别机构持仓变化；未配置 API Key 仅代表数据缺失，不能解释为负面信号。"),
-        block("J-Quants", "J-Quants", "专业历史财务及部分市场数据缺失时，本报告会更多依赖其他可用官方来源，结论置信度应相应降低。"),
+        block("EDINET", "电子披露系统（EDINET）", "大量保有报告可识别机构持仓变化；未配置 API Key 仅代表数据缺失，不能解释为负面信号。"),
+        block("J-Quants", "日本交易所数据（J-Quants）", "专业历史财务及部分市场数据缺失时，本报告会更多依赖其他可用官方来源，结论置信度应相应降低。"),
         "## 日本市场情绪",
         "状态：数据不可用\n数据：本阶段未启用日本社区情绪 Provider，未使用 Reddit 或 StockTwits 替代。\nAI看法：情绪数据缺失降低覆盖度，不构成利空或市场关注度不足。",
         "## 日股波段交易计划",
@@ -120,7 +120,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
 
 
 def _missing_source_data(source: str, status: Mapping[str, Any]) -> str:
-    source_label = {"Company IR": "公司投资者关系（IR）", "JSF": "日证金（JSF）", "JPX": "东京证券交易所（JPX）", "TDnet": "适时开示（TDnet）", "EDINET": "电子披露系统（EDINET）", "J-Quants": "日本交易所数据（J-Quants）"}.get(source, source)
+    source_label = source_display_name(source)
     value = status.get("status")
     if value == "AUTH_REQUIRED":
         return f"未配置 {source_label} 的访问凭据或当前账户无权限。"

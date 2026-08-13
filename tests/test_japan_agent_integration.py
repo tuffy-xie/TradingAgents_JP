@@ -53,7 +53,7 @@ def test_japan_report_sections_are_explicit_and_do_not_fabricate_sentiment(tmp_p
     )
     content = out.read_text(encoding="utf-8")
     assert "日本官方披露" in content
-    assert (tmp_path / "0_japan_market_data" / "official_and_supply_demand.md").exists()
+    assert (tmp_path / "full_agent_log.md").exists()
 
 
 def test_japan_sentiment_prompt_uses_bundle_not_us_community_sources(monkeypatch):
