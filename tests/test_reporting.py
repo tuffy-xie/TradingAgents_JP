@@ -29,7 +29,7 @@ def test_write_report_tree_creates_files(tmp_path):
     assert (tmp_path / "3_trading" / "trader.md").read_text() == "TRADE"
     assert (tmp_path / "5_portfolio" / "decision.md").read_text() == "PM DECISION"
     complete = out.read_text()
-    assert "Trading Analysis Report: AAPL" in complete
+    assert "AAPL 投资研究报告" in complete
     assert "MKT" in complete and "PM DECISION" in complete
 
 

@@ -26,6 +26,7 @@ from tradingagents.dataflows.market import resolve_market_context
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
+from tradingagents.reporting import build_report_sections
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -558,32 +559,10 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     ticker = data.get("company_of_interest", "")
     date = data.get("trade_date", "")
 
-    debate = data.get("investment_debate_state") or {}
-    risk = data.get("risk_debate_state") or {}
-
-    blocks = []
-    for json_key, _stem, label in REPORT_SECTIONS:
-        content = data.get(json_key)
-        if not content:
-            continue
-        blocks.append(f'<section class="report-section"><h2>{html.escape(label)}</h2>{_md(content)}</section>')
-
-    # Optional debate detail (bull/bear, risk team) — only present in the JSON
-    # layout; appended after the headline sections so the report mirrors the
-    # full agent transcript.
-    detail = []
-    for content, label in [
-        (debate.get("bull_history"),         "多头研究员"),
-        (debate.get("bear_history"),         "空头研究员"),
-        (risk.get("aggressive_history"),     "激进分析师"),
-        (risk.get("conservative_history"),   "保守分析师"),
-        (risk.get("neutral_history"),        "中性分析师"),
-    ]:
-        if content:
-            detail.append(f'<section class="report-section"><h2>🗣️ {html.escape(label)}</h2>{_md(content)}</section>')
-    if detail:
-        blocks.append('<section class="report-section debate-divider"><h2>辩论与风控细节</h2></section>')
-        blocks.extend(detail)
+    blocks = [
+        f'<section class="report-section" data-section="{html.escape(label)}">{_md(content)}</section>'
+        for label, content in build_report_sections(data)
+    ]
 
     sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
     auto = "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""
@@ -604,13 +583,15 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
   }}
   .page {{ max-width:820px; margin:0 auto; padding:48px 56px; background:#fff;
            min-height:100vh; box-shadow:0 1px 3px rgba(0,0,0,.08); }}
-  .report-head {{ border-bottom:3px solid var(--brand); padding-bottom:16px; margin-bottom:28px; }}
+  .report-head {{ border-bottom:3px solid var(--brand); padding-bottom:16px; margin-bottom:16px; }}
   .report-head h1 {{ font-size:26px; margin:0 0 6px; }}
   .report-head .meta {{ color:var(--muted); font-size:14px; }}
   .toolbar {{ margin-bottom:20px; }}
   .toolbar button {{ font:inherit; font-size:14px; padding:8px 16px; border:none;
     border-radius:8px; background:var(--brand); color:#fff; cursor:pointer; }}
   .report-section {{ margin:0 0 28px; }}
+  .report-section:first-of-type {{ background:#f5f3ff; border:1px solid #ddd6fe; border-radius:10px; padding:16px; }}
+  .report-section h1 {{ font-size:22px; margin:0 0 12px; }}
   .report-section h2 {{ font-size:18px; border-left:4px solid var(--brand);
     padding-left:10px; margin:28px 0 12px; }}
   .debate-divider h2 {{ color:var(--muted); border-left-color:var(--muted); }}
@@ -626,6 +607,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     .page {{ box-shadow:none; max-width:none; padding:0 12px; }}
     .toolbar {{ display:none; }}
     .report-section {{ break-inside:avoid-page; }}
+    .report-section:first-of-type {{ break-before:auto; page-break-before:auto; }}
   }}
 </style>
 {auto}
