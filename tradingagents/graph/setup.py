@@ -1,5 +1,8 @@
 # TradingAgents/graph/setup.py
 
+import logging
+import time
+from functools import wraps
 from typing import Any
 
 from langgraph.graph import END, START, StateGraph
@@ -24,6 +27,55 @@ from tradingagents.agents.utils.agent_states import AgentState
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
+
+logger = logging.getLogger(__name__)
+
+
+def _classify_agent_error(error: Exception) -> str:
+    """Return a stable, non-secret error class for operational logs."""
+    name = type(error).__name__.lower()
+    message = str(error).lower()
+    if "timeout" in name or "timeout" in message:
+        return "TIMEOUT"
+    if "rate" in name or "429" in message:
+        return "RATE_LIMITED"
+    if "auth" in name or "401" in message or "403" in message:
+        return "AUTH_ERROR"
+    if "connect" in name or "connection" in message:
+        return "CONNECTION_ERROR"
+    return "AGENT_ERROR"
+
+
+def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, retries: Any):
+    """Log wall-clock timing and finite-failure classification per graph node.
+
+    The node is deliberately not swallowed: a failed critical agent produces a
+    clear, bounded run failure instead of a plausible-looking fabricated report.
+    Successful graph semantics are unchanged.
+    """
+    @wraps(node)
+    def observed(state, *args, **kwargs):
+        ticker = state.get("company_of_interest", "unknown") if isinstance(state, dict) else "unknown"
+        start = time.perf_counter()
+        logger.info(
+            "[Agent] start name=%s ticker=%s provider=%s timeout_seconds=%s retry_budget=%s",
+            name, ticker, provider, timeout if timeout not in (None, "") else "provider-default",
+            retries if retries not in (None, "") else "provider-default",
+        )
+        try:
+            result = node(state, *args, **kwargs)
+        except Exception as exc:
+            logger.error(
+                "[Agent] failed name=%s ticker=%s elapsed_seconds=%.2f class=%s error=%s",
+                name, ticker, time.perf_counter() - start, _classify_agent_error(exc), type(exc).__name__,
+            )
+            raise
+        logger.info(
+            "[Agent] complete name=%s ticker=%s elapsed_seconds=%.2f",
+            name, ticker, time.perf_counter() - start,
+        )
+        return result
+    return observed
 
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/
@@ -51,12 +103,28 @@ class GraphSetup:
         deep_thinking_llm: Any,
         tool_nodes: dict[str, ToolNode],
         conditional_logic: ConditionalLogic,
+        *,
+        llm_provider: str = "unknown",
+        llm_timeout_seconds: Any = None,
+        llm_max_retries: Any = None,
     ):
         """Initialize with required components."""
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.conditional_logic = conditional_logic
+        self.llm_provider = llm_provider
+        self.llm_timeout_seconds = llm_timeout_seconds
+        self.llm_max_retries = llm_max_retries
+
+    def _observed(self, name: str, node: Any):
+        return _observe_agent_node(
+            name,
+            node,
+            provider=self.llm_provider,
+            timeout=self.llm_timeout_seconds,
+            retries=self.llm_max_retries,
+        )
 
     def setup_graph(
         self, selected_analysts=("market", "social", "news", "fundamentals")
@@ -96,19 +164,19 @@ class GraphSetup:
 
         # Add analyst nodes to the graph
         for spec in plan.specs:
-            workflow.add_node(spec.agent_node, analyst_factories[spec.key]())
+            workflow.add_node(spec.agent_node, self._observed(spec.agent_node, analyst_factories[spec.key]()))
             workflow.add_node(spec.clear_node, create_msg_delete())
             workflow.add_node(spec.tool_node, self.tool_nodes[spec.key])
 
         # Add other nodes
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
-        workflow.add_node("Portfolio Manager", portfolio_manager_node)
+        workflow.add_node("Bull Researcher", self._observed("Bull Researcher", bull_researcher_node))
+        workflow.add_node("Bear Researcher", self._observed("Bear Researcher", bear_researcher_node))
+        workflow.add_node("Research Manager", self._observed("Research Manager", research_manager_node))
+        workflow.add_node("Trader", self._observed("Trader", trader_node))
+        workflow.add_node("Aggressive Analyst", self._observed("Aggressive Analyst", aggressive_analyst))
+        workflow.add_node("Neutral Analyst", self._observed("Neutral Analyst", neutral_analyst))
+        workflow.add_node("Conservative Analyst", self._observed("Conservative Analyst", conservative_analyst))
+        workflow.add_node("Portfolio Manager", self._observed("Portfolio Manager", portfolio_manager_node))
 
         # Define edges
         # Start with the first analyst

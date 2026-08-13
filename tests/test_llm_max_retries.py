@@ -11,7 +11,11 @@ import importlib
 import pytest
 
 import tradingagents.default_config as default_config_module
-from tradingagents.graph.trading_graph import TradingAgentsGraph, _coerce_max_retries
+from tradingagents.graph.trading_graph import (
+    TradingAgentsGraph,
+    _coerce_max_retries,
+    _coerce_timeout_seconds,
+)
 
 # --- coercion / validation -------------------------------------------------
 
@@ -76,6 +80,27 @@ def test_invalid_config_value_fails_loudly():
         _bare_graph({"llm_provider": "openai", "llm_max_retries": -1})._get_provider_kwargs()
 
 
+@pytest.mark.unit
+@pytest.mark.parametrize("value,expected", [(1, 1.0), ("12.5", 12.5)])
+def test_timeout_accepts_positive_numeric_values(value, expected):
+    assert _coerce_timeout_seconds(value) == expected
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad", [0, -1, "no", True])
+def test_timeout_rejects_non_positive_or_invalid_values(bad):
+    with pytest.raises(ValueError, match="positive|> 0"):
+        _coerce_timeout_seconds(bad)
+
+
+@pytest.mark.unit
+def test_timeout_is_forwarded_to_all_provider_clients():
+    kwargs = _bare_graph(
+        {"llm_provider": "deepseek", "llm_max_retries": None, "llm_timeout_seconds": "75"}
+    )._get_provider_kwargs()
+    assert kwargs["timeout"] == 75.0
+
+
 # --- env overlay -----------------------------------------------------------
 
 def _reload_with_env(monkeypatch, **overrides):
@@ -98,3 +123,9 @@ def test_env_override_sets_config(monkeypatch):
     # None-default key: env value arrives as a string and is coerced downstream.
     assert dc.DEFAULT_CONFIG["llm_max_retries"] == "8"
     assert _coerce_max_retries(dc.DEFAULT_CONFIG["llm_max_retries"]) == 8
+
+
+@pytest.mark.unit
+def test_timeout_env_override(monkeypatch):
+    dc = _reload_with_env(monkeypatch, TRADINGAGENTS_LLM_TIMEOUT_SECONDS="45")
+    assert dc.DEFAULT_CONFIG["llm_timeout_seconds"] == 45.0

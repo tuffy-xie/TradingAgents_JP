@@ -1,5 +1,7 @@
+import logging
 import os
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -11,6 +13,23 @@ from .api_key_env import get_api_key_env
 from .base_client import BaseLLMClient, normalize_content
 from .capabilities import get_capabilities
 from .validators import validate_model
+
+logger = logging.getLogger(__name__)
+
+
+def _classify_llm_error(error: Exception) -> str:
+    """Classify a failed request without logging request bodies or credentials."""
+    name = type(error).__name__.lower()
+    message = str(error).lower()
+    if "timeout" in name or "timeout" in message:
+        return "TIMEOUT"
+    if "rate" in name or "429" in message:
+        return "RATE_LIMITED"
+    if "auth" in name or "401" in message or "403" in message:
+        return "AUTH_ERROR"
+    if "connect" in name or "connection" in message:
+        return "CONNECTION_ERROR"
+    return "REQUEST_ERROR"
 
 
 class NormalizedChatOpenAI(ChatOpenAI):
@@ -33,7 +52,24 @@ class NormalizedChatOpenAI(ChatOpenAI):
     """
 
     def invoke(self, input, config=None, **kwargs):
-        return normalize_content(super().invoke(input, config, **kwargs))
+        start = time.perf_counter()
+        logger.info(
+            "[LLM] request_start provider=%s model=%s timeout_seconds=%s retry_budget=%s",
+            getattr(self, "base_url", None) or "openai-compatible",
+            self.model_name,
+            getattr(self, "request_timeout", None),
+            getattr(self, "max_retries", None),
+        )
+        try:
+            response = super().invoke(input, config, **kwargs)
+        except Exception as exc:
+            logger.error(
+                "[LLM] request_failed model=%s elapsed_seconds=%.2f class=%s error=%s",
+                self.model_name, time.perf_counter() - start, _classify_llm_error(exc), type(exc).__name__,
+            )
+            raise
+        logger.info("[LLM] request_complete model=%s elapsed_seconds=%.2f", self.model_name, time.perf_counter() - start)
+        return normalize_content(response)
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

@@ -64,6 +64,19 @@ def _coerce_max_retries(value):
     return n
 
 
+def _coerce_timeout_seconds(value):
+    """Validate the finite per-request timeout forwarded to LLM clients."""
+    if isinstance(value, bool):
+        raise ValueError(f"llm_timeout_seconds must be a positive number, not a boolean: {value!r}")
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"llm_timeout_seconds must be a positive number, got {value!r}") from exc
+    if seconds <= 0:
+        raise ValueError(f"llm_timeout_seconds must be > 0, got {seconds}")
+    return seconds
+
+
 class TradingAgentsGraph:
     """Main class that orchestrates the trading agents framework."""
 
@@ -131,6 +144,9 @@ class TradingAgentsGraph:
             self.deep_thinking_llm,
             self.tool_nodes,
             self.conditional_logic,
+            llm_provider=self.config.get("llm_provider", "unknown"),
+            llm_timeout_seconds=self.config.get("llm_timeout_seconds"),
+            llm_max_retries=self.config.get("llm_max_retries"),
         )
 
         self.propagator = Propagator(
@@ -184,6 +200,13 @@ class TradingAgentsGraph:
         max_retries = self.config.get("llm_max_retries")
         if max_retries is not None and max_retries != "":
             kwargs["max_retries"] = _coerce_max_retries(max_retries)
+
+        timeout = self.config.get("llm_timeout_seconds")
+        if timeout is not None and timeout != "":
+            # LangChain forwards this to each provider SDK. For OpenAI-compatible
+            # clients (including DeepSeek) it is an end-to-end request timeout,
+            # covering connection and response-body reads.
+            kwargs["timeout"] = _coerce_timeout_seconds(timeout)
 
         return kwargs
 
@@ -429,6 +452,16 @@ class TradingAgentsGraph:
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
         japan_data_bundle = collect_japan_data_bundle(market_context, str(trade_date))
+        logger.info(
+            "[MarketResolver] market=%s symbol=%s japan_bundle=%s sources=%s",
+            market_context.market,
+            market_context.symbol,
+            "loaded" if japan_data_bundle else "not-applicable",
+            ",".join(
+                f"{source.get('source')}:{source.get('status')}"
+                for source in japan_data_bundle.get("source_statuses", [])
+            ) or "none",
+        )
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
