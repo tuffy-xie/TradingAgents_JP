@@ -9,12 +9,22 @@ run produces the same on-disk report tree a CLI run does.
 from datetime import datetime
 from pathlib import Path
 
+from tradingagents.dataflows.japan.context import render_japan_report_sections
+
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
+
+    market = (final_state.get("market_context") or {}).get("market")
+    if market == "JP":
+        japan_section = render_japan_report_sections(final_state.get("japan_data_bundle"))
+        japan_dir = save_path / "0_japan_market_data"
+        japan_dir.mkdir(exist_ok=True)
+        (japan_dir / "official_and_supply_demand.md").write_text(japan_section, encoding="utf-8")
+        sections.append(japan_section)
 
     # 1. Analysts
     analysts_dir = save_path / "1_analysts"

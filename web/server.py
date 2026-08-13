@@ -256,6 +256,11 @@ async def analyze(
             # every agent anchors to the real company, not just the raw
             # ticker (graph/trading_graph.py:resolve_instrument_context).
             instrument_ctx = ta.resolve_instrument_context(canonical_ticker, asset_type)
+            # The graph's programmatic ``propagate`` path collects this itself.
+            # The web path constructs state directly, so mirror that behavior.
+            from tradingagents.dataflows.japan.context import collect_japan_data_bundle
+
+            japan_data_bundle = collect_japan_data_bundle(market_context, date)
             init_state = ta.propagator.create_initial_state(
                 canonical_ticker, date,
                 asset_type=asset_type,
@@ -263,6 +268,7 @@ async def analyze(
                 instrument_context=instrument_ctx,
                 trade_constraints=trade_constraints,
                 market_context=market_context,
+                japan_data_bundle=japan_data_bundle,
             )
             graph_args = ta.propagator.get_graph_args()
             graph_args["stream_mode"] = "updates"

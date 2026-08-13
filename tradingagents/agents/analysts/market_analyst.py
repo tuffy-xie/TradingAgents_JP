@@ -3,6 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     get_indicators,
     get_instrument_context_from_state,
+    get_japan_data_context_from_state,
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
@@ -14,6 +15,7 @@ def create_market_analyst(llm):
     def market_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
+        japan_data_context = get_japan_data_context_from_state(state)
 
         tools = [
             get_stock_data,
@@ -52,6 +54,7 @@ Before writing the final report, call get_verified_market_snapshot for this tick
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+            + ("\n\n" + japan_data_context if japan_data_context else "")
             + get_language_instruction()
         )
 

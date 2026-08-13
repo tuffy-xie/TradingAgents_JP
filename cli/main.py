@@ -1117,11 +1117,18 @@ def run_analysis(checkpoint: bool | None = None):
         instrument_context = graph.resolve_instrument_context(
             selections["ticker"], selections["asset_type"]
         )
+        from tradingagents.dataflows.japan.context import collect_japan_data_bundle
+        from tradingagents.dataflows.market import resolve_market_context
+
+        market_context = resolve_market_context(selections["ticker"])
+        japan_data_bundle = collect_japan_data_bundle(market_context, selections["analysis_date"])
         init_agent_state = graph.propagator.create_initial_state(
             selections["ticker"],
             selections["analysis_date"],
             asset_type=selections["asset_type"],
             instrument_context=instrument_context,
+            market_context=market_context,
+            japan_data_bundle=japan_data_bundle,
         )
         # Pass callbacks to graph config for tool execution tracking
         # (LLM tracking is handled separately via LLM constructor)

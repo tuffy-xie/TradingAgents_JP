@@ -25,6 +25,7 @@ class Propagator:
         instrument_context: str = "",
         trade_constraints: dict[str, Any] | None = None,
         market_context: MarketContext | dict[str, Any] | None = None,
+        japan_data_bundle: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -42,6 +43,7 @@ class Propagator:
             "company_of_interest": canonical_symbol,
             "asset_type": asset_type,
             "market_context": context_dict,
+            "japan_data_bundle": japan_data_bundle or {},
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
             "trade_constraints": trade_constraints or {"horizon": "multi_day"},

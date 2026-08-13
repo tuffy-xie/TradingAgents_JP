@@ -1,5 +1,6 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
+    get_japan_data_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -17,6 +18,7 @@ def create_bull_researcher(llm):
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
+        japan_data_context = get_japan_data_context_from_state(state)
         trade_constraints = get_trade_constraints_from_state(state)
         asset_type = state.get("asset_type", "stock")
         target_label = "stock" if asset_type == "stock" else "asset"
@@ -41,6 +43,7 @@ Market research report: {market_research_report}
 Social media sentiment report: {sentiment_report}
 Latest world affairs news: {news_report}
 {fundamentals_label}: {fundamentals_report}
+{japan_data_context}
 Conversation history of the debate: {history}
 Last bear argument: {current_response}
 {trade_constraints}

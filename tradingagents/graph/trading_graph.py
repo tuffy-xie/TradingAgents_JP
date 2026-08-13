@@ -29,6 +29,7 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
+from tradingagents.dataflows.japan.context import collect_japan_data_bundle
 from tradingagents.dataflows.market import resolve_market_context
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -427,6 +428,7 @@ class TradingAgentsGraph:
         company_name = market_context.symbol
         past_context = self.memory_log.get_past_context(company_name)
         instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        japan_data_bundle = collect_japan_data_bundle(market_context, str(trade_date))
         init_agent_state = self.propagator.create_initial_state(
             company_name,
             trade_date,
@@ -434,6 +436,7 @@ class TradingAgentsGraph:
             past_context=past_context,
             instrument_context=instrument_context,
             market_context=market_context,
+            japan_data_bundle=japan_data_bundle,
         )
         args = self.propagator.get_graph_args()
 
@@ -492,6 +495,8 @@ class TradingAgentsGraph:
         self.log_states_dict[str(trade_date)] = {
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
+            "market_context": final_state.get("market_context", {}),
+            "japan_data_bundle": final_state.get("japan_data_bundle", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],

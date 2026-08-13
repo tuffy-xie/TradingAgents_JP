@@ -44,6 +44,7 @@ __all__ = [
     "get_instrument_context_from_state",
     "get_trade_constraints_from_state",
     "get_language_instruction",
+    "get_japan_data_context_from_state",
     "create_msg_delete",
 ]
 
@@ -230,6 +231,13 @@ def get_trade_constraints_from_state(state: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def get_japan_data_context_from_state(state: Mapping[str, Any]) -> str:
+    """Render pre-fetched JP facts for prompts; returns empty text for US runs."""
+    from tradingagents.dataflows.japan.context import render_japan_agent_context
+
+    return render_japan_agent_context(state)
+
+
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add a context-anchored placeholder.
@@ -255,5 +263,4 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-
 
