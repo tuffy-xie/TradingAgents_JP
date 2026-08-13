@@ -8,6 +8,7 @@ from tradingagents.dataflows.japan.edinet import (
     EDINETProvider,
     _normalise_documents,
     classify_edinet_document,
+    extract_large_shareholding_fields,
 )
 from tradingagents.dataflows.japan.jquants import JQuantsProvider, _normalise_records
 from tradingagents.dataflows.japan.jsf import normalise_balances, normalise_premium_charges
@@ -60,6 +61,9 @@ def test_edinet_only_keeps_matching_security_and_labels_large_holding():
     assert len(items) == 1
     assert items[0].source_type == "large_shareholding_report"
     assert classify_edinet_document("四半期報告書", "") == "quarterly_report"
+    fields = extract_large_shareholding_fields("株券等保有割合 6.03%")
+    assert fields["reported_holding_percentages"] == [6.03]
+    assert fields["position_change"] == "UNDETERMINED"
 
 
 @pytest.mark.unit

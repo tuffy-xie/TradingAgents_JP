@@ -10,7 +10,7 @@ from typing import Any
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
-from .http import get_json
+from .http import get_bytes, get_json
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 
 
@@ -19,6 +19,7 @@ class EDINETProvider:
 
     name = "EDINET"
     category = "edinet"
+    cache_version = "holdings-pdf-v2"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None, max_days: int = 7):
         config = get_config().get("markets", {}).get("jp", {})
@@ -27,6 +28,8 @@ class EDINETProvider:
         self.timeout = float(config.get("request_timeout_seconds", 10))
         self.max_days = max_days
         self.enabled = bool(config.get("datasources", {}).get("edinet", True))
+        self.max_pdf_bytes = int(config.get("edinet_max_pdf_bytes", 8_000_000))
+        self.max_pdf_chars = int(config.get("edinet_max_pdf_chars", 12_000))
 
     async def fetch(self, context: MarketContext, *, start_date: str, end_date: str) -> ProviderResponse:
         if not self.enabled:
@@ -53,7 +56,22 @@ class EDINETProvider:
             items.extend(_normalise_documents(response.payload, context))
         if not items and latest_status != DataStatus.OK:
             return ProviderResponse(SourceStatus(self.name, latest_status, detail="; ".join(sorted(set(details)))))
-        return ProviderResponse(SourceStatus(self.name, DataStatus.OK, item_count=len(items)), tuple(items))
+        enriched = await __import__("asyncio").gather(*(self._enrich_large_holding(item) for item in items))
+        return ProviderResponse(SourceStatus(self.name, DataStatus.OK, item_count=len(enriched)), tuple(enriched))
+
+    async def _enrich_large_holding(self, item: MarketInformation) -> MarketInformation:
+        if item.source_type != "large_shareholding_report" or not item.url:
+            return item
+        response = await get_bytes(item.url, timeout=self.timeout, max_bytes=self.max_pdf_bytes, headers={"Subscription-Key": self.api_key})
+        if response.status != DataStatus.OK:
+            return _with_document_status(item, "DATA_UNAVAILABLE", response.detail)
+        try:
+            from .tdnet import extract_pdf_text
+            text = extract_pdf_text(response.payload, self.max_pdf_chars)
+        except Exception as exc:
+            return _with_document_status(item, "PARSE_FAILED", type(exc).__name__)
+        fields = extract_large_shareholding_fields(text)
+        return MarketInformation(**{**item.__dict__, "content": text or item.content, "content_level": "full_text" if text else "metadata_only", "metadata": {**item.metadata, **fields, "extraction_status": "OK" if text else "EMPTY_TEXT"}})
 
 
 def _date_range(start_date: str, end_date: str, max_days: int) -> tuple[date, ...]:
@@ -117,3 +135,15 @@ def classify_edinet_document(title: str, doc_type_code: str) -> str:
     if "四半期報告書" in normalized:
         return "quarterly_report"
     return "regulatory_filing"
+
+
+def extract_large_shareholding_fields(text: str) -> dict[str, Any]:
+    """Extract only explicit holding percentages; never infer a position change."""
+    import re
+
+    percentages = [float(value) for value in re.findall(r"(?:保有割合|株券等保有割合)[^0-9]{0,20}([0-9]+(?:\.[0-9]+)?)\s*%", text)]
+    return {"reported_holding_percentages": percentages[:8], "position_change": "UNDETERMINED"}
+
+
+def _with_document_status(item: MarketInformation, status: str, detail: str) -> MarketInformation:
+    return MarketInformation(**{**item.__dict__, "metadata": {**item.metadata, "extraction_status": status, "extraction_detail": detail}})

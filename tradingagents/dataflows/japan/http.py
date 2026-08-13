@@ -79,13 +79,15 @@ async def get_text(url: str, *, timeout: float = 10.0) -> tuple[DataStatus, str,
     return DataStatus.OK, response.text, ""
 
 
-async def get_bytes(url: str, *, timeout: float = 10.0) -> BytesResponse:
+async def get_bytes(
+    url: str, *, timeout: float = 10.0, max_bytes: int | None = None, headers: dict[str, str] | None = None
+) -> BytesResponse:
     """Fetch a public download without credentials, cookies, or paywall bypasses."""
     try:
         response = await asyncio.to_thread(
             requests.get,
             url,
-            headers={"User-Agent": USER_AGENT, "Accept": "text/csv,application/vnd.ms-excel,*/*"},
+            headers={"User-Agent": USER_AGENT, "Accept": "text/csv,application/vnd.ms-excel,*/*", **(headers or {})},
             timeout=timeout,
         )
     except requests.RequestException as exc:
@@ -96,4 +98,6 @@ async def get_bytes(url: str, *, timeout: float = 10.0) -> BytesResponse:
         return BytesResponse(DataStatus.AUTH_REQUIRED, detail=f"HTTP {response.status_code}")
     if not response.ok:
         return BytesResponse(DataStatus.DATA_UNAVAILABLE, detail=f"HTTP {response.status_code}")
+    if max_bytes is not None and len(response.content) > max_bytes:
+        return BytesResponse(DataStatus.DATA_UNAVAILABLE, detail=f"download exceeds {max_bytes} bytes")
     return BytesResponse(DataStatus.OK, payload=response.content)

@@ -160,6 +160,11 @@ DEFAULT_CONFIG = _apply_env_overrides({
             # TDnet publishes a maximum of 31 recent calendar days.  Cap pages
             # per day to be polite to the public viewer during earnings season.
             "tdnet_max_pages_per_day": 10,
+            "tdnet_extract_pdf_text": True,
+            "tdnet_max_pdf_bytes": 8_000_000,
+            "tdnet_max_pdf_chars": 12_000,
+            "edinet_max_pdf_bytes": 8_000_000,
+            "edinet_max_pdf_chars": 12_000,
             "company_ir_urls": {},
             "datasources": {
                 "jquants": True, "jpx": True, "tdnet": True, "edinet": True,

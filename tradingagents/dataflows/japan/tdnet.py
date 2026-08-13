@@ -18,7 +18,7 @@ from urllib.parse import urljoin
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
-from .http import get_json, get_text
+from .http import get_bytes, get_json, get_text
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 
 _PUBLIC_INDEX_URL = "https://www.release.tdnet.info/inbs/I_list_{page:03d}_{day:%Y%m%d}.html"
@@ -40,13 +40,16 @@ class TDnetProvider:
 
     name = "TDnet"
     category = "tdnet"
-    cache_version = "public-index-v1"
+    cache_version = "public-index-pdf-v2"
 
     def __init__(self, feed_url: str | None = None):
         config = get_config().get("markets", {}).get("jp", {})
         self.feed_url = feed_url or config.get("tdnet_feed_url")
         self.timeout = float(config.get("request_timeout_seconds", 10))
         self.max_pages_per_day = int(config.get("tdnet_max_pages_per_day", 10))
+        self.extract_pdf_text = bool(config.get("tdnet_extract_pdf_text", True))
+        self.max_pdf_bytes = int(config.get("tdnet_max_pdf_bytes", 8_000_000))
+        self.max_pdf_chars = int(config.get("tdnet_max_pdf_chars", 12_000))
         self.enabled = bool(config.get("datasources", {}).get("tdnet", True))
 
     async def fetch(self, context: MarketContext, *, start_date: str, end_date: str) -> ProviderResponse:
@@ -60,11 +63,35 @@ class TDnetProvider:
             return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
         results = await asyncio.gather(*(self._fetch_day(context, day) for day in days))
         items = tuple(item for day_items, _ in results for item in day_items)
+        if self.extract_pdf_text:
+            items = await self._enrich_pdf_text(items)
         capped_days = sum(capped for _, capped in results)
         detail = ""
         if capped_days:
             detail = f"{capped_days} day(s) reached tdnet_max_pages_per_day={self.max_pages_per_day}"
         return ProviderResponse(SourceStatus(self.name, DataStatus.OK, detail=detail, item_count=len(items)), items)
+
+    async def _enrich_pdf_text(
+        self, items: tuple[MarketInformation, ...]
+    ) -> tuple[MarketInformation, ...]:
+        """Best-effort extract public PDF text; metadata remains usable on failure."""
+        enriched = await asyncio.gather(*(self._extract_pdf(item) for item in items))
+        return tuple(enriched)
+
+    async def _extract_pdf(self, item: MarketInformation) -> MarketInformation:
+        if not item.url or not item.url.lower().endswith(".pdf"):
+            return item
+        response = await get_bytes(item.url, timeout=self.timeout, max_bytes=self.max_pdf_bytes)
+        if response.status != DataStatus.OK:
+            return _with_extraction_status(item, "DATA_UNAVAILABLE", response.detail)
+        try:
+            text = extract_pdf_text(response.payload, self.max_pdf_chars)
+        except Exception as exc:  # an issuer PDF parse error must not lose the index fact
+            return _with_extraction_status(item, "PARSE_FAILED", type(exc).__name__)
+        metadata = {**item.metadata, "document_downloaded": True, "extraction_status": "OK" if text else "EMPTY_TEXT"}
+        return MarketInformation(
+            **{**item.__dict__, "content": text or item.content, "content_level": "full_text" if text else "summary_only", "metadata": metadata}
+        )
 
     async def _fetch_authorised_feed(
         self, context: MarketContext, start_date: str, end_date: str
@@ -146,6 +173,7 @@ def _parse_public_list(
                 "official_index": True,
                 "index_page": page,
                 "document_downloaded": False,
+                "extraction_status": "NOT_REQUESTED",
             },
         )
 
@@ -207,3 +235,20 @@ def _parse_timestamp(value: Any) -> datetime:
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
     except ValueError:
         return datetime.now(UTC)
+
+
+def extract_pdf_text(payload: bytes, max_chars: int) -> str:
+    """Extract text from a public issuer PDF without OCR or document invention."""
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    reader = PdfReader(BytesIO(payload))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    return " ".join(text.split())[:max_chars]
+
+
+def _with_extraction_status(item: MarketInformation, status: str, detail: str) -> MarketInformation:
+    return MarketInformation(
+        **{**item.__dict__, "metadata": {**item.metadata, "extraction_status": status, "extraction_detail": detail}}
+    )
