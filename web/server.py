@@ -3,6 +3,7 @@ import asyncio
 import html
 import json
 import logging
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -557,6 +558,24 @@ def list_history():
 def _render_report_html(data: dict, *, auto_print: bool) -> str:
     ticker = data.get("company_of_interest", "")
     date = data.get("trade_date", "")
+    decision = data.get("final_trade_decision", "") or ""
+
+    def decision_field(label: str, default: str) -> str:
+        match = re.search(
+            rf"(?:\*\*)?{label}(?:\*\*)?\s*[:：]\s*([^\n*]+)",
+            decision, flags=re.IGNORECASE,
+        )
+        return match.group(1).strip().strip("*") if match else default
+
+    rating = decision_field("Rating", "Hold")
+    rating = {"Buy": "买入", "Overweight": "增持", "Hold": "持有", "Underweight": "减持", "Sell": "卖出"}.get(rating, rating)
+    target = decision_field("Price Target", "—")
+    horizon = decision_field("Time Horizon", "—")
+    summary_match = re.search(
+        r"(?:\*\*)?Executive Summary(?:\*\*)?\s*[:：]\s*(.*?)(?=\n\s*\n(?:\*\*)?[A-Za-z ]+(?:\*\*)?\s*[:：]|\Z)",
+        decision, flags=re.IGNORECASE | re.DOTALL,
+    )
+    summary = summary_match.group(1).strip() if summary_match else decision[:1200]
 
     debate = data.get("investment_debate_state") or {}
     risk = data.get("risk_debate_state") or {}
@@ -610,6 +629,26 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
   .toolbar {{ margin-bottom:20px; }}
   .toolbar button {{ font:inherit; font-size:14px; padding:8px 16px; border:none;
     border-radius:8px; background:var(--brand); color:#fff; cursor:pointer; }}
+  .report-cover {{ min-height:calc(100vh - 96px); padding-top:24px; }}
+  .cover-brand {{ color:#1e3a6a; font:700 15px/1.2 Arial,sans-serif; letter-spacing:2px;
+    padding-bottom:20px; border-bottom:3px solid #1e3a6a; }}
+  .cover-brand span {{ color:var(--muted); font:600 14px "PingFang SC","Microsoft YaHei",sans-serif;
+    letter-spacing:0; margin-left:18px; padding-left:18px; border-left:1px solid var(--line); }}
+  .cover-title {{ margin:26px 0 8px; font-size:29px; }}
+  .cover-title span {{ font-size:19px; font-weight:400; color:#4b5563; margin-left:10px; }}
+  .cover-meta {{ color:var(--muted); font-size:14px; }}
+  .cover-cards {{ display:grid; grid-template-columns:repeat(4,1fr); margin:28px 0 38px;
+    border:1px solid #cbd5e1; }}
+  .cover-card {{ min-height:88px; padding:14px 16px; background:#fafbfd; border-right:1px solid #cbd5e1; }}
+  .cover-card:last-child {{ border-right:0; }}
+  .cover-card small {{ display:block; color:var(--muted); font-size:14px; margin-bottom:7px; }}
+  .cover-card strong {{ font:700 20px/1.2 Arial,"PingFang SC","Microsoft YaHei",sans-serif; }}
+  .cover-card .rating {{ color:#bf3b36; }}
+  .cover-advice {{ background:#f4f6f9; border:1px solid #cbd5e1; border-top:3px solid #1e3a6a;
+    padding:20px 24px 24px; }}
+  .cover-advice h2 {{ font-size:20px; margin:0 0 14px; padding:0 0 10px 10px;
+    border-left:4px solid #1e3a6a; border-bottom:1px solid #cbd5e1; }}
+  .cover-advice p {{ margin:0; font-size:16px; line-height:1.8; }}
   .report-section {{ margin:0 0 28px; }}
   .report-section h2 {{ font-size:18px; border-left:4px solid var(--brand);
     padding-left:10px; margin:28px 0 12px; }}
@@ -625,6 +664,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     body {{ background:#fff; }}
     .page {{ box-shadow:none; max-width:none; padding:0 12px; }}
     .toolbar {{ display:none; }}
+    .report-cover {{ min-height:0; break-after:page; page-break-after:always; }}
     .report-section {{ break-inside:avoid-page; }}
   }}
 </style>
@@ -633,10 +673,18 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
 <body>
 <div class="page">
   <div class="toolbar"><button onclick="window.print()">🖨️ 打印 / 保存为 PDF</button></div>
-  <div class="report-head">
-    <h1>{html.escape(ticker)} 分析报告</h1>
-    <div class="meta">分析日期：{html.escape(str(date))}</div>
-  </div>
+  <section class="report-cover">
+    <div class="cover-brand">TRADINGAGENTS 研究<span>证券研究报告</span></div>
+    <h1 class="cover-title">{html.escape(ticker)} <span>多智能体分析报告</span></h1>
+    <div class="cover-meta">分析日期 {html.escape(str(date))} ｜ 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
+    <div class="cover-cards">
+      <div class="cover-card"><small>投资评级</small><strong class="rating">{html.escape(rating)}</strong></div>
+      <div class="cover-card"><small>目标价</small><strong>{html.escape(target)}</strong></div>
+      <div class="cover-card"><small>投资期限</small><strong>{html.escape(horizon)}</strong></div>
+      <div class="cover-card"><small>分析师覆盖</small><strong>{sum(bool(data.get(key)) for key, _, _ in REPORT_SECTIONS[:4])} 项</strong></div>
+    </div>
+    <div class="cover-advice"><h2>投资建议</h2><p>{html.escape(summary)}</p></div>
+  </section>
   {sections_html}
 </div>
 </body>
