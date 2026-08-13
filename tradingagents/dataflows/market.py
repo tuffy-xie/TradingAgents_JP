@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 
 
@@ -35,6 +35,10 @@ class MarketContext:
     currency: str | None
     timezone: str | None
     resolved_by: str
+    # This is deliberately part of the canonical context rather than a
+    # fundamentals-only inference.  The report, analysts and renderer must
+    # agree on whether the instrument is an operating company or a fund.
+    instrument_type: str = "EQUITY"
 
     def to_dict(self) -> dict[str, str | None]:
         """Return a JSON/LangGraph-safe representation."""
@@ -115,6 +119,21 @@ class MarketResolver:
             timezone="Asia/Tokyo",
             resolved_by=resolved_by,
         )
+
+
+def enrich_market_context(
+    context: MarketContext, identity: dict[str, str] | None = None
+) -> MarketContext:
+    """Return the one run-level context enriched with deterministic identity.
+
+    ``quoteType`` comes from the existing identity lookup (currently
+    yfinance), which is already performed once at graph start.  Keeping the
+    classification here prevents individual analysts from independently
+    deciding that an ETF is a company.
+    """
+    quote_type = str((identity or {}).get("quote_type", "")).strip().upper()
+    instrument_type = "ETF" if quote_type in {"ETF", "MUTUALFUND"} else "EQUITY"
+    return replace(context, instrument_type=instrument_type)
 
 
 class ProviderRouter:

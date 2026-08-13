@@ -275,7 +275,12 @@ def get_fundamentals(
     ticker: Annotated[str, "ticker symbol of the company"],
     curr_date: Annotated[str, "current date (not used for yfinance)"] = None
 ):
-    """Get company fundamentals overview from yfinance."""
+    """Get non-price fundamentals, selecting an ETF-specific framework when needed.
+
+    Price-derived fields are intentionally absent.  The graph pre-computes a
+    verified market snapshot once per run; letting this provider emit its own
+    quote, moving averages or 52-week range caused reports to mix timestamps.
+    """
     canonical = normalize_symbol(ticker)
     try:
         ticker_obj = yf.Ticker(canonical)
@@ -283,6 +288,9 @@ def get_fundamentals(
 
         if not info:
             raise NoMarketDataError(ticker, canonical, "no fundamentals returned")
+
+        if str(info.get("quoteType", "")).upper() in {"ETF", "MUTUALFUND"}:
+            return _get_etf_fundamentals(ticker_obj, ticker, canonical, info)
 
         fields = [
             ("Name", info.get("longName")),
@@ -297,10 +305,6 @@ def get_fundamentals(
             ("Forward EPS", info.get("forwardEps")),
             ("Dividend Yield", info.get("dividendYield")),
             ("Beta", info.get("beta")),
-            ("52 Week High", info.get("fiftyTwoWeekHigh")),
-            ("52 Week Low", info.get("fiftyTwoWeekLow")),
-            ("50 Day Average", info.get("fiftyDayAverage")),
-            ("200 Day Average", info.get("twoHundredDayAverage")),
             ("Revenue (TTM)", info.get("totalRevenue")),
             ("Gross Profit", info.get("grossProfits")),
             ("EBITDA", info.get("ebitda")),
@@ -336,6 +340,50 @@ def get_fundamentals(
         raise
     except Exception as e:
         return f"Error retrieving fundamentals for {ticker}: {str(e)}"
+
+
+def _get_etf_fundamentals(ticker_obj, ticker: str, canonical: str, info: dict) -> str:
+    """Render ETF research facts from the existing yfinance provider only.
+
+    Not every exchange publishes each field through yfinance.  Missing fields
+    remain explicitly unavailable rather than falling back to a company P&L or
+    inventing a benchmark/tracking-error calculation.
+    """
+    fields = [
+        ("基金名称", info.get("longName") or info.get("shortName")),
+        ("产品类型", info.get("quoteType")),
+        ("跟踪指数/分类", info.get("category") or info.get("fundFamily")),
+        ("费用率", info.get("annualReportExpenseRatio")),
+        ("资产管理规模 (AUM)", info.get("totalAssets")),
+        ("平均成交量（流动性）", info.get("averageVolume")),
+        ("分配金收益率", info.get("yield") or info.get("dividendYield")),
+        ("组合估值（披露口径）", info.get("trailingPE")),
+    ]
+    lines = [f"{label}: {value}" for label, value in fields if value is not None]
+    lines.extend([
+        "跟踪误差: 暂无可验证基准序列，未计算。",
+        "相对强弱: 请仅使用本次运行的 verified market snapshot，不由基本面供应商推算。",
+    ])
+
+    try:
+        funds_data = ticker_obj.funds_data
+        top_holdings = getattr(funds_data, "top_holdings", None)
+        if top_holdings is not None and not top_holdings.empty:
+            lines.append("\n主要成分股（Provider 披露）:\n" + top_holdings.head(10).to_string())
+        else:
+            lines.append("主要成分股: 暂无可用披露数据。")
+        sector_weights = getattr(funds_data, "sector_weightings", None)
+        if sector_weights is not None and not sector_weights.empty:
+            lines.append("\n行业集中度（Provider 披露）:\n" + sector_weights.to_string())
+        else:
+            lines.append("行业集中度: 暂无可用披露数据。")
+    except Exception:
+        lines.extend(["主要成分股: 暂无可用披露数据。", "行业集中度: 暂无可用披露数据。"])
+
+    header = f"# ETF 专用基础资料：{canonical}\n"
+    header += f"# 数据获取时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    header += "# 注：现价、OHLC 与技术指标仅以 verified market snapshot 为准。\n\n"
+    return header + "\n".join(lines)
 
 
 def get_balance_sheet(

@@ -66,7 +66,7 @@ def create_sentiment_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
 
-        if japan_data_context:
+        if (state.get("market_context") or {}).get("market") == "JP":
             # Do not use US-centric Reddit/StockTwits as a negative Japanese
             # sentiment signal. Japan community providers arrive in a later
             # phase, so report the limitation instead of inventing a score.
@@ -199,7 +199,7 @@ def _build_japan_system_message(ticker: str, start_date: str, end_date: str, jap
     """Build the JP-specific sentiment prompt without US-community substitution."""
     return f"""You are a Japanese-equity market sentiment analyst for {ticker}, covering {start_date} to {end_date}.
 
-The data below contains official disclosures and supply/demand facts, not a community-sentiment sample. Do not describe a lack of Reddit or StockTwits mentions as negative sentiment, and do not fabricate X, Yahoo掲示板, 5ch, or moomoo metrics. If no Japanese community data is present, set confidence to low and explicitly state DATA UNAVAILABLE.
+The data below contains official disclosures and supply/demand facts, not a community-sentiment sample. Do not substitute foreign community platforms or fabricate Japanese community metrics. If no Japanese community data is present, set confidence to low and state exactly: 暂无可用日本情绪数据。
 
 {japan_data_context}
 
@@ -209,7 +209,7 @@ Use official disclosures only as facts, distinguish them from AI inference, and 
 - **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Neutral when community evidence is unavailable.
 - **overall_score**: 0 to 10. Use 5 when no direct Japanese sentiment sample exists.
 - **confidence**: low / medium / high. It must be low without direct Japanese community data.
-- **narrative**: Separate VERIFIED FACT, MARKET SENTIMENT, and AI INFERENCE. Include a markdown table of data availability and constraints.
+- **narrative**: Separate VERIFIED FACT, MARKET SENTIMENT, and AI INFERENCE. Include a markdown table of data availability and constraints. When no direct Japanese sample exists, include exactly “暂无可用日本情绪数据”。
 
 {get_language_instruction()}"""
 

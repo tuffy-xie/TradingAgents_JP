@@ -30,7 +30,8 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.japan.context import collect_japan_data_bundle
-from tradingagents.dataflows.market import resolve_market_context
+from tradingagents.dataflows.market import enrich_market_context, resolve_market_context
+from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.llm_clients import create_llm_client
@@ -394,7 +395,12 @@ class TradingAgentsGraph:
         a per-ticker SqliteSaver so a crashed run can resume from the last
         successful node on a subsequent invocation with the same ticker+date.
         """
-        market_context = resolve_market_context(company_name)
+        # Resolve and enrich exactly once.  The same object is passed through
+        # the entire run; re-resolving inside the synthesizer used to make a
+        # valid Tokyo ticker lose its JP route in later report pages.
+        base_context = resolve_market_context(company_name)
+        identity = resolve_instrument_identity(base_context.symbol)
+        market_context = enrich_market_context(base_context, identity)
         company_name = market_context.symbol
         self.ticker = company_name
 
@@ -421,7 +427,10 @@ class TradingAgentsGraph:
                 logger.info("Starting fresh for %s on %s", company_name, trade_date)
 
         try:
-            return self._run_graph(company_name, trade_date, asset_type=asset_type)
+            return self._run_graph(
+                company_name, trade_date, asset_type=asset_type,
+                market_context=market_context, identity=identity,
+            )
         finally:
             if self._checkpointer_ctx is not None:
                 self._checkpointer_ctx.__exit__(None, None, None)
@@ -443,15 +452,29 @@ class TradingAgentsGraph:
             )
         return write_report_tree(final_state, ticker, save_path)
 
-    def _run_graph(self, company_name, trade_date, asset_type: str = "stock"):
+    def _run_graph(
+        self, company_name, trade_date, asset_type: str = "stock", *,
+        market_context=None, identity: dict[str, str] | None = None,
+    ):
         """Execute the graph and write the resulting state to disk and memory log."""
         # Initialize state — inject memory log context for PM and the
         # deterministically resolved instrument identity for all agents.
-        market_context = resolve_market_context(company_name)
+        if market_context is None:
+            base_context = resolve_market_context(company_name)
+            identity = identity or resolve_instrument_identity(base_context.symbol)
+            market_context = enrich_market_context(base_context, identity)
         company_name = market_context.symbol
         past_context = self.memory_log.get_past_context(company_name)
-        instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        instrument_context = build_instrument_context(company_name, asset_type, identity)
         japan_data_bundle = collect_japan_data_bundle(market_context, str(trade_date))
+        try:
+            verified_market_snapshot = build_verified_market_snapshot(company_name, str(trade_date))
+        except Exception as exc:  # fail closed: no fallback price source is permitted
+            logger.warning("[VerifiedSnapshot] unavailable ticker=%s class=%s", company_name, type(exc).__name__)
+            verified_market_snapshot = (
+                "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price, OHLC, moving-average, "
+                "RSI, MACD, ATR and VWMA values must be reported as unavailable."
+            )
         logger.info(
             "[MarketResolver] market=%s symbol=%s japan_bundle=%s sources=%s",
             market_context.market,
@@ -470,6 +493,7 @@ class TradingAgentsGraph:
             instrument_context=instrument_context,
             market_context=market_context,
             japan_data_bundle=japan_data_bundle,
+            verified_market_snapshot=verified_market_snapshot,
         )
         args = self.propagator.get_graph_args()
 
@@ -529,6 +553,7 @@ class TradingAgentsGraph:
             "company_of_interest": final_state["company_of_interest"],
             "trade_date": final_state["trade_date"],
             "market_context": final_state.get("market_context", {}),
+            "verified_market_snapshot": final_state.get("verified_market_snapshot", ""),
             "japan_data_bundle": final_state.get("japan_data_bundle", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],

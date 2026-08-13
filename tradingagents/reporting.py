@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.dataflows.japan.context import render_japan_report_sections
+from tradingagents.report_consistency import canonical_report_metadata, sanitize_report_section
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
@@ -18,7 +19,8 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
 
-    market = (final_state.get("market_context") or {}).get("market")
+    metadata = canonical_report_metadata(final_state)
+    market = metadata["market"]
     if market == "JP":
         japan_section = render_japan_report_sections(final_state.get("japan_data_bundle"))
         japan_dir = save_path / "0_japan_market_data"
@@ -31,12 +33,14 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     analyst_parts = []
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "market.md").write_text(final_state["market_report"], encoding="utf-8")
-        analyst_parts.append(("Market Analyst", final_state["market_report"]))
+        report = sanitize_report_section(final_state["market_report"], market, "market_report")
+        (analysts_dir / "market.md").write_text(report, encoding="utf-8")
+        analyst_parts.append(("Market Analyst", report))
     if final_state.get("sentiment_report"):
         analysts_dir.mkdir(exist_ok=True)
-        (analysts_dir / "sentiment.md").write_text(final_state["sentiment_report"], encoding="utf-8")
-        analyst_parts.append(("Sentiment Analyst", final_state["sentiment_report"]))
+        report = sanitize_report_section(final_state["sentiment_report"], market, "sentiment_report")
+        (analysts_dir / "sentiment.md").write_text(report, encoding="utf-8")
+        analyst_parts.append(("Sentiment Analyst", report))
     if final_state.get("news_report"):
         analysts_dir.mkdir(exist_ok=True)
         (analysts_dir / "news.md").write_text(final_state["news_report"], encoding="utf-8")
@@ -106,6 +110,10 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
 
     # Write consolidated report
-    header = f"# Trading Analysis Report: {ticker}\n\nGenerated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header = (
+        f"# Trading Analysis Report: {metadata['symbol']}\n\n"
+        f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
+        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    )
     (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
     return save_path / "complete_report.md"

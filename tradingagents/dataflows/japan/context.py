@@ -73,7 +73,7 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
         "### Verified official disclosures", *_item_lines(official, include_metadata=False),
         "### Credit supply/demand", *_item_lines(supply, include_metadata=True),
         "### Reportable institutional short positions", *_item_lines(short, include_metadata=True),
-        "### Japan sentiment and macro", "- DATA_UNAVAILABLE: no Japan sentiment or macro provider is enabled in this phase.",
+        "### Japan sentiment and macro", "- 暂无可用日本情绪数据。",
         "Rules: absence of a JPX >=0.5% reported short position does not mean no short interest. JSF balances are securities-finance data, not all broker margin positions. Do not turn a disclosure, forum absence, or a single balance into a buy/sell certainty.",
     ])
 
@@ -95,7 +95,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
         "## 日本官方披露\n" + "\n".join(_item_lines(official, include_metadata=False)),
         "## 信用与需给\n" + "\n".join(_item_lines(supply, include_metadata=True)),
         "## 空卖与机构行为\n" + ("\n".join(_item_lines(short, include_metadata=True)) if short else "DATA UNAVAILABLE: 未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"),
-        "## 日本市场情绪\nDATA UNAVAILABLE: 本阶段没有启用日本社区情绪 Provider，未使用 Reddit 或 StockTwits 替代。",
+        "## 日本市场情绪\n暂无可用日本情绪数据。",
         "## 日股波段交易计划\n以上官方披露与需给数据已注入 Analyst、Bull/Bear、Trader、Risk Manager 和 Portfolio Manager。交易计划以最终决策中的入场、止损、止盈及仓位上限为准；若关键数据不可用，应保持观望而非补造结论。",
         "### Japan data source status\n" + source_status,
     ])

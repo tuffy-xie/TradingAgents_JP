@@ -22,11 +22,14 @@ from sse_starlette.sse import EventSourceResponse
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tradingagents.agents.utils.rating import parse_rating
+from tradingagents.agents.utils.agent_utils import build_instrument_context, resolve_instrument_identity
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.dataflows.market import resolve_market_context
+from tradingagents.dataflows.market import enrich_market_context, resolve_market_context
+from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
+from tradingagents.report_consistency import canonical_report_metadata, sanitize_report_section
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -218,7 +221,9 @@ async def analyze(
 
     def run():
         try:
-            market_context = resolve_market_context(ticker)
+            base_market_context = resolve_market_context(ticker)
+            identity = resolve_instrument_identity(base_market_context.symbol)
+            market_context = enrich_market_context(base_market_context, identity)
             canonical_ticker = market_context.symbol
             put({"type": "init", "agents": build_agent_sequence(analyst_list),
                  "ticker": canonical_ticker, "date": date, "asset_type": asset_type,
@@ -256,12 +261,20 @@ async def analyze(
             # Mirror the CLI: resolve instrument identity once at start so
             # every agent anchors to the real company, not just the raw
             # ticker (graph/trading_graph.py:resolve_instrument_context).
-            instrument_ctx = ta.resolve_instrument_context(canonical_ticker, asset_type)
+            instrument_ctx = build_instrument_context(canonical_ticker, asset_type, identity)
             # The graph's programmatic ``propagate`` path collects this itself.
             # The web path constructs state directly, so mirror that behavior.
             from tradingagents.dataflows.japan.context import collect_japan_data_bundle
 
             japan_data_bundle = collect_japan_data_bundle(market_context, date)
+            try:
+                verified_market_snapshot = build_verified_market_snapshot(canonical_ticker, date)
+            except Exception as exc:
+                logger.warning("[VerifiedSnapshot] unavailable ticker=%s class=%s", canonical_ticker, type(exc).__name__)
+                verified_market_snapshot = (
+                    "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price, OHLC, moving-average, "
+                    "RSI, MACD, ATR and VWMA values must be reported as unavailable."
+                )
             init_state = ta.propagator.create_initial_state(
                 canonical_ticker, date,
                 asset_type=asset_type,
@@ -270,6 +283,7 @@ async def analyze(
                 trade_constraints=trade_constraints,
                 market_context=market_context,
                 japan_data_bundle=japan_data_bundle,
+                verified_market_snapshot=verified_market_snapshot,
             )
             graph_args = ta.propagator.get_graph_args()
             graph_args["stream_mode"] = "updates"
@@ -556,7 +570,8 @@ def list_history():
 
 
 def _render_report_html(data: dict, *, auto_print: bool) -> str:
-    ticker = data.get("company_of_interest", "")
+    metadata = canonical_report_metadata(data)
+    ticker = metadata["symbol"]
     date = data.get("trade_date", "")
     decision = data.get("final_trade_decision", "") or ""
 
@@ -582,7 +597,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
 
     blocks = []
     for json_key, _stem, label in REPORT_SECTIONS:
-        content = data.get(json_key)
+        content = sanitize_report_section(data.get(json_key, ""), metadata["market"], json_key)
         if not content:
             continue
         blocks.append(f'<section class="report-section"><h2>{html.escape(label)}</h2>{_md(content)}</section>')

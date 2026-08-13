@@ -45,6 +45,7 @@ __all__ = [
     "get_trade_constraints_from_state",
     "get_language_instruction",
     "get_japan_data_context_from_state",
+    "get_verified_market_snapshot_from_state",
     "create_msg_delete",
 ]
 
@@ -182,10 +183,17 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     """
     context = state.get("instrument_context")
     if isinstance(context, str) and context.strip():
-        return context
-    return build_instrument_context(
+        base_context = context
+    else:
+        base_context = build_instrument_context(
         str(state["company_of_interest"]),
         state.get("asset_type", "stock"),
+        )
+    snapshot = get_verified_market_snapshot_from_state(state)
+    return (
+        base_context
+        + "\n\nData-integrity rule: exact current price, OHLC, moving averages, RSI, MACD, ATR, and VWMA may only be copied from this verified market snapshot; do not use any other provider to recompute them.\n"
+        + snapshot
     )
 
 
@@ -238,6 +246,19 @@ def get_japan_data_context_from_state(state: Mapping[str, Any]) -> str:
     return render_japan_agent_context(state)
 
 
+def get_verified_market_snapshot_from_state(state: Mapping[str, Any]) -> str:
+    """Return the immutable run-level price and technical-data source.
+
+    This must be injected by the graph before the first agent executes.  The
+    explicit fallback avoids a second provider lookup in downstream nodes and
+    makes a failed verification visible instead of silently mixing vendors.
+    """
+    snapshot = state.get("verified_market_snapshot")
+    if isinstance(snapshot, str) and snapshot.strip():
+        return snapshot
+    return "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price and technical values must be reported as unavailable."
+
+
 def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add a context-anchored placeholder.
@@ -263,4 +284,3 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
-

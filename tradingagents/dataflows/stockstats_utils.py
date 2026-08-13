@@ -5,7 +5,6 @@ from typing import Annotated
 
 import pandas as pd
 import yfinance as yf
-from stockstats import wrap
 from yfinance.exceptions import YFRateLimitError
 
 from .config import get_config
@@ -246,6 +245,10 @@ class StockstatsUtils:
             str, "curr date for retrieving stock price data, YYYY-mm-dd"
         ],
     ):
+        # The legacy indicator tool keeps its optional dependency local.  The
+        # run-level verified snapshot has a pandas-only implementation and
+        # must remain available without stockstats.
+        from stockstats import wrap
         data = load_ohlcv(symbol, curr_date)
         df = wrap(data)
         df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")

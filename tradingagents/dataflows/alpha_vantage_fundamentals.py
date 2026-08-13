@@ -42,7 +42,23 @@ def get_fundamentals(ticker: str, curr_date: str = None) -> str:
         "symbol": ticker,
     }
 
-    return _make_api_request("OVERVIEW", params)
+    result = _make_api_request("OVERVIEW", params)
+    # Alpha Vantage's overview blends point-in-time quote fields (price,
+    # moving averages and 52-week range) with fundamentals.  Those fields can
+    # carry a different timestamp from the graph's verified OHLCV snapshot, so
+    # they must never enter a fundamentals report.
+    try:
+        payload = json.loads(result)
+    except (TypeError, json.JSONDecodeError):
+        return result
+    if not isinstance(payload, dict):
+        return result
+    for key in (
+        "LatestQuarter", "52WeekHigh", "52WeekLow", "50DayMovingAverage",
+        "200DayMovingAverage", "AnalystTargetPrice",
+    ):
+        payload.pop(key, None)
+    return json.dumps(payload)
 
 
 def get_balance_sheet(ticker: str, freq: str = "quarterly", curr_date: str = None):
@@ -61,4 +77,3 @@ def get_income_statement(ticker: str, freq: str = "quarterly", curr_date: str = 
     """Retrieve income statement data for a given ticker symbol using Alpha Vantage."""
     result = _make_api_request("INCOME_STATEMENT", {"symbol": ticker})
     return _filter_reports_by_date(result, curr_date)
-
