@@ -71,9 +71,13 @@ def normalize_ticker_symbol(ticker: str) -> str:
     plain upper-case if the data layer is unavailable.
     """
     try:
+        from tradingagents.dataflows.market import resolve_market_context
         from tradingagents.dataflows.symbol_utils import normalize_symbol
 
-        return normalize_symbol(ticker)
+        # Resolve an exchange-qualified Japan code before applying the legacy
+        # Yahoo normalizer.  Unverified bare codes stay unchanged, by design.
+        market_context = resolve_market_context(ticker)
+        return normalize_symbol(market_context.symbol)
     except Exception:
         return ticker.strip().upper()
 

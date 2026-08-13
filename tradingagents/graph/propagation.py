@@ -6,6 +6,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
+from tradingagents.dataflows.market import MarketContext, resolve_market_context
 
 
 class Propagator:
@@ -23,6 +24,7 @@ class Propagator:
         past_context: str = "",
         instrument_context: str = "",
         trade_constraints: dict[str, Any] | None = None,
+        market_context: MarketContext | dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -32,10 +34,14 @@ class Propagator:
         fall back to ticker-only context via
         ``get_instrument_context_from_state``.
         """
+        context = market_context or resolve_market_context(company_name)
+        context_dict = context.to_dict() if isinstance(context, MarketContext) else dict(context)
+        canonical_symbol = context_dict["symbol"]
         return {
-            "messages": [("human", company_name)],
-            "company_of_interest": company_name,
+            "messages": [("human", canonical_symbol)],
+            "company_of_interest": canonical_symbol,
             "asset_type": asset_type,
+            "market_context": context_dict,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
             "trade_constraints": trade_constraints or {"horizon": "multi_day"},

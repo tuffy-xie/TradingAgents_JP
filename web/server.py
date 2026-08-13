@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tradingagents.agents.utils.rating import parse_rating
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.market import resolve_market_context
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
@@ -216,8 +217,11 @@ async def analyze(
 
     def run():
         try:
+            market_context = resolve_market_context(ticker)
+            canonical_ticker = market_context.symbol
             put({"type": "init", "agents": build_agent_sequence(analyst_list),
-                 "ticker": ticker, "date": date, "asset_type": asset_type})
+                 "ticker": canonical_ticker, "date": date, "asset_type": asset_type,
+                 "market": market_context.market})
 
             config = DEFAULT_CONFIG.copy()
             config.update({
@@ -244,20 +248,21 @@ async def analyze(
             # manually, so set it here. Without it ``_log_state`` calls
             # ``safe_ticker_component(None)`` → ValueError, the JSON state log is
             # never written, and the run never shows up in /api/history.
-            ta.ticker = ticker
-            ta._resolve_pending_entries(ticker)
+            ta.ticker = canonical_ticker
+            ta._resolve_pending_entries(canonical_ticker)
 
-            past_ctx = ta.memory_log.get_past_context(ticker)
+            past_ctx = ta.memory_log.get_past_context(canonical_ticker)
             # Mirror the CLI: resolve instrument identity once at start so
             # every agent anchors to the real company, not just the raw
             # ticker (graph/trading_graph.py:resolve_instrument_context).
-            instrument_ctx = ta.resolve_instrument_context(ticker, asset_type)
+            instrument_ctx = ta.resolve_instrument_context(canonical_ticker, asset_type)
             init_state = ta.propagator.create_initial_state(
-                ticker, date,
+                canonical_ticker, date,
                 asset_type=asset_type,
                 past_context=past_ctx,
                 instrument_context=instrument_ctx,
                 trade_constraints=trade_constraints,
+                market_context=market_context,
             )
             graph_args = ta.propagator.get_graph_args()
             graph_args["stream_mode"] = "updates"
