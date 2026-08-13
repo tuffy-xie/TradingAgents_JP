@@ -172,9 +172,6 @@ DEFAULT_CONFIG = _apply_env_overrides({
             "tdnet_max_pdf_chars": 12_000,
             "edinet_max_pdf_bytes": 8_000_000,
             "edinet_max_pdf_chars": 12_000,
-            "company_ir_max_documents": 6,
-            "company_ir_max_pdf_bytes": 8_000_000,
-            "company_ir_max_pdf_chars": 12_000,
             "company_ir_urls": {},
             "datasources": {
                 "jquants": True, "jpx": True, "tdnet": True, "edinet": True,

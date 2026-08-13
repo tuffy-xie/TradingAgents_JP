@@ -50,7 +50,6 @@ class AgentState(MessagesState):
     market_context: Annotated[dict, "Canonical market, exchange, symbol, currency and timezone"]
     japan_data_bundle: Annotated[dict, "Source-attributed Japan facts; empty for non-Japan markets"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
-    instrument_identity: Annotated[dict, "Structured deterministic ticker identity used by report presentation"]
     trade_date: Annotated[str, "What date we are trading at"]
     trade_constraints: Annotated[
         dict, "User-selected trading horizon and execution/risk constraints"

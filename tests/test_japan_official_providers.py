@@ -92,17 +92,13 @@ def test_tdnet_public_index_parser_keeps_only_matching_code_and_pdf_link():
 @pytest.mark.unit
 def test_jsf_csv_normalizers_keep_facts_separate():
     balances = (
-        "申込日,決済日,銘柄コード,銘柄名,融資新規株数,融資返済株数,融資残高株数,貸株新規株数,貸株返済株数,貸株残高株数,差引残高株数,速報／確報\n"
-        "2026/08/12,2026/08/14,6981,村田製作所,100,50,1000,20,10,200,800,確報\n"
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,差引残高株数,速報／確報\n"
+        "2026/08/12,6981,村田製作所,1000,200,800,確報\n"
     ).encode("cp932")
     charges = (
         "貸借申込日,コード,銘柄名,貸株超過株数,当日品貸料率（円）,当日品貸日数\n"
         "20260812,6981,村田製作所,100,0.05,1\n"
     ).encode("cp932")
     context = resolve_market_context("6981.T")
-    balance = normalise_balances(balances, context)[0]
-    assert balance.timestamp.date().isoformat() == "2026-08-14"
-    assert balance.metadata["application_date"] == "2026-08-12"
-    assert balance.metadata["finance_balance_shares"] == 1000
-    assert balance.metadata["unit"] == "股"
+    assert normalise_balances(balances, context)[0].metadata["finance_balance"] == 1000
     assert normalise_premium_charges(charges, context)[0].metadata["premium_charge_yen"] == 0.05

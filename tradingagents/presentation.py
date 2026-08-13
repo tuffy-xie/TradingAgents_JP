@@ -77,12 +77,12 @@ _STATUS = {
 }
 
 _SOURCE_NAMES = {
-    "Company IR": "公司投资者关系（IR）",
-    "JSF": "日证金（JSF）",
-    "JPX": "东京证券交易所（JPX）",
-    "TDnet": "适时开示（TDnet）",
-    "EDINET": "电子披露系统（EDINET）",
-    "J-Quants": "日本交易所数据（J-Quants）",
+    "Company IR": "公司 IR",
+    "JSF": "日证金",
+    "JPX": "JPX",
+    "TDnet": "TDnet",
+    "EDINET": "EDINET",
+    "J-Quants": "J-Quants",
 }
 
 _VISIBLE_TERMS = {
@@ -96,50 +96,9 @@ _VISIBLE_TERMS = {
     "Trader": "交易员",
 }
 
-_SOURCE_IMPACT = {"TDnet": 100, "Company IR": 92, "JSF": 88, "JPX": 82, "EDINET": 76, "J-Quants": 72}
-
-_TITLE_TRANSLATIONS = {
-    "Company IR public landing page": "公司 IR 信息页",
-    "JSF financing and stock-loan balance": "日证金融资 / 贷株余额",
-    "JSF premium charge (逆日歩)": "日证金品贷料（逆日步）",
-}
-
 
 def chinese_status(value: str | None) -> str:
     return _STATUS.get(str(value or ""), "数据不可用")
-
-
-def render_japan_item_data(item: Mapping[str, Any], *, include_metadata: bool = True) -> str:
-    """Render a normalized Japan item without Python dict syntax or English labels."""
-    source = _SOURCE_NAMES.get(str(item.get("source") or ""), str(item.get("source") or "数据源"))
-    date = str(item.get("timestamp") or "")[:10] or "日期未提供"
-    title = _TITLE_TRANSLATIONS.get(str(item.get("title") or ""), str(item.get("title") or "本窗口数据"))
-    if str(item.get("source")) == "Company IR":
-        doc_type = str((item.get("metadata") or {}).get("document_type") or "")
-        title = {"earnings_release": "公司最新业绩公告", "earnings_presentation": "公司业绩说明资料"}.get(doc_type, "公司最新投资者关系文件")
-    lines = [f"- 来源：{source}｜日期：{date}｜事项：{title}"]
-    metadata = item.get("metadata") or {}
-    if include_metadata and isinstance(metadata, Mapping):
-        if str(item.get("source")) == "JSF":
-            rows = [
-                ("申込日", metadata.get("application_date")), ("决済日", metadata.get("settlement_date")),
-                ("融资新规", metadata.get("finance_new_shares")), ("融资偿还", metadata.get("finance_repaid_shares")),
-                ("融资余额", metadata.get("finance_balance_shares")), ("贷株新规", metadata.get("stock_loan_new_shares")),
-                ("贷株偿还", metadata.get("stock_loan_repaid_shares")), ("贷株余额", metadata.get("stock_loan_balance_shares")),
-                ("差引余额", metadata.get("net_balance_shares")),
-            ]
-            values = []
-            for label, value in rows:
-                if value is None:
-                    continue
-                suffix = " 股" if label not in {"申込日", "决済日"} else ""
-                values.append(f"{label}：{value:,.0f}{suffix}" if isinstance(value, (int, float)) else f"{label}：{value}")
-            if values:
-                lines.append("  " + " / ".join(values))
-        elif metadata.get("extraction_status"):
-            extraction = {"pdf_text": "PDF 正文已解析", "html_text": "网页正文已解析", "pdf_parse_failed": "PDF 解析失败", "landing_page_only": "仅信息页"}.get(str(metadata["extraction_status"]), "已解析")
-            lines.append(f"  文档状态：{extraction}")
-    return "\n".join(lines)
 
 
 def localize_markdown(text: str | None) -> str:
@@ -169,13 +128,8 @@ def _field(text: str, field: str) -> str:
 
 
 def _company_name(state: Mapping[str, Any]) -> str:
-    identity = state.get("instrument_identity") or {}
-    if isinstance(identity, Mapping):
-        name = identity.get("company_name") or identity.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
     context = str(state.get("instrument_context") or "")
-    match = re.search(r"(?:Company|公司)[：:]\s*([^;\.\n]+)", context, re.I)
+    match = re.search(r"(?:Company|公司)[：:]\s*([^\n]+)", context, re.I)
     return match.group(1).strip() if match else "数据未提供"
 
 
@@ -237,60 +191,23 @@ def build_investment_overview(state: Mapping[str, Any]) -> str:
 
 
 def build_key_data_section(state: Mapping[str, Any]) -> str:
-    """Show exactly five high-impact, source-attributed facts or data gaps."""
+    """Show up to five source-attributed facts before long-form debate."""
     bundle = state.get("japan_data_bundle") or {}
     items = bundle.get("items") or []
     lines = ["# 本次分析最重要的 5 条数据", ""]
-    candidates_by_source: dict[str, tuple[int, str, Mapping[str, Any] | None, Mapping[str, Any] | None]] = {}
-    for item in items:
-        source = str(item.get("source") or "")
-        importance = int((item.get("metadata") or {}).get("importance") or 0)
-        candidate = (_SOURCE_IMPACT.get(source, 50) + importance + 1, source, item, None)
-        if candidate[0] > candidates_by_source.get(source, (-1, "", None, None))[0]:
-            candidates_by_source[source] = candidate
-    for status in bundle.get("source_statuses") or []:
-        source = str(status.get("source") or "")
-        candidate = (_SOURCE_IMPACT.get(source, 40), source, None, status)
-        if candidate[0] > candidates_by_source.get(source, (-1, "", None, None))[0]:
-            candidates_by_source[source] = candidate
-    candidates = list(candidates_by_source.values())
-    candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    selected = candidates[:5]
-    while len(selected) < 5:
-        selected.append((0, "数据覆盖", None, {"status": "DATA_UNAVAILABLE"}))
-    for index, (_impact, source, item, status) in enumerate(selected, start=1):
-        source_label = _SOURCE_NAMES.get(source, source or "数据覆盖")
-        if item:
-            data = render_japan_item_data(item)
-            view = _key_data_view(source, item)
-        else:
-            current = str((status or {}).get("status") or "DATA_UNAVAILABLE")
-            data = f"- 来源：{source_label}｜状态：{chinese_status(current)}"
-            view = _status_data_view(source, current)
+    for index, item in enumerate(items[:5], start=1):
+        source = _SOURCE_NAMES.get(item.get("source"), item.get("source", "数据源"))
+        title = item.get("title") or "本窗口数据"
+        timestamp = str(item.get("timestamp") or "")[:10]
         lines.extend([
-            f"## {index}. {source_label}",
-            "数据：",
-            data,
-            "AI看法：",
-            view,
+            f"## {index}. {source}",
+            f"数据：{timestamp} {title}",
+            "AI看法：该数据已进入本次研究上下文；需与技术面、基本面和风险条件交叉验证，不能单独构成交易信号。",
             "",
         ])
+    if len(lines) == 2:
+        lines.extend([
+            "数据：本次无可直接展示的单项核心事实数据。",
+            "AI看法：数据缺口降低结论置信度，不应被解释为利空。",
+        ])
     return "\n".join(lines).rstrip()
-
-
-def _key_data_view(source: str, item: Mapping[str, Any]) -> str:
-    if source == "JSF":
-        return "日证金数据反映证券金融层面的需给；需结合多日变化、价格和成交量判断，单日读数不能单独构成交易信号。"
-    if source == "JPX":
-        return "公开申报空卖只覆盖达到门槛的仓位；即使无匹配记录，也不能推导为不存在空头。"
-    if source in {"TDnet", "Company IR", "EDINET", "J-Quants"}:
-        return "该项属于官方披露或官方数据，应优先于媒体与社区观点；仍需与其他周期一致的数据交叉验证。"
-    return "该项已进入研究上下文；需与技术面、基本面和风险条件交叉验证，不能单独构成交易信号。"
-
-
-def _status_data_view(source: str, status: str) -> str:
-    if status == "OK" and source == "TDnet":
-        return "本窗口没有匹配的新增适时开示，不构成利好或利空。"
-    if status == "OK" and source == "JPX":
-        return "未发现达到公开申报门槛的净空头；这不代表不存在其他空头。"
-    return "该项为数据缺口，会降低相关判断的置信度；不能解释为利空、利多或市场缺乏关注。"

@@ -12,7 +12,6 @@ def _jp_state():
         "trade_date": "2026-08-13",
         "market_context": {"market": "JP"},
         "instrument_context": "Company: 丸红株式会社",
-        "instrument_identity": {"company_name": "丸红株式会社"},
         "market_report": "技术面内容",
         "fundamentals_report": "基本面内容",
         "news_report": "新闻内容",
@@ -46,8 +45,6 @@ def test_jp_report_order_places_summary_and_data_before_debate(tmp_path):
     assert "# 投资结论总览" in output
     assert "Recommendation" not in output and "**Action**" not in output
     assert "状态：缺少 API Key 或权限" in output
-    assert output.count("## 1.") == 1 and output.count("## 5.") == 1
-    assert "{" not in output
 
 
 def test_pdf_html_starts_with_overview_and_us_has_no_japan_section():

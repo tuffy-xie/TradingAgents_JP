@@ -304,7 +304,6 @@ class SentimentBand(str, Enum):
     MIXED = "Mixed"
     MILDLY_BEARISH = "Mildly Bearish"
     BEARISH = "Bearish"
-    UNAVAILABLE = "N/A"
 
 
 class SentimentReport(BaseModel):
@@ -326,8 +325,7 @@ class SentimentReport(BaseModel):
             "Use Neutral only when all sources are genuinely silent or non-committal."
         ),
     )
-    overall_score: float | None = Field(
-        default=None,
+    overall_score: float = Field(
         ge=0.0,
         le=10.0,
         description=(
@@ -336,8 +334,7 @@ class SentimentReport(BaseModel):
             "Guideline for consistency with overall_band: "
             "Bullish ~6.5–10, Mildly Bullish ~5.5–6.4, Neutral/Mixed ~4.5–5.5, "
             "Mildly Bearish ~3.5–4.4, Bearish ~0–3.4. "
-            "Only the 0–10 bounds are enforced. Use null when no direct "
-            "sentiment sample exists; never manufacture a neutral 5.0."
+            "Only the 0–10 bounds are enforced."
         ),
     )
     confidence: Literal["low", "medium", "high"] = Field(
@@ -372,8 +369,8 @@ def render_sentiment_report(report: SentimentReport) -> str:
     without regex.
     """
     return "\n".join([
-        f"**Overall Sentiment:** **{report.overall_band.value}**"
-        + (f" (Score: {report.overall_score:.1f}/10)" if report.overall_score is not None else "（评分：N/A）"),
+        f"**Overall Sentiment:** **{report.overall_band.value}** "
+        f"(Score: {report.overall_score:.1f}/10)",
         f"**Confidence:** {report.confidence.capitalize()}",
         "",
         report.narrative,
