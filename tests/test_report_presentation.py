@@ -36,31 +36,27 @@ def test_localize_known_schema_labels_without_changing_free_text():
     assert "最终交易方向（内部动作）" in rendered
 
 
-def test_jp_report_is_synthesized_and_places_data_before_trading_plan(tmp_path):
+def test_jp_report_order_places_summary_and_data_before_debate(tmp_path):
     state = _jp_state()
     sections = build_report_sections(state)
     titles = [title for title, _ in sections]
-    assert titles[:3] == ["投资结论总览", "本次最重要的 5 条数据", "投资逻辑"]
-    assert titles.index("日本资金与需给") < titles.index("交易计划")
-    assert "多头观点" not in titles and "风险管理辩论" not in titles
+    assert titles[:4] == ["投资结论总览", "本次最重要的 5 条数据", "日本市场核心数据", "交易计划"]
+    assert titles.index("日本市场核心数据") < titles.index("多头观点")
     output = write_report_tree(state, "8002.T", tmp_path).read_text(encoding="utf-8")
     assert "# 投资结论总览" in output
     assert "Recommendation" not in output and "**Action**" not in output
     assert "状态：缺少 API Key 或权限" in output
     assert output.count("## 1.") == 1 and output.count("## 5.") == 1
     assert "{" not in output
-    assert "多头" not in output
-    assert "多头" in (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
 
 
 def test_pdf_html_starts_with_overview_and_us_has_no_japan_section():
     jp_html = _render_report_html(_jp_state(), auto_print=False)
     assert "投资结论总览" in jp_html
-    assert jp_html.index("投资结论总览") < jp_html.index("日本资金与需给")
-    assert "summary-cards" in jp_html
+    assert jp_html.index("投资结论总览") < jp_html.index("日本市场核心数据")
     us = _jp_state()
     us["market_context"] = {"market": "US"}
     us_html = _render_report_html(us, auto_print=False)
-    assert "日本资金与需给" not in us_html
+    assert "日本市场核心数据" not in us_html
     assert "page-break-before:auto" in jp_html
     assert "<h2>投资结论总览</h2>" not in jp_html

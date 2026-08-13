@@ -1,61 +1,113 @@
-"""User-report writer.
+"""Report-tree writer and user-facing presentation order.
 
-The report boundary is intentionally separate from the Agent graph.  Raw
-Agent discussions are retained in ``full_agent_log.md`` while the default
-report is a concise synthesis for investors.
+Agent state stays in its original schema-compatible form.  This module is the
+presentation boundary: it builds the concise conclusion first, localizes known
+labels, and puts Japan official data before long-form analyst debate.
 """
 
 from datetime import datetime
-import html
 from pathlib import Path
 from typing import Any
 
-import markdown
+from tradingagents.dataflows.japan.context import render_japan_report_sections
+from tradingagents.presentation import (
+    build_investment_overview,
+    build_key_data_section,
+    localize_markdown,
+)
 
-from tradingagents.report_synthesizer import ReportSynthesizer
 
+def build_report_sections(final_state: dict[str, Any], *, include_debate_detail: bool = True) -> list[tuple[str, str]]:
+    """Return ordered, localized user-visible report sections for Markdown/HTML."""
+    market = (final_state.get("market_context") or {}).get("market")
+    sections: list[tuple[str, str]] = [("投资结论总览", build_investment_overview(final_state))]
+    sections.append(("本次最重要的 5 条数据", build_key_data_section(final_state)))
+    if market == "JP":
+        sections.append(("日本市场核心数据", render_japan_report_sections(final_state.get("japan_data_bundle"))))
 
-def build_report_sections(
-    final_state: dict[str, Any], *, include_debate_detail: bool = False
-) -> list[tuple[str, str]]:
-    """Return concise, localized user-visible sections.
+    # Put execution before analytical transcripts. Individual reports remain
+    # source material, while the compact plan is what a user acts on first.
+    trader_plan = final_state.get("trader_investment_plan") or final_state.get("trader_investment_decision")
+    if trader_plan:
+        sections.append(("交易计划", "# 交易计划\n\n" + localize_markdown(trader_plan)))
 
-    The legacy keyword remains accepted for callers, but raw debate is never
-    inserted into the default report.  It belongs to the debug artifact.
-    """
-    del include_debate_detail
-    return ReportSynthesizer().synthesize(final_state).sections
+    analyst_order = [
+        ("market_report", "技术分析"),
+        ("fundamentals_report", "基本面分析"),
+        ("news_report", "新闻与宏观"),
+        ("sentiment_report", "情绪分析"),
+    ]
+    for key, title in analyst_order:
+        if final_state.get(key):
+            sections.append((title, f"# {title}\n\n" + localize_markdown(final_state[key])))
+
+    debate = final_state.get("investment_debate_state") or {}
+    if include_debate_detail:
+        if debate.get("bull_history"):
+            sections.append(("多头观点", "# 多头观点\n\n" + localize_markdown(debate["bull_history"])))
+        if debate.get("bear_history"):
+            sections.append(("空头观点", "# 空头观点\n\n" + localize_markdown(debate["bear_history"])))
+    if debate.get("judge_decision"):
+        sections.append(("研究结论", "# 研究结论\n\n" + localize_markdown(debate["judge_decision"])))
+
+    risk = final_state.get("risk_debate_state") or {}
+    if include_debate_detail:
+        risk_parts = []
+        for key, label in [
+            ("aggressive_history", "激进风险分析师"),
+            ("conservative_history", "保守风险分析师"),
+            ("neutral_history", "中性风险分析师"),
+        ]:
+            if risk.get(key):
+                risk_parts.append(f"## {label}\n\n{localize_markdown(risk[key])}")
+        if risk_parts:
+            sections.append(("风险管理辩论", "# 风险管理辩论\n\n" + "\n\n".join(risk_parts)))
+    if risk.get("judge_decision"):
+        sections.append(("投资组合经理最终详细判断", "# 投资组合经理最终详细判断\n\n" + localize_markdown(risk["judge_decision"])))
+
+    if market == "JP":
+        sections.append(("数据来源与数据缺口", "# 数据来源 / 数据缺口\n\n日本官方数据状态已在“日本市场核心数据”中逐项列出。缺失数据降低置信度，不应被解释为负面事实。"))
+    return sections
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
-    """Save ``complete_report.md`` and its independent full-Agent debug log."""
+    """Save a localized, ordered report tree and return ``complete_report.md``."""
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
-    synthesized = ReportSynthesizer().synthesize(final_state)
-    content = "\n\n".join(section for _title, section in synthesized.sections)
+    market = (final_state.get("market_context") or {}).get("market")
+
+    if market == "JP":
+        japan_dir = save_path / "0_japan_market_data"
+        japan_dir.mkdir(exist_ok=True)
+        (japan_dir / "official_and_supply_demand.md").write_text(
+            render_japan_report_sections(final_state.get("japan_data_bundle")), encoding="utf-8"
+        )
+
+    # Persist analyst and decision files in Chinese presentation form, while the
+    # in-memory state remains untouched for parsers, memory and API consumers.
+    file_specs = [
+        ("1_analysts", "market.md", final_state.get("market_report")),
+        ("1_analysts", "sentiment.md", final_state.get("sentiment_report")),
+        ("1_analysts", "news.md", final_state.get("news_report")),
+        ("1_analysts", "fundamentals.md", final_state.get("fundamentals_report")),
+        ("2_research", "bull.md", (final_state.get("investment_debate_state") or {}).get("bull_history")),
+        ("2_research", "bear.md", (final_state.get("investment_debate_state") or {}).get("bear_history")),
+        ("2_research", "manager.md", (final_state.get("investment_debate_state") or {}).get("judge_decision")),
+        ("3_trading", "trader.md", final_state.get("trader_investment_plan") or final_state.get("trader_investment_decision")),
+        ("4_risk", "aggressive.md", (final_state.get("risk_debate_state") or {}).get("aggressive_history")),
+        ("4_risk", "conservative.md", (final_state.get("risk_debate_state") or {}).get("conservative_history")),
+        ("4_risk", "neutral.md", (final_state.get("risk_debate_state") or {}).get("neutral_history")),
+        ("5_portfolio", "decision.md", (final_state.get("risk_debate_state") or {}).get("judge_decision")),
+    ]
+    for dirname, filename, content in file_specs:
+        if content:
+            directory = save_path / dirname
+            directory.mkdir(exist_ok=True)
+            (directory / filename).write_text(localize_markdown(content), encoding="utf-8")
+
+    ordered = build_report_sections(final_state)
+    content = "\n\n".join(section for _title, section in ordered)
     header = f"# {ticker} 投资研究报告\n\n生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     output = save_path / "complete_report.md"
     output.write_text(header + content, encoding="utf-8")
-    (save_path / "complete_report.html").write_text(
-        _render_saved_html(ticker, final_state.get("trade_date"), synthesized.sections), encoding="utf-8"
-    )
-    (save_path / "full_agent_log.md").write_text(synthesized.full_agent_log, encoding="utf-8")
     return output
-
-
-def _render_saved_html(ticker: str, trade_date: Any, sections: list[tuple[str, str]]) -> str:
-    """Self-contained print HTML saved next to the Markdown report."""
-    blocks = "\n".join(
-        f'<section class="report-section">{markdown.markdown(content, extensions=["tables", "fenced_code"])}</section>'
-        for _title, content in sections
-    )
-    return f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>{html.escape(ticker)} 投资研究报告</title>
-<style>
-@page {{ size:A4; margin:13mm 12mm; }}
-body {{ font-family:"PingFang SC","Microsoft YaHei",sans-serif; color:#1f2937; line-height:1.62; max-width:820px; margin:0 auto; }}
-h1 {{ font-size:22px; margin:24px 0 10px; }} h2 {{ font-size:17px; margin:18px 0 8px; }} h3 {{ font-size:15px; }}
-.report-section {{ margin:0 0 22px; break-inside:avoid-page; }} .report-section:first-of-type {{ background:#f5f3ff; border:1px solid #ddd6fe; border-radius:10px; padding:14px; }}
-.summary-cards {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }} .summary-card {{ border:1px solid #ddd6fe; border-radius:8px; padding:9px; }} .summary-card span {{ color:#6b7280; font-size:12px; display:block; }} .summary-card strong {{ font-size:14px; overflow-wrap:anywhere; }}
-table {{ width:100%; border-collapse:collapse; font-size:13px; }} th,td {{ border:1px solid #e5e7eb; padding:6px 8px; text-align:left; }}
-</style></head><body><header><h1>{html.escape(ticker)} 投资研究报告</h1><p>分析日期：{html.escape(str(trade_date or '数据未提供'))}</p></header>{blocks}</body></html>"""

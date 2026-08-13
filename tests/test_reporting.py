@@ -23,12 +23,14 @@ def _state():
 def test_write_report_tree_creates_files(tmp_path):
     out = write_report_tree(_state(), "AAPL", tmp_path)
     assert out.name == "complete_report.md"
-    debug_log = (tmp_path / "full_agent_log.md").read_text()
-    assert "MKT" in debug_log and "NEWS" in debug_log and "PM DECISION" in debug_log
+    assert (tmp_path / "1_analysts" / "market.md").read_text() == "MKT"
+    assert (tmp_path / "1_analysts" / "news.md").read_text() == "NEWS"
+    assert (tmp_path / "2_research" / "manager.md").read_text() == "RM PLAN"
+    assert (tmp_path / "3_trading" / "trader.md").read_text() == "TRADE"
+    assert (tmp_path / "5_portfolio" / "decision.md").read_text() == "PM DECISION"
     complete = out.read_text()
     assert "AAPL 投资研究报告" in complete
-    assert "完整多 Agent 发言已保存" in complete
-    assert "PM DECISION" not in complete
+    assert "MKT" in complete and "PM DECISION" in complete
 
 
 @pytest.mark.unit
