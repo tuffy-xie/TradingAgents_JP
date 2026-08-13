@@ -54,6 +54,12 @@ def test_json_cache_respects_namespace_and_ttl(tmp_path):
 
 
 @pytest.mark.unit
+def test_cache_write_failure_is_non_fatal():
+    # /dev/null is a file, so it cannot contain a cache directory.
+    assert JapanDataCache("/dev/null").set("tdnet", "6981.T", {"value": 1}, 30) is False
+
+
+@pytest.mark.unit
 def test_service_preserves_failure_status_and_deduplicates_sources(tmp_path):
     official = _Provider(
         "TDnet",

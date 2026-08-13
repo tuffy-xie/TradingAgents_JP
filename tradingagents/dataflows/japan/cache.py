@@ -27,13 +27,20 @@ class JapanDataCache:
         except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
             return None
 
-    def set(self, namespace: str, key: str, data: dict[str, Any], ttl_seconds: int) -> None:
+    def set(self, namespace: str, key: str, data: dict[str, Any], ttl_seconds: int) -> bool:
         path = self._path(namespace, key)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"expires_at": time.time() + max(0, ttl_seconds), "data": data}
-        temporary = path.with_suffix(".tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        os.replace(temporary, path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {"expires_at": time.time() + max(0, ttl_seconds), "data": data}
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(temporary, path)
+            return True
+        except OSError:
+            # A read-only home/cache directory must never turn a data-source
+            # failure into a graph failure. The caller still receives the live
+            # response and a visible provider status.
+            return False
 
     def _path(self, namespace: str, key: str) -> Path:
         digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
