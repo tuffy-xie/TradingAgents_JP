@@ -10,7 +10,7 @@ from tradingagents.dataflows.japan.edinet import (
     classify_edinet_document,
     extract_large_shareholding_fields,
 )
-from tradingagents.dataflows.japan.http import JsonResponse
+from tradingagents.dataflows.japan.http import BytesResponse, JsonResponse
 from tradingagents.dataflows.japan.jquants import (
     JQuantsProvider,
     compare_daily_ohlcv,
@@ -105,16 +105,91 @@ def test_jquants_keeps_endpoint_availability_in_source_status(monkeypatch):
 @pytest.mark.unit
 def test_edinet_only_keeps_matching_security_and_labels_large_holding():
     payload = {"results": [
-        {"secCode": "69810", "docID": "S100X", "docDescription": "大量保有報告書", "submitDateTime": "2026-08-12T10:00:00+09:00"},
+        {"secCode": "69810", "docID": "S100X", "docDescription": "大量保有報告書", "docTypeCode": "350", "formCode": "010000", "submitDateTime": "2026-08-12T10:00:00+09:00"},
         {"secCode": "12340", "docID": "S100Y", "docDescription": "有価証券報告書"},
     ]}
     items = list(_normalise_documents(payload, resolve_market_context("6981.T")))
     assert len(items) == 1
     assert items[0].source_type == "large_shareholding_report"
     assert classify_edinet_document("四半期報告書", "") == "quarterly_report"
-    fields = extract_large_shareholding_fields("株券等保有割合 6.03%")
-    assert fields["reported_holding_percentages"] == [6.03]
+    fields = extract_large_shareholding_fields("発行者の名称 株式会社例 証券コード 6981 株券等保有割合 6.03%")
+    assert fields["security_code"] == "6981"
+    assert fields["current_holding_ratio"] == 6.03
     assert fields["position_change"] == "UNDETERMINED"
+
+
+def test_edinet_large_holding_pdf_fields_only_compare_explicit_ratios():
+    text = """
+    【提出者（大量保有者）】 氏名又は名称 ブラックロック・ジャパン株式会社 住所又は本店所在地 東京都
+    【報告義務発生日】 2026年8月4日 【提出日】 2026年8月12日
+    発行者の名称 株式会社テスト 証券コード 6981
+    【保有目的】 純投資 （３）【重要提案行為等】 該当なし
+    上記提出者の株券等保有割合（％） 6.03
+    直前の報告書に記載された 株券等保有割合（％） 5.12
+    """
+    fields = extract_large_shareholding_fields(text)
+    assert fields == {
+        "submit_date": "2026-08-12", "event_date": "2026-08-04",
+        "holder_name": "ブラックロック・ジャパン株式会社", "issuer_name": "株式会社テスト",
+        "security_code": "6981", "current_holding_ratio": 6.03, "previous_holding_ratio": 5.12,
+        "position_change": "INCREASED", "purpose_of_holding": "純投資",
+    }
+
+
+def test_edinet_position_change_is_undetermined_without_explicit_previous_ratio():
+    fields = extract_large_shareholding_fields("発行者の名称 株式会社例 証券コード 6981 株券等保有割合 5.01")
+    assert fields["current_holding_ratio"] == 5.01
+    assert fields["previous_holding_ratio"] is None
+    assert fields["position_change"] == "UNDETERMINED"
+
+
+@pytest.mark.unit
+def test_edinet_non_pdf_document_response_is_retained_as_parse_failed(monkeypatch):
+    payload = {"results": [{"secCode": "69810", "docID": "S100X", "docDescription": "大量保有報告書", "docTypeCode": "350", "formCode": "010000"}]}
+    item = list(_normalise_documents(payload, resolve_market_context("6981.T")))[0]
+
+    async def fake_get_bytes(*_args, **_kwargs):
+        return BytesResponse(DataStatus.OK, payload=b'{"Status":"error"}')
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.edinet.get_bytes", fake_get_bytes)
+    enriched = __import__("asyncio").run(EDINETProvider(api_key="test")._enrich_large_holding(item))
+    assert enriched.status == DataStatus.PARSE_FAILED
+    assert enriched.metadata["extraction_status"] == "PARSE_FAILED"
+    assert "Subscription-Key" not in str(enriched.url)
+
+
+@pytest.mark.unit
+def test_edinet_fetch_puts_confirmed_structured_holding_into_provider_response(monkeypatch):
+    payload = {"results": [{
+        "secCode": "69810", "docID": "S100X", "docDescription": "変更報告書",
+        "docTypeCode": "350", "formCode": "010002", "submitDateTime": "2026-08-12 09:00",
+    }]}
+
+    async def fake_get_json(*_args, **_kwargs):
+        return JsonResponse(DataStatus.OK, payload)
+
+    async def fake_get_bytes(*_args, **_kwargs):
+        return BytesResponse(DataStatus.OK, payload=b"%PDF-test")
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.edinet.get_json", fake_get_json)
+    monkeypatch.setattr("tradingagents.dataflows.japan.edinet.get_bytes", fake_get_bytes)
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.extract_pdf_text", lambda *_args: """
+        【提出者（大量保有者）】 氏名又は名称 テスト投資 住所又は本店所在地 東京
+        報告義務発生日 2026年8月4日 提出日 2026年8月12日
+        発行者の名称 テスト発行者 証券コード 6981 保有目的 純投資 （３）重要提案行為等
+        上記提出者の株券等保有割合（％） 6.03 直前の報告書に記載された 株券等保有割合（％） 5.12
+    """)
+    result = __import__("asyncio").run(
+        EDINETProvider(api_key="test", max_days=1).fetch(
+            resolve_market_context("6981.T"), start_date="2026-08-12", end_date="2026-08-12"
+        )
+    )
+    assert result.status.status == DataStatus.OK
+    assert result.status.item_count == 1
+    fields = result.items[0].metadata
+    assert fields["position_change"] == "INCREASED"
+    assert fields["issuer_name"] == "テスト発行者"
+    assert fields["source_url"].endswith("?type=2")
 
 
 @pytest.mark.unit

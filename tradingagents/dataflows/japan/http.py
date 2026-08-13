@@ -80,13 +80,15 @@ async def get_text(url: str, *, timeout: float = 10.0) -> tuple[DataStatus, str,
 
 
 async def get_bytes(
-    url: str, *, timeout: float = 10.0, max_bytes: int | None = None, headers: dict[str, str] | None = None
+    url: str, *, params: dict[str, str] | None = None, timeout: float = 10.0,
+    max_bytes: int | None = None, headers: dict[str, str] | None = None,
 ) -> BytesResponse:
     """Fetch a public download without credentials, cookies, or paywall bypasses."""
     try:
         response = await asyncio.to_thread(
             requests.get,
             url,
+            params=params,
             headers={"User-Agent": USER_AGENT, "Accept": "text/csv,application/vnd.ms-excel,*/*", **(headers or {})},
             timeout=timeout,
         )

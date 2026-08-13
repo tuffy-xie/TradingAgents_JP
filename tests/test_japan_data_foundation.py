@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 
 from tradingagents.dataflows.japan.cache import JapanDataCache
+from tradingagents.dataflows.japan.context import collect_japan_data_bundle
 from tradingagents.dataflows.japan.models import (
     DataStatus,
     InformationLayer,
@@ -94,3 +95,12 @@ def test_service_reuses_cached_provider_response(tmp_path):
     second = asyncio.run(service.collect(context, start_date="2026-08-01", end_date="2026-08-13"))
     assert provider.calls == 1
     assert second.source_statuses[0].from_cache is True
+
+
+@pytest.mark.unit
+def test_us_context_does_not_construct_or_call_edinet(monkeypatch):
+    monkeypatch.setattr(
+        "tradingagents.dataflows.japan.context.build_official_japan_providers",
+        lambda: (_ for _ in ()).throw(AssertionError("Japan providers must not run for US")),
+    )
+    assert collect_japan_data_bundle(resolve_market_context("NVDA"), "2026-08-13") == {}
