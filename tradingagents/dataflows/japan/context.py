@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from tradingagents.dataflows.market import Market, MarketContext
-from tradingagents.presentation import chinese_status
+from tradingagents.presentation import chinese_status, render_japan_item_data
 
 from .official import build_official_japan_providers
 from .service import JapanDataService
@@ -120,9 +120,10 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
 
 
 def _missing_source_data(source: str, status: Mapping[str, Any]) -> str:
+    source_label = {"Company IR": "公司投资者关系（IR）", "JSF": "日证金（JSF）", "JPX": "东京证券交易所（JPX）", "TDnet": "适时开示（TDnet）", "EDINET": "电子披露系统（EDINET）", "J-Quants": "日本交易所数据（J-Quants）"}.get(source, source)
     value = status.get("status")
     if value == "AUTH_REQUIRED":
-        return f"未配置 {source} API Key 或当前账户无权限。"
+        return f"未配置 {source_label} 的访问凭据或当前账户无权限。"
     if value == "OK":
         if source == "TDnet":
             return "本分析窗口无匹配披露。"
@@ -134,16 +135,5 @@ def _missing_source_data(source: str, status: Mapping[str, Any]) -> str:
 
 def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> list[str]:
     if not items:
-        return ["DATA UNAVAILABLE: 本次窗口无可用匹配数据。"]
-    lines = []
-    for item in items[:20]:
-        prefix = f"- [{item.get('source', 'Unknown')}] {item.get('timestamp', '')}: {item.get('title', '')}"
-        if item.get("url"):
-            prefix += f" ({item['url']})"
-        if include_metadata and item.get("metadata"):
-            metadata = item["metadata"]
-            selected = {key: value for key, value in metadata.items() if value is not None and key not in {"coverage", "company"}}
-            if selected:
-                prefix += f" — {selected}"
-        lines.append(prefix)
-    return lines
+        return ["本次窗口无可用匹配数据。"]
+    return [render_japan_item_data(item, include_metadata=include_metadata) for item in items[:20]]

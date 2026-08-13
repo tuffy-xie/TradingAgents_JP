@@ -66,7 +66,7 @@ def get_language_instruction() -> str:
         return ""
     if lang.strip().lower() in {"chinese", "simplified chinese", "简体中文", "中文"}:
         return (
-            " 最终用户可见内容必须使用简体中文。证券代码、公司正式英文名和 RSI、MACD、ATR、"
+            " Write your entire response in Simplified Chinese. 最终用户可见内容必须使用简体中文。证券代码、公司正式英文名和 RSI、MACD、ATR、"
             "VWAP、EPS、ROE、PE、PB 等指标缩写可保留；除正式专有名词外，不得输出英文标题、"
             "英文标签或英文交易动作。"
         )

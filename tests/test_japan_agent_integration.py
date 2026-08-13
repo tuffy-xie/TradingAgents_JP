@@ -20,7 +20,7 @@ def _bundle() -> dict:
             },
             {
                 "source": "JSF", "source_type": "securities_finance_balance", "timestamp": "2026-08-12T00:00:00+00:00",
-                "title": "JSF financing and stock-loan balance", "metadata": {"finance_balance": 721900, "stock_loan_balance": 100},
+                "title": "日证金融资 / 贷株余额", "metadata": {"finance_balance_shares": 721900, "stock_loan_balance_shares": 100, "unit": "股"},
             },
         ],
         "source_statuses": [
@@ -34,7 +34,7 @@ def test_japan_bundle_is_state_carried_and_us_gets_no_japan_prompt():
     state = Propagator().create_initial_state("6981.T", "2026-08-13", japan_data_bundle=_bundle())
     context = get_japan_data_context_from_state(state)
     assert "自己株式の取得" in context
-    assert "finance_balance" in context
+    assert "融资余额：721,900 股" in context
 
     us_state = Propagator().create_initial_state("NVDA", "2026-08-13")
     assert get_japan_data_context_from_state(us_state) == ""
@@ -68,7 +68,7 @@ def test_japan_sentiment_prompt_uses_bundle_not_us_community_sources(monkeypatch
     def respond(prompt):
         captured["prompt"] = prompt
         return SentimentReport(
-            overall_band=SentimentBand.NEUTRAL, overall_score=5, confidence="low", narrative="DATA UNAVAILABLE"
+            overall_band=SentimentBand.UNAVAILABLE, overall_score=None, confidence="low", narrative="N/A"
         )
 
     structured.invoke.side_effect = respond
@@ -76,7 +76,7 @@ def test_japan_sentiment_prompt_uses_bundle_not_us_community_sources(monkeypatch
     llm.with_structured_output.return_value = structured
     state = Propagator().create_initial_state("6981.T", "2026-08-13", japan_data_bundle=_bundle())
     result = module.create_sentiment_analyst(llm)(state)
-    assert "DATA UNAVAILABLE" in result["sentiment_report"]
+    assert "N/A" in result["sentiment_report"]
     prompt_text = str(captured["prompt"])
     assert "自己株式の取得" in prompt_text
     assert "StockTwits messages" not in prompt_text

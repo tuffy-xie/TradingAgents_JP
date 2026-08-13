@@ -24,6 +24,46 @@ class InformationLayer(StrEnum):
     MARKET_SENTIMENT = "MARKET_SENTIMENT"
 
 
+@dataclass(frozen=True)
+class FiscalPeriod:
+    """Explicit accounting period attached to every comparable financial fact.
+
+    A trailing-twelve-month metric and a single quarterly metric are different
+    accounting bases.  Consumers must not subtract or extrapolate one from the
+    other unless a provider supplies an explicit, aligned period series.
+    """
+
+    end_date: str
+    kind: str  # annual | quarter | half_year | nine_months | trailing_twelve_months
+    fiscal_year: str | None = None
+    quarter: int | None = None
+    audited: bool | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "end_date": self.end_date,
+            "kind": self.kind,
+            "fiscal_year": self.fiscal_year,
+            "quarter": self.quarter,
+            "audited": self.audited,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> FiscalPeriod:
+        return cls(
+            end_date=str(raw["end_date"]),
+            kind=str(raw["kind"]),
+            fiscal_year=raw.get("fiscal_year"),
+            quarter=raw.get("quarter"),
+            audited=raw.get("audited"),
+        )
+
+
+def periods_are_comparable(left: FiscalPeriod, right: FiscalPeriod) -> bool:
+    """Whether two accounting facts can be directly compared or combined."""
+    return left.kind == right.kind and left.fiscal_year == right.fiscal_year
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 

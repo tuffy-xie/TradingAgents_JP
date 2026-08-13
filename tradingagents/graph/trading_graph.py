@@ -450,7 +450,8 @@ class TradingAgentsGraph:
         market_context = resolve_market_context(company_name)
         company_name = market_context.symbol
         past_context = self.memory_log.get_past_context(company_name)
-        instrument_context = self.resolve_instrument_context(company_name, asset_type)
+        instrument_identity = resolve_instrument_identity(company_name)
+        instrument_context = build_instrument_context(company_name, asset_type, instrument_identity)
         japan_data_bundle = collect_japan_data_bundle(market_context, str(trade_date))
         logger.info(
             "[MarketResolver] market=%s symbol=%s japan_bundle=%s sources=%s",
@@ -468,6 +469,7 @@ class TradingAgentsGraph:
             asset_type=asset_type,
             past_context=past_context,
             instrument_context=instrument_context,
+            instrument_identity=instrument_identity,
             market_context=market_context,
             japan_data_bundle=japan_data_bundle,
         )

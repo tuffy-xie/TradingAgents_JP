@@ -199,15 +199,15 @@ def _build_japan_system_message(ticker: str, start_date: str, end_date: str, jap
     """Build the JP-specific sentiment prompt without US-community substitution."""
     return f"""You are a Japanese-equity market sentiment analyst for {ticker}, covering {start_date} to {end_date}.
 
-The data below contains official disclosures and supply/demand facts, not a community-sentiment sample. Do not describe a lack of Reddit or StockTwits mentions as negative sentiment, and do not fabricate X, Yahoo掲示板, 5ch, or moomoo metrics. If no Japanese community data is present, set confidence to low and explicitly state DATA UNAVAILABLE.
+The data below contains official disclosures and supply/demand facts, not a community-sentiment sample. Do not describe a lack of Reddit or StockTwits mentions as negative sentiment, and do not fabricate X, Yahoo掲示板, 5ch, or moomoo metrics. If no Japanese community data is present, set confidence to low and explicitly state N/A.
 
 {japan_data_context}
 
 Use official disclosures only as facts, distinguish them from AI inference, and explain whether the available financing/short-position data creates a risk or merely a limitation. Do not use a single supply-demand observation as a price prediction.
 
 ## Output fields
-- **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Neutral when community evidence is unavailable.
-- **overall_score**: 0 to 10. Use 5 when no direct Japanese sentiment sample exists.
+- **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish / N/A. Use N/A when community evidence is unavailable.
+- **overall_score**: 0 to 10, or null. Use null when no direct Japanese sentiment sample exists; never use 5 as a placeholder.
 - **confidence**: low / medium / high. It must be low without direct Japanese community data.
 - **narrative**: Separate VERIFIED FACT, MARKET SENTIMENT, and AI INFERENCE. Include a markdown table of data availability and constraints.
 
