@@ -21,6 +21,15 @@ class JsonResponse:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class BytesResponse:
+    """A public-file response, used for CSV/XLSX/XLS publications."""
+
+    status: DataStatus
+    payload: bytes = b""
+    detail: str = ""
+
+
 async def get_json(
     url: str,
     *,
@@ -68,3 +77,23 @@ async def get_text(url: str, *, timeout: float = 10.0) -> tuple[DataStatus, str,
     if not response.ok:
         return DataStatus.DATA_UNAVAILABLE, "", f"HTTP {response.status_code}"
     return DataStatus.OK, response.text, ""
+
+
+async def get_bytes(url: str, *, timeout: float = 10.0) -> BytesResponse:
+    """Fetch a public download without credentials, cookies, or paywall bypasses."""
+    try:
+        response = await asyncio.to_thread(
+            requests.get,
+            url,
+            headers={"User-Agent": USER_AGENT, "Accept": "text/csv,application/vnd.ms-excel,*/*"},
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        return BytesResponse(DataStatus.DATA_UNAVAILABLE, detail=type(exc).__name__)
+    if response.status_code == 429:
+        return BytesResponse(DataStatus.RATE_LIMITED, detail="HTTP 429")
+    if response.status_code in {401, 403}:
+        return BytesResponse(DataStatus.AUTH_REQUIRED, detail=f"HTTP {response.status_code}")
+    if not response.ok:
+        return BytesResponse(DataStatus.DATA_UNAVAILABLE, detail=f"HTTP {response.status_code}")
+    return BytesResponse(DataStatus.OK, payload=response.content)

@@ -152,10 +152,14 @@ DEFAULT_CONFIG = _apply_env_overrides({
             "max_concurrency": 4,
             "jquants_api_base_url": "https://api.jquants.com/v2",
             "edinet_api_base_url": "https://api.edinet-fsa.go.jp/api/v2",
-            # Only use sanctioned JSON feeds; leave unset rather than scrape
-            # JPX/TDnet public presentation pages.
+            # Optional authorised feeds can be supplied by enterprise users.
+            # Without them, TDnet's public disclosure index and JPX's public
+            # outstanding-short-position workbook are used.
             "jpx_feed_url": None,
             "tdnet_feed_url": None,
+            # TDnet publishes a maximum of 31 recent calendar days.  Cap pages
+            # per day to be polite to the public viewer during earnings season.
+            "tdnet_max_pages_per_day": 10,
             "company_ir_urls": {},
             "datasources": {
                 "jquants": True, "jpx": True, "tdnet": True, "edinet": True,

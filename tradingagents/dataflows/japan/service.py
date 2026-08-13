@@ -86,7 +86,8 @@ class JapanDataService:
         start_date: str,
         end_date: str,
     ) -> ProviderResponse:
-        cache_key = f"{provider.name}:{context.symbol}:{start_date}:{end_date}"
+        cache_version = getattr(provider, "cache_version", "1")
+        cache_key = f"{provider.name}:{cache_version}:{context.symbol}:{start_date}:{end_date}"
         cached = self.cache.get(provider.category, cache_key)
         if cached:
             response = ProviderResponse.from_dict(cached)

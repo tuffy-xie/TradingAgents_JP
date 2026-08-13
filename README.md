@@ -184,15 +184,16 @@ TradingAgents works with any market Yahoo Finance covers, using the exchange-suf
 ### Japan Market Support
 
 Japan routing accepts `6981.T`, `TSE:6981`, and `TYO:6981`; these normalize to
-`6981.T` and retain the existing agent graph. Japan-only official sources are
-kept separate from US providers: J-Quants V2 (when `JQUANTS_API_KEY` is set),
-EDINET V2 (when `EDINET_API_KEY` is set), an authorized TDnet feed, and public
-company IR landing pages. Missing entitlement, a disabled source, parser error,
-or unavailable public feed is surfaced as a source status; it never fabricates
-data or aborts the remaining analysis. J-Quants V2 → JPX authorized feed →
-yfinance is the intended market-data fallback order. TDnet's public search UI
-is not scraped; configure a sanctioned feed before enabling automatic TDnet
-retrieval.
+`6981.T` and retain the existing agent graph. Japan-only sources are kept
+separate from US providers. No additional key is needed for public Company IR,
+the TDnet recent-disclosure index (up to 31 days), JPX reportable short-position
+workbooks, and Japan Securities Finance (JSF) daily balance/premium-charge CSVs.
+`JQUANTS_API_KEY` and `EDINET_API_KEY` remain optional enhancements. The public
+files are cached, time-limited, and parsed with a descriptive source status;
+missing data, a public-site change, or a rate limit never fabricates data or
+aborts the remaining analysis. JPX short-position data covers only reportable
+positions (at least 0.5%), while JSF balance data is securities-finance data,
+not all brokerage margin positions.
 
 <p align="center">
   <img src="assets/cli/cli_init.png" width="100%" style="display: inline-block; margin: 0 2%;">

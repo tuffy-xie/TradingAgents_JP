@@ -10,9 +10,10 @@ from tradingagents.dataflows.japan.edinet import (
     classify_edinet_document,
 )
 from tradingagents.dataflows.japan.jquants import JQuantsProvider, _normalise_records
+from tradingagents.dataflows.japan.jsf import normalise_balances, normalise_premium_charges
 from tradingagents.dataflows.japan.models import DataStatus
 from tradingagents.dataflows.japan.tdnet import (
-    TDnetProvider,
+    _parse_public_list,
     classify_tdnet_title,
     normalise_tdnet_records,
 )
@@ -71,11 +72,29 @@ def test_tdnet_parser_classifies_verified_disclosure():
 
 
 @pytest.mark.unit
-def test_tdnet_without_authorized_feed_does_not_scrape_public_ui():
-    result = __import__("asyncio").run(
-        TDnetProvider(feed_url=None).fetch(
-            resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"
-        )
-    )
-    assert result.status.status == DataStatus.DATA_UNAVAILABLE
-    assert "not scraped" in result.status.detail
+def test_tdnet_public_index_parser_keeps_only_matching_code_and_pdf_link():
+    html = """
+    <tr><td class="kjTime">15:00</td><td class="kjCode">69810</td><td class="kjName">Murata</td>
+    <td class="kjTitle"><a href="notice.pdf">自己株式の取得</a></td></tr>
+    <tr><td class="kjTime">15:00</td><td class="kjCode">12340</td><td class="kjName">Other</td>
+    <td class="kjTitle"><a href="other.pdf">Other notice</a></td></tr>
+    """
+    items = list(_parse_public_list(html, resolve_market_context("6981.T"), __import__("datetime").date(2026, 8, 12), 1))
+    assert len(items) == 1
+    assert items[0].source_type == "share_buyback"
+    assert items[0].url.endswith("notice.pdf")
+
+
+@pytest.mark.unit
+def test_jsf_csv_normalizers_keep_facts_separate():
+    balances = (
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,差引残高株数,速報／確報\n"
+        "2026/08/12,6981,村田製作所,1000,200,800,確報\n"
+    ).encode("cp932")
+    charges = (
+        "貸借申込日,コード,銘柄名,貸株超過株数,当日品貸料率（円）,当日品貸日数\n"
+        "20260812,6981,村田製作所,100,0.05,1\n"
+    ).encode("cp932")
+    context = resolve_market_context("6981.T")
+    assert normalise_balances(balances, context)[0].metadata["finance_balance"] == 1000
+    assert normalise_premium_charges(charges, context)[0].metadata["premium_charge_yen"] == 0.05
