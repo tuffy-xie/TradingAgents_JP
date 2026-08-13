@@ -145,6 +145,8 @@ export MINIMAX_API_KEY=...         # MiniMax — Global (api.minimax.io)
 export MINIMAX_CN_API_KEY=...      # MiniMax — China (api.minimaxi.com)
 export OPENROUTER_API_KEY=...      # OpenRouter
 export ALPHA_VANTAGE_API_KEY=...   # Alpha Vantage
+export JQUANTS_API_KEY=...         # J-Quants API V2 (optional Japan official data)
+export EDINET_API_KEY=...          # EDINET API V2 (optional Japanese filings)
 ```
 
 For Azure OpenAI, copy `.env.enterprise.example` to `.env.enterprise` and fill in your credentials.
@@ -178,6 +180,19 @@ TradingAgents works with any market Yahoo Finance covers, using the exchange-suf
 - India: `RELIANCE.NS`, `.BO` · Canada: `.TO` · Australia: `.AX`
 - China A-shares: Shanghai `.SS`, Shenzhen `.SZ` (e.g. `600519.SS` for Kweichow Moutai)
 - Crypto: `BTC-USD`, `ETH-USD`
+
+### Japan Market Support
+
+Japan routing accepts `6981.T`, `TSE:6981`, and `TYO:6981`; these normalize to
+`6981.T` and retain the existing agent graph. Japan-only official sources are
+kept separate from US providers: J-Quants V2 (when `JQUANTS_API_KEY` is set),
+EDINET V2 (when `EDINET_API_KEY` is set), an authorized TDnet feed, and public
+company IR landing pages. Missing entitlement, a disabled source, parser error,
+or unavailable public feed is surfaced as a source status; it never fabricates
+data or aborts the remaining analysis. J-Quants V2 → JPX authorized feed →
+yfinance is the intended market-data fallback order. TDnet's public search UI
+is not scraped; configure a sanctioned feed before enabling automatic TDnet
+retrieval.
 
 <p align="center">
   <img src="assets/cli/cli_init.png" width="100%" style="display: inline-block; margin: 0 2%;">

@@ -150,6 +150,13 @@ DEFAULT_CONFIG = _apply_env_overrides({
             "enabled": True,
             "request_timeout_seconds": 10,
             "max_concurrency": 4,
+            "jquants_api_base_url": "https://api.jquants.com/v2",
+            "edinet_api_base_url": "https://api.edinet-fsa.go.jp/api/v2",
+            # Only use sanctioned JSON feeds; leave unset rather than scrape
+            # JPX/TDnet public presentation pages.
+            "jpx_feed_url": None,
+            "tdnet_feed_url": None,
+            "company_ir_urls": {},
             "datasources": {
                 "jquants": True, "jpx": True, "tdnet": True, "edinet": True,
                 "company_ir": True, "kabutan": True, "minkabu": True,

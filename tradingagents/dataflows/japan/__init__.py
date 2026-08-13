@@ -13,10 +13,12 @@ from .models import (
     ProviderResponse,
     SourceStatus,
 )
+from .official import build_official_japan_providers
 from .service import JapanDataService
 
 __all__ = [
     "DataStatus",
+    "build_official_japan_providers",
     "InformationLayer",
     "JapanDataService",
     "JapanResearchBundle",
