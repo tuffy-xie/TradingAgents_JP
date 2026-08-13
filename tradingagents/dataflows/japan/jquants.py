@@ -1,28 +1,38 @@
-"""J-Quants API V2 provider (official JPX data, API-key authenticated)."""
+"""J-Quants API V2 provider (official JPX data, API-key authenticated).
+
+Only documented V2 endpoints and the official ``x-api-key`` authentication
+header are used.  Each endpoint is normalized separately, so a plan restriction
+or a date-range restriction is visible to Agents instead of being silently
+replaced by another vendor.
+"""
 
 from __future__ import annotations
 
+import asyncio
 import os
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
-from .http import get_json
+from .http import JsonResponse, get_json
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 
 
 class JQuantsProvider:
-    """Retrieve official OHLCV and financial records available to the account plan.
+    """Fetch V2 security master, daily bars and financial-summary records.
 
-    J-Quants V2 uses the ``x-api-key`` header.  This provider does not attempt
-    deprecated V1 username/password or refresh-token authentication.
+    ``/fins/details`` is deliberately not called on every research run.  It is
+    a separately entitled endpoint for many accounts; the summary endpoint
+    already provides the available disclosure/quarterly financial records.
+    ``probe_capabilities`` can be used by diagnostics to test it explicitly.
     """
 
     name = "J-Quants"
     category = "market_data"
+    cache_version = "v2-security-bars-financial-summary"
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         config = get_config().get("markets", {}).get("jp", {})
@@ -36,23 +46,87 @@ class JQuantsProvider:
             return ProviderResponse(SourceStatus(self.name, DataStatus.DISABLED, detail="disabled by markets.jp.datasources"))
         if not self.api_key:
             return ProviderResponse(SourceStatus(self.name, DataStatus.AUTH_REQUIRED, detail="JQUANTS_API_KEY is not configured"))
-        # V2 examples use a five-character local code (e.g. 86970 for 8697).
+
+        code = f"{context.native_symbol}0"
+        headers = {"x-api-key": self.api_key}
+        daily, master, financials = await asyncio.gather(
+            get_json(
+                f"{self.base_url}/equities/bars/daily",
+                params={"code": code, "from": _compact_date(start_date), "to": _compact_date(end_date)},
+                headers=headers,
+                timeout=self.timeout,
+            ),
+            get_json(f"{self.base_url}/equities/master", params={"code": code}, headers=headers, timeout=self.timeout),
+            get_json(f"{self.base_url}/fins/summary", params={"code": code}, headers=headers, timeout=self.timeout),
+        )
+        items = tuple(
+            item
+            for response, normalizer in (
+                (daily, _normalise_records),
+                (master, _normalise_master_records),
+                (financials, _normalise_financial_records),
+            )
+            if response.status == DataStatus.OK
+            for item in normalizer(response.payload, context)
+        )
+        endpoint_statuses = {
+            "daily_bars": _endpoint_detail(daily),
+            "security_master": _endpoint_detail(master),
+            "financial_summary": _endpoint_detail(financials),
+        }
+        successful = sum(response.status == DataStatus.OK for response in (daily, master, financials))
+        if not successful:
+            status = _worst_status(daily.status, master.status, financials.status)
+        else:
+            status = DataStatus.OK
+        return ProviderResponse(
+            SourceStatus(
+                self.name,
+                status,
+                detail="; ".join(f"{name}={value}" for name, value in endpoint_statuses.items()),
+                item_count=len(items),
+            ),
+            items,
+        )
+
+    async def probe_capabilities(self, context: MarketContext) -> dict[str, str]:
+        """Explicitly test the optional detailed-financial endpoint for diagnostics.
+
+        This is never part of the normal market-data bundle, avoiding a known
+        entitlement failure and unnecessary rate-limit consumption on each run.
+        """
+        if not self.api_key:
+            return {"financial_details": DataStatus.AUTH_REQUIRED.value}
         response = await get_json(
-            f"{self.base_url}/equities/bars/daily",
-            params={"code": f"{context.native_symbol}0", "from": start_date.replace("-", ""), "to": end_date.replace("-", "")},
+            f"{self.base_url}/fins/details",
+            params={"code": f"{context.native_symbol}0"},
             headers={"x-api-key": self.api_key},
             timeout=self.timeout,
         )
-        if response.status != DataStatus.OK:
-            return ProviderResponse(SourceStatus(self.name, response.status, detail=response.detail))
-        items = tuple(_normalise_records(response.payload, context))
-        return ProviderResponse(SourceStatus(self.name, DataStatus.OK, item_count=len(items)), items)
+        return {"financial_details": _endpoint_detail(response)}
+
+
+def _compact_date(value: str) -> str:
+    return str(value).replace("-", "")
+
+
+def _endpoint_detail(response: JsonResponse) -> str:
+    if response.status == DataStatus.OK:
+        return "OK"
+    return f"{response.status.value}:{response.detail or 'no detail'}"
+
+
+def _worst_status(*statuses: DataStatus) -> DataStatus:
+    for candidate in (DataStatus.AUTH_REQUIRED, DataStatus.RATE_LIMITED, DataStatus.PARSE_FAILED, DataStatus.DATA_UNAVAILABLE):
+        if candidate in statuses:
+            return candidate
+    return DataStatus.DATA_UNAVAILABLE
 
 
 def _records(payload: Any) -> Iterable[dict[str, Any]]:
     if isinstance(payload, list):
         return (item for item in payload if isinstance(item, dict))
-    if isinstance(payload, dict):
+    if isinstance(payload, Mapping):
         for key in ("data", "daily_quotes", "daily_bars", "items"):
             value = payload.get(key)
             if isinstance(value, list):
@@ -60,28 +134,122 @@ def _records(payload: Any) -> Iterable[dict[str, Any]]:
     return ()
 
 
-def _normalise_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
-    for record in _records(payload):
-        date_value = str(record.get("Date") or record.get("date") or "")
+def _timestamp(value: Any) -> datetime:
+    raw = str(value or "")
+    for candidate in (raw[:10], f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else ""):
         try:
-            timestamp = datetime.fromisoformat(date_value[:10]).replace(tzinfo=UTC)
+            return datetime.fromisoformat(candidate).replace(tzinfo=UTC)
         except ValueError:
-            timestamp = datetime.now(UTC)
-        values = {
-            key: record[key]
-            for key in ("Open", "High", "Low", "Close", "Volume", "TurnoverValue", "open", "high", "low", "close", "volume")
-            if key in record
+            pass
+    return datetime.now(UTC)
+
+
+def _normalise_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
+    """Normalize official V2 daily bars without renaming its raw fields."""
+    for record in _records(payload):
+        # V2 returns compact field names (O/H/L/C/Vo/Va and Adj*) while a few
+        # documented examples still show their expanded spellings.  Preserve
+        # the official raw names and also expose stable normalized aliases.
+        raw_values = {key: record[key] for key in ("Open", "High", "Low", "Close", "Volume", "TurnoverValue", "O", "H", "L", "C", "Vo", "Va", "AdjustmentFactor", "AdjustmentOpen", "AdjustmentHigh", "AdjustmentLow", "AdjustmentClose", "AdjustmentVolume", "AdjFactor", "AdjO", "AdjH", "AdjL", "AdjC", "AdjVo") if key in record}
+        aliases = {
+            "open": record.get("Open", record.get("O")),
+            "high": record.get("High", record.get("H")),
+            "low": record.get("Low", record.get("L")),
+            "close": record.get("Close", record.get("C")),
+            "volume": record.get("Volume", record.get("Vo")),
+            "turnover_value": record.get("TurnoverValue", record.get("Va")),
+            "adjustment_factor": record.get("AdjustmentFactor", record.get("AdjFactor")),
+            "adjusted_open": record.get("AdjustmentOpen", record.get("AdjO")),
+            "adjusted_high": record.get("AdjustmentHigh", record.get("AdjH")),
+            "adjusted_low": record.get("AdjustmentLow", record.get("AdjL")),
+            "adjusted_close": record.get("AdjustmentClose", record.get("AdjC")),
+            "adjusted_volume": record.get("AdjustmentVolume", record.get("AdjVo")),
         }
+        values = {key: value for key, value in aliases.items() if value is not None}
         yield MarketInformation(
-            source="J-Quants",
-            source_type="official_ohlcv",
-            ticker=context.symbol,
-            timestamp=timestamp,
-            title="J-Quants official daily OHLCV",
-            content="Official JPX-derived daily market data.",
-            confidence=0.98,
-            verified=True,
-            layer=InformationLayer.VERIFIED_FACT,
+            source="J-Quants", source_type="official_ohlcv", ticker=context.symbol,
+            timestamp=_timestamp(record.get("Date") or record.get("date")),
+            title="J-Quants V2 official daily OHLCV", content="Official JPX-derived daily market data.",
+            confidence=0.98, verified=True, layer=InformationLayer.VERIFIED_FACT,
             content_level="structured_data",
-            metadata={"ohlcv": values, "raw_code": record.get("Code") or record.get("code")},
+            metadata={"ohlcv": values, "raw_ohlcv": raw_values, "raw_code": record.get("Code") or record.get("code"), "api_version": "v2"},
         )
+
+
+def _normalise_master_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
+    for record in _records(payload):
+        yield MarketInformation(
+            source="J-Quants", source_type="official_security_master", ticker=context.symbol,
+            timestamp=_timestamp(record.get("Date")), title="J-Quants V2 listed security master",
+            content="Official listed-security reference data.", confidence=0.98, verified=True,
+            layer=InformationLayer.VERIFIED_FACT, content_level="structured_data",
+            metadata={"security_master": dict(record), "raw_code": record.get("Code"), "api_version": "v2"},
+        )
+
+
+def _normalise_financial_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
+    for record in _records(payload):
+        period_type = str(record.get("CurPerType") or "")
+        yield MarketInformation(
+            source="J-Quants", source_type="official_financial_summary", ticker=context.symbol,
+            timestamp=_timestamp(record.get("DiscDate")),
+            title=f"J-Quants V2 financial summary ({period_type or 'period unavailable'})",
+            content="Official disclosed financial-summary record; periods must be compared like-for-like.",
+            confidence=0.98, verified=True, layer=InformationLayer.VERIFIED_FACT,
+            content_level="structured_data",
+            metadata={"financial_summary": dict(record), "period_type": period_type, "raw_code": record.get("Code"), "api_version": "v2"},
+        )
+
+
+def compare_daily_ohlcv(
+    jquants_items: Iterable[MarketInformation],
+    yfinance_rows: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Compare official daily bars against supplied yfinance rows transparently.
+
+    yfinance may expose adjusted prices after a split while J-Quants exposes
+    both raw and adjusted series.  The result explicitly labels that basis; a
+    mismatch is returned as ``CONFLICT`` rather than overwritten.
+    """
+    results: list[dict[str, Any]] = []
+    for item in jquants_items:
+        if item.source_type != "official_ohlcv":
+            continue
+        date = item.timestamp.date().isoformat()
+        vendor = yfinance_rows.get(date)
+        if not vendor:
+            results.append({"date": date, "status": "YFINANCE_MISSING", "jquants_source": "J-Quants V2"})
+            continue
+        raw = item.metadata.get("raw_ohlcv") or {}
+        adjusted = item.metadata.get("ohlcv") or {}
+        y_close = _number(vendor.get("Close", vendor.get("close")))
+        raw_close = _number(raw.get("Close", raw.get("C")))
+        adjusted_close = _number(adjusted.get("adjusted_close", adjusted.get("close")))
+        if _same_number(y_close, raw_close):
+            status, basis = "MATCH", "J-Quants 原始价（未复权）"
+        elif _same_number(y_close, adjusted_close):
+            status, basis = "MATCH", "J-Quants 调整后价格（复权口径）"
+        else:
+            status, basis = "CONFLICT", "无法与 J-Quants 原始价或调整后价格对应"
+        results.append({
+            "date": date,
+            "status": status,
+            "jquants_source": "J-Quants V2",
+            "yfinance_source": "yfinance",
+            "basis": basis,
+            "jquants_raw_close": raw_close,
+            "jquants_adjusted_close": adjusted_close,
+            "yfinance_close": y_close,
+        })
+    return results
+
+
+def _number(value: Any) -> float | None:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_number(left: float | None, right: float | None) -> bool:
+    return left is not None and right is not None and abs(left - right) <= max(1e-8, abs(right) * 1e-6)

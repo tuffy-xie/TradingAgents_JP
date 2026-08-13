@@ -10,7 +10,14 @@ from tradingagents.dataflows.japan.edinet import (
     classify_edinet_document,
     extract_large_shareholding_fields,
 )
-from tradingagents.dataflows.japan.jquants import JQuantsProvider, _normalise_records
+from tradingagents.dataflows.japan.http import JsonResponse
+from tradingagents.dataflows.japan.jquants import (
+    JQuantsProvider,
+    compare_daily_ohlcv,
+    _normalise_financial_records,
+    _normalise_master_records,
+    _normalise_records,
+)
 from tradingagents.dataflows.japan.jsf import normalise_balances, normalise_premium_charges
 from tradingagents.dataflows.japan.models import DataStatus
 from tradingagents.dataflows.japan.tdnet import (
@@ -45,10 +52,54 @@ def test_edinet_without_key_returns_auth_required(monkeypatch):
 
 @pytest.mark.unit
 def test_jquants_normalizes_official_v2_daily_record():
-    payload = {"data": [{"Date": "2026-08-12", "Code": "69810", "Open": 100, "Close": 110, "Volume": 20}]}
+    payload = {"data": [{"Date": "2026-08-12", "Code": "69810", "O": 100, "C": 110, "Vo": 20, "Va": 2200}]}
     items = list(_normalise_records(payload, resolve_market_context("6981.T")))
     assert items[0].verified is True
-    assert items[0].metadata["ohlcv"]["Close"] == 110
+    assert items[0].metadata["ohlcv"]["close"] == 110
+    assert items[0].metadata["raw_ohlcv"]["C"] == 110
+
+
+@pytest.mark.unit
+def test_jquants_normalizes_master_and_quarterly_financial_summary():
+    context = resolve_market_context("6981.T")
+    master = list(_normalise_master_records({"data": [{"Date": "2026-05-21", "Code": "69810", "CoName": "Murata"}]}, context))
+    financial = list(_normalise_financial_records({"data": [{"DiscDate": "2026-05-15", "Code": "69810", "CurPerType": "1Q", "Sales": 100}]}, context))
+    assert master[0].source_type == "official_security_master"
+    assert master[0].metadata["security_master"]["CoName"] == "Murata"
+    assert financial[0].source_type == "official_financial_summary"
+    assert financial[0].metadata["period_type"] == "1Q"
+
+
+@pytest.mark.unit
+def test_jquants_yfinance_comparison_labels_adjusted_basis_and_conflict():
+    item = list(_normalise_records({"data": [{"Date": "2026-05-01", "Code": "58010", "C": 41190, "AdjC": 4119}]}, resolve_market_context("5801.T")))[0]
+    matched = compare_daily_ohlcv([item], {"2026-05-01": {"Close": 4119}})[0]
+    conflict = compare_daily_ohlcv([item], {"2026-05-01": {"Close": 4000}})[0]
+    assert matched["status"] == "MATCH"
+    assert matched["basis"] == "J-Quants 调整后价格（复权口径）"
+    assert conflict["status"] == "CONFLICT"
+
+
+@pytest.mark.unit
+def test_jquants_keeps_endpoint_availability_in_source_status(monkeypatch):
+    responses = iter([
+        JsonResponse(DataStatus.DATA_UNAVAILABLE, detail="date range unavailable"),
+        JsonResponse(DataStatus.OK, {"data": [{"Date": "2026-05-21", "Code": "69810"}]}),
+        JsonResponse(DataStatus.OK, {"data": [{"DiscDate": "2026-05-15", "Code": "69810", "CurPerType": "1Q"}]}),
+    ])
+
+    async def fake_get_json(*_args, **_kwargs):
+        return next(responses)
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.jquants.get_json", fake_get_json)
+    result = __import__("asyncio").run(
+        JQuantsProvider(api_key="test").fetch(
+            resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"
+        )
+    )
+    assert result.status.status == DataStatus.OK
+    assert "daily_bars=DATA_UNAVAILABLE:date range unavailable" in result.status.detail
+    assert {item.source_type for item in result.items} == {"official_security_master", "official_financial_summary"}
 
 
 @pytest.mark.unit
