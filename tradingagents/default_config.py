@@ -142,6 +142,27 @@ DEFAULT_CONFIG = _apply_env_overrides({
     "tool_vendors": {
         # Example: "get_stock_data": "alpha_vantage",  # Override category default
     },
+    # Market-aware routing.  US remains on the legacy vendor interface above;
+    # the Japan service reads this separately and never changes the US chain.
+    "markets": {
+        "us": {"enabled": True},
+        "jp": {
+            "enabled": True,
+            "request_timeout_seconds": 10,
+            "max_concurrency": 4,
+            "datasources": {
+                "jquants": True, "jpx": True, "tdnet": True, "edinet": True,
+                "company_ir": True, "kabutan": True, "minkabu": True,
+                "yahoo_japan": True, "jsf": True,
+            },
+            "sentiment": {"x": False, "yahoo_board": True, "fivech": False, "moomoo": False},
+            "overseas_sentiment": {"reddit": False, "stocktwits": False, "max_weight": 0.05},
+            "cache_ttl_seconds": {
+                "market_data": 300, "news": 1800, "tdnet": 600, "edinet": 3600,
+                "fundamentals": 21600, "sentiment": 1800, "supply_demand": 3600,
+            },
+        },
+    },
     # Benchmark for alpha calculation in the reflection layer.
     # ``benchmark_ticker`` (when set) overrides the suffix map for all
     # tickers; leave it None to use ``benchmark_map`` for auto-detection
