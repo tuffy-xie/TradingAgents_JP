@@ -64,12 +64,6 @@ def get_language_instruction() -> str:
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
-    if lang.strip().lower() in {"chinese", "simplified chinese", "简体中文", "中文"}:
-        return (
-            " 最终用户可见内容必须使用简体中文。证券代码、公司正式英文名和 RSI、MACD、ATR、"
-            "VWAP、EPS、ROE、PE、PB 等指标缩写可保留；除正式专有名词外，不得输出英文标题、"
-            "英文标签或英文交易动作。"
-        )
     return f" Write your entire response in {lang}."
 
 
@@ -269,3 +263,4 @@ def create_msg_delete():
         return {"messages": removal_operations + [placeholder]}
 
     return delete_messages
+
