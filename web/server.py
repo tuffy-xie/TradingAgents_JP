@@ -379,11 +379,18 @@ async def analyze(
                         put({"type": "agent_update", "id": "Portfolio Manager", "status": "completed"})
                         put({"type": "final", "content": updates["final_trade_decision"]})
 
-            # Persist results
+            # Persist results.  The web path drives the graph directly, so it
+            # must explicitly write the same report tree as CLI/API runs.
             try:
                 ta._log_state(date, final_state)
             except Exception as log_exc:
                 logger.warning("State logging failed (non-fatal): %s", log_exc)
+
+            report_path = None
+            try:
+                report_path = ta.save_reports(final_state, canonical_ticker)
+            except Exception as report_exc:
+                logger.warning("Report archive failed (non-fatal): %s", report_exc)
 
             if final_state.get("final_trade_decision"):
                 try:
@@ -394,7 +401,7 @@ async def analyze(
                 except Exception as mem_exc:
                     logger.warning("Memory store failed (non-fatal): %s", mem_exc)
 
-            put({"type": "done"})
+            put({"type": "done", "report_path": str(report_path) if report_path else None})
 
         except Exception as exc:
             logger.exception("Analysis failed")
