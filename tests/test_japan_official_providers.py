@@ -13,12 +13,16 @@ from tradingagents.dataflows.japan.edinet import (
 from tradingagents.dataflows.japan.http import BytesResponse, JsonResponse
 from tradingagents.dataflows.japan.jquants import (
     JQuantsProvider,
-    compare_daily_ohlcv,
     _normalise_financial_records,
     _normalise_master_records,
     _normalise_records,
+    compare_daily_ohlcv,
 )
-from tradingagents.dataflows.japan.jsf import normalise_balances, normalise_premium_charges
+from tradingagents.dataflows.japan.jsf import (
+    build_supply_demand_trend,
+    normalise_balances,
+    normalise_premium_charges,
+)
 from tradingagents.dataflows.japan.models import DataStatus
 from tradingagents.dataflows.japan.tdnet import (
     TDnetProvider,
@@ -283,3 +287,42 @@ def test_jsf_csv_normalizers_keep_facts_separate():
     context = resolve_market_context("6981.T")
     assert normalise_balances(balances, context)[0].metadata["finance_balance"] == 1000
     assert normalise_premium_charges(charges, context)[0].metadata["premium_charge_yen"] == 0.05
+
+
+@pytest.mark.unit
+def test_jsf_history_schema_keeps_official_share_unit_and_dates():
+    payload = (
+        "銘柄コード,銘柄名,申込日,市場区分,融資新規（株）,融資返済（株）,融資残高（株）,貸株新規（株）,貸株返済（株）,貸株残高（株）,差引残高（株）\n"
+        "6981,村田製作所,20260812,東証,100,50,1000,20,10,200,800\n"
+    ).encode("cp932")
+    item = normalise_balances(payload, resolve_market_context("6981.T"), historical=True)[0]
+    assert item.metadata["unit"] == "株"
+    assert item.metadata["application_date"] == "2026-08-12"
+    assert item.metadata["settlement_date"] is None
+    assert item.metadata["report_type"] == "UNSPECIFIED"
+
+
+@pytest.mark.unit
+def test_jsf_history_trend_requires_history_and_detects_confirmed_buildup():
+    header = "銘柄コード,銘柄名,申込日,市場区分,融資新規（株）,融資返済（株）,融資残高（株）,貸株新規（株）,貸株返済（株）,貸株残高（株）,差引残高（株）\n"
+    rows = []
+    for day in range(1, 22):
+        rows.append(f"6981,村田製作所,202607{day:02d},東証,200,100,{1000 + day * 100},50,10,{100 + day * 20},{900 + day * 80}")
+    items = normalise_balances((header + "\n".join(rows)).encode("cp932"), resolve_market_context("6981.T"), historical=True)
+    trend = build_supply_demand_trend(items, resolve_market_context("6981.T"), "2026-07-01", "2026-07-21")
+    assert trend.metadata["observation_count"] == 21
+    assert trend.metadata["finance_balance_change_5d"] == pytest.approx(500 / 2600, abs=1e-6)
+    assert trend.metadata["finance_balance_change_20d"] == pytest.approx(2000 / 1100, abs=1e-6)
+    assert trend.metadata["finance_balance_trend"] == "INCREASING"
+    assert trend.metadata["rapid_finance_buildup"] is False
+
+
+@pytest.mark.unit
+def test_jsf_history_outlier_is_not_turned_into_trend():
+    header = "銘柄コード,銘柄名,申込日,市場区分,融資新規（株）,融資返済（株）,融資残高（株）,貸株新規（株）,貸株返済（株）,貸株残高（株）,差引残高（株）\n"
+    rows = [f"6981,村田製作所,202608{day:02d},東証,10,5,{100 if day < 6 else 1000},1,1,100,0" for day in range(1, 7)]
+    items = normalise_balances((header + "\n".join(rows)).encode("cp932"), resolve_market_context("6981.T"), historical=True)
+    trend = build_supply_demand_trend(items, resolve_market_context("6981.T"), "2026-08-01", "2026-08-06")
+    assert trend.metadata["finance_balance_change_5d"] is None
+    assert "OUTLIER_5D_CHANGE_GT_300_PCT" in trend.metadata["anomaly_flags"]
+    assert trend.metadata["finance_balance_trend"] == "UNCONFIRMED"
