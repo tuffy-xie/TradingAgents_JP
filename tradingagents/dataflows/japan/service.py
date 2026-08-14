@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Protocol
 
@@ -63,11 +63,13 @@ class JapanDataService:
         start_date: str,
         end_date: str,
         categories: Iterable[str] | None = None,
+        provider_start_dates: Mapping[str, str] | None = None,
     ) -> JapanResearchBundle:
         if context.market != Market.JP:
             raise ValueError("JapanDataService only accepts a JP MarketContext")
 
         wanted = set(categories or ())
+        provider_start_dates = provider_start_dates or {}
         providers = tuple(
             provider for provider in self.providers if not wanted or provider.category in wanted
         )
@@ -75,7 +77,12 @@ class JapanDataService:
 
         async def collect_one(provider: JapanDataProvider) -> ProviderResponse:
             async with semaphore:
-                return await self._collect_one(provider, context, start_date, end_date)
+                return await self._collect_one(
+                    provider,
+                    context,
+                    provider_start_dates.get(provider.name, start_date),
+                    end_date,
+                )
 
         responses = await asyncio.gather(*(collect_one(provider) for provider in providers))
         statuses = tuple(response.status for response in responses)

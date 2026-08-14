@@ -266,7 +266,9 @@ async def analyze(
             # The web path constructs state directly, so mirror that behavior.
             from tradingagents.dataflows.japan.context import collect_japan_data_bundle
 
-            japan_data_bundle = collect_japan_data_bundle(market_context, date)
+            japan_data_bundle = collect_japan_data_bundle(
+                market_context, date, trading_horizon=trading_horizon
+            )
             try:
                 verified_market_snapshot = build_verified_market_snapshot(canonical_ticker, date)
             except Exception as exc:

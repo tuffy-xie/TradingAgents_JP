@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping
+from datetime import date
 from typing import Any
 
 _OFFICIAL = {"TDnet", "Company IR", "J-Quants", "EDINET", "JPX", "JSF"}
@@ -28,11 +28,15 @@ def build_japan_decision_context(bundle: Mapping[str, Any] | None, snapshot: str
     """
     bundle = bundle or {}
     items = [item for item in bundle.get("items", []) if isinstance(item, Mapping)]
+    analysis_date = _analysis_date(bundle)
+    official_horizon_days = int((bundle.get("window_policy") or {}).get("official_catalyst_days", 14))
     freshness = _freshness_index(items)
     official = _fresh_items(
         [item for item in items if item.get("source") in _OFFICIAL], freshness
     )
-    official_events = _dedupe_official_events(official)
+    official_events = _dedupe_official_events(
+        _within_official_horizon(official, analysis_date, official_horizon_days)
+    )
     analyst = _fresh_items(
         [item for item in items if item.get("source_type") == "japan_analyst_expectations"], freshness
     )
@@ -57,8 +61,8 @@ def build_japan_decision_context(bundle: Mapping[str, Any] | None, snapshot: str
             "CURRENT" if snapshot else "DATA_UNAVAILABLE",
             "Verified Market Snapshot is present; direction is left to its explicit indicators.",
         ),
-        "fundamentals": _official_dimension(official, "financial"),
-        "official_catalysts": _official_dimension(official_events, "catalyst"),
+        "fundamentals": _official_dimension(official, "financial", analysis_date),
+        "official_catalysts": _official_dimension(official_events, "catalyst", analysis_date),
         "news": _news_dimension(news),
         "supply_demand": _supply_dimension(supply),
         "analyst_expectations": _analyst_dimension(analyst),
@@ -100,6 +104,12 @@ def render_japan_decision_context(context: Mapping[str, Any] | None) -> str:
             f"{name}: direction={value.get('direction')}; confidence={value.get('confidence')}; "
             f"evidence_count={value.get('evidence_count')}; freshness={value.get('freshness')}"
         )
+        for event in value.get("events", []):
+            lines.append(
+                "  - official event: "
+                f"date={event.get('event_date')}; age_days={event.get('age_days')}; "
+                f"freshness={event.get('freshness')}; type={event.get('event_type')}"
+            )
     lines.extend(
         [
             "Rules: unavailable data reduces confidence only; it is not bearish. Count an official disclosure once even if news repeats it. Keep company guidance and analyst consensus separate. Sentiment is auxiliary and may not independently reverse a conclusion.",
@@ -119,7 +129,9 @@ def _dimension(direction: str, confidence: str, count: int, freshness: str, note
     }
 
 
-def _official_dimension(items: list[Mapping[str, Any]], kind: str) -> dict[str, Any]:
+def _official_dimension(
+    items: list[Mapping[str, Any]], kind: str, analysis_date: date
+) -> dict[str, Any]:
     if not items:
         return _dimension("unavailable", "low", 0, "DATA_UNAVAILABLE", "No fresh official evidence.")
     directions = [_official_direction(item) for item in items]
@@ -132,7 +144,10 @@ def _official_dimension(items: list[Mapping[str, Any]], kind: str) -> dict[str, 
         directions = [_official_direction(item) for item in items]
         direction = _combine(directions)
         note = "Company guidance is retained separately from analyst consensus."
-    return _dimension(direction, _confidence(items), len(items), _freshness(items), note)
+    dimension = _dimension(direction, _confidence(items), len(items), _official_freshness(items, analysis_date), note)
+    if kind == "catalyst":
+        dimension["events"] = [_event_detail(item, analysis_date) for item in items]
+    return dimension
 
 
 def _news_dimension(items: list[Mapping[str, Any]]) -> dict[str, Any]:
@@ -246,12 +261,58 @@ def _dedupe_official_events(items: list[Mapping[str, Any]]) -> list[Mapping[str,
     for item in items:
         if item.get("source") not in {"TDnet", "Company IR"}:
             continue
-        title = re.sub(r"[^0-9a-zA-Z一-龯ぁ-んァ-ン]", "", str(item.get("title", "")).lower())
-        key = f"{item.get('timestamp', '')[:10]}:{title}"
+        event_type = str((item.get("metadata") or {}).get("event_type") or item.get("source_type", ""))
+        # TDnet and Company IR frequently use different titles for the same
+        # earnings/guidance/buyback event.  Date + normalized event type is the
+        # stable core-catalyst identity; the first item follows provider order
+        # (TDnet before Company IR) and retains the authoritative detail.
+        key = f"{_event_date(item).isoformat()}:{event_type}"
         if key not in seen:
             seen.add(key)
             result.append(item)
     return result
+
+
+def _analysis_date(bundle: Mapping[str, Any]) -> date:
+    value = str(bundle.get("analysis_date") or "")
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return date.today()
+
+
+def _event_date(item: Mapping[str, Any]) -> date:
+    value = str((item.get("metadata") or {}).get("date") or item.get("timestamp", ""))[:10]
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return date.today()
+
+
+def _event_detail(item: Mapping[str, Any], analysis_date: date) -> dict[str, Any]:
+    event_date = _event_date(item)
+    age_days = max(0, (analysis_date - event_date).days)
+    return {
+        "event_date": event_date.isoformat(),
+        "age_days": age_days,
+        "freshness": "CURRENT" if age_days <= 7 else "RECENT" if age_days <= 30 else "STALE",
+        "source": item.get("source"),
+        "event_type": (item.get("metadata") or {}).get("event_type") or item.get("source_type"),
+        "title": item.get("title"),
+    }
+
+
+def _within_official_horizon(
+    items: list[Mapping[str, Any]], analysis_date: date, horizon_days: int
+) -> list[Mapping[str, Any]]:
+    return [item for item in items if max(0, (analysis_date - _event_date(item)).days) <= horizon_days]
+
+
+def _official_freshness(items: list[Mapping[str, Any]], analysis_date: date) -> str:
+    ages = [max(0, (analysis_date - _event_date(item)).days) for item in items]
+    if not ages:
+        return "DATA_UNAVAILABLE"
+    return "CURRENT" if min(ages) <= 7 else "RECENT" if min(ages) <= 30 else "STALE"
 
 
 def _overall(dimensions: Mapping[str, Mapping[str, Any]]) -> dict[str, str]:

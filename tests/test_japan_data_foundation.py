@@ -24,9 +24,11 @@ class _Provider:
     def __init__(self, name, response=None, error=None):
         self.name, self.category, self.response, self.error = name, "news", response, error
         self.calls = 0
+        self.start_dates = []
 
     async def fetch(self, context, *, start_date, end_date):
         self.calls += 1
+        self.start_dates.append(start_date)
         if self.error:
             raise self.error
         return self.response
@@ -104,6 +106,25 @@ def test_service_reuses_cached_provider_response(tmp_path):
     second = asyncio.run(service.collect(context, start_date="2026-08-01", end_date="2026-08-13"))
     assert provider.calls == 1
     assert second.source_statuses[0].from_cache is True
+
+
+@pytest.mark.unit
+def test_service_allows_official_provider_window_to_exceed_news_window(tmp_path):
+    tdnet = _Provider("TDnet", ProviderResponse(SourceStatus("TDnet", DataStatus.OK)))
+    news = _Provider("Japan News", ProviderResponse(SourceStatus("Japan News", DataStatus.OK)))
+    service = JapanDataService((tdnet, news), cache=JapanDataCache(tmp_path), timeout_seconds=1)
+    asyncio.run(
+        service.collect(
+            resolve_market_context("6981.T"),
+            start_date="2026-08-07",
+            end_date="2026-08-14",
+            provider_start_dates={"TDnet": "2026-07-15"},
+        )
+    )
+    # The cache key incorporates the effective start date; provider calls are
+    # deliberately separated rather than forcing news into the 30-day window.
+    assert tdnet.start_dates == ["2026-07-15"]
+    assert news.start_dates == ["2026-08-07"]
 
 
 @pytest.mark.unit

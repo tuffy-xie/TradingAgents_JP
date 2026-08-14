@@ -18,7 +18,9 @@ from .official import build_official_japan_providers
 from .service import JapanDataService
 
 
-def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[str, Any]:
+def collect_japan_data_bundle(
+    context: MarketContext, trade_date: str, trading_horizon: str = "multi_day"
+) -> dict[str, Any]:
     """Fetch a bounded recent Japan bundle synchronously at graph-run start.
 
     Provider failures are represented inside ``source_statuses``.  A defensive
@@ -43,9 +45,17 @@ def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[s
             ],
         }
     try:
+        official_days = _official_event_days(trading_horizon)
+        official_start_date = end_date - timedelta(days=official_days)
         bundle = asyncio.run(
             JapanDataService(build_official_japan_providers()).collect(
-                context, start_date=start_date.isoformat(), end_date=end_date.isoformat()
+                context,
+                start_date=start_date.isoformat(),
+                end_date=end_date.isoformat(),
+                provider_start_dates={
+                    "TDnet": official_start_date.isoformat(),
+                    "Company IR": official_start_date.isoformat(),
+                },
             )
         )
     except Exception as exc:  # fail closed: no unverified replacement data
@@ -56,7 +66,31 @@ def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[s
                 {"source": "JapanData", "status": "DATA_UNAVAILABLE", "detail": type(exc).__name__}
             ],
         }
-    return bundle.to_dict()
+    raw = bundle.to_dict()
+    raw.update(
+        {
+            "analysis_date": end_date.isoformat(),
+            "trading_horizon": trading_horizon,
+            "window_policy": {
+                "official_catalyst_days": official_days,
+                "news_days": 7,
+                "sentiment_days": 7,
+                "supply_demand_days": 20,
+                "analyst_revision_windows": [30, 90],
+            },
+        }
+    )
+    return raw
+
+
+def _official_event_days(trading_horizon: str) -> int:
+    """Reuse the existing UI horizon names; only official events get widened."""
+    return {
+        "intraday": 7,
+        "multi_day": 14,
+        "multi_week": 30,
+        "long_term": 45,
+    }.get(trading_horizon, 14)
 
 
 def render_japan_agent_context(state: Mapping[str, Any]) -> str:

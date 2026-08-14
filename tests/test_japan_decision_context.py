@@ -61,7 +61,12 @@ def test_unavailable_is_not_bearish_and_reduces_confidence_only():
 
 def test_official_catalyst_is_deduped_and_news_is_not_a_second_core_vote():
     official = _item("TDnet", "share_buyback", "自己株式の取得", {"event_type": "share_buyback"})
-    mirrored = _item("Company IR", "share_buyback", "自己株式の取得", {"event_type": "share_buyback"})
+    mirrored = _item(
+        "Company IR",
+        "share_buyback",
+        "自己株式取得に関する説明資料",
+        {"event_type": "share_buyback"},
+    )
     news = _item(
         "Japan News",
         "japan_stock_news",
@@ -73,6 +78,28 @@ def test_official_catalyst_is_deduped_and_news_is_not_a_second_core_vote():
     assert context["dimensions"]["official_catalysts"]["evidence_count"] == 1
     assert context["dimensions"]["news"]["evidence_count"] == 1
     assert "duplicate news" in context["dimensions"]["official_catalysts"]["note"].lower()
+
+
+def test_recent_official_catalyst_is_retained_with_event_age_but_old_one_is_not_current():
+    recent = _item("TDnet", "share_buyback", "自己株式の取得", {"event_type": "share_buyback", "date": "2026-08-03"})
+    old = _item("TDnet", "share_buyback", "old buyback", {"event_type": "share_buyback", "date": "2026-02-01"})
+    bundle = _bundle([recent, old])
+    bundle.update({"analysis_date": "2026-08-14", "window_policy": {"official_catalyst_days": 30}})
+    context = build_japan_decision_context(bundle, "Close 100")
+    catalyst = context["dimensions"]["official_catalysts"]
+    assert catalyst["direction"] == "weak_bullish"
+    assert catalyst["freshness"] == "RECENT"
+    assert catalyst["evidence_count"] == 1
+    assert catalyst["events"] == [
+        {
+            "event_date": "2026-08-03",
+            "age_days": 11,
+            "freshness": "RECENT",
+            "source": "TDnet",
+            "event_type": "share_buyback",
+            "title": "自己株式の取得",
+        }
+    ]
 
 
 def test_guidance_and_consensus_remain_separate_dimensions():
