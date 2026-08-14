@@ -9,7 +9,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import markdown as md
 import uvicorn
@@ -21,12 +20,15 @@ from sse_starlette.sse import EventSourceResponse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from tradingagents.agents.utils.agent_utils import (
+    build_instrument_context,
+    resolve_instrument_identity,
+)
 from tradingagents.agents.utils.rating import parse_rating
-from tradingagents.agents.utils.agent_utils import build_instrument_context, resolve_instrument_identity
-from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.dataflows.market import enrich_market_context, resolve_market_context
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.utils import safe_ticker_component
+from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
 from tradingagents.report_consistency import canonical_report_metadata, sanitize_report_section
@@ -134,8 +136,8 @@ def list_providers():
 @app.get("/api/models/{provider}")
 def list_models(provider: str):
     try:
-        quick = [{"label": l, "value": v} for l, v in get_model_options(provider, "quick") if v != "custom"]
-        deep  = [{"label": l, "value": v} for l, v in get_model_options(provider, "deep")  if v != "custom"]
+        quick = [{"label": label, "value": value} for label, value in get_model_options(provider, "quick") if value != "custom"]
+        deep = [{"label": label, "value": value} for label, value in get_model_options(provider, "deep") if value != "custom"]
         return {
             "quick": quick,
             "deep": deep,
@@ -184,11 +186,11 @@ async def analyze(
     entry_condition: str = "",
     stop_loss_condition: str = "",
     take_profit_condition: str = "",
-    max_position_pct: Optional[float] = None,
-    backend_url: Optional[str] = None,
+    max_position_pct: float | None = None,
+    backend_url: str | None = None,
     output_language: str = "Chinese",
-    effort: Optional[str] = None,
-    temperature: Optional[float] = None,
+    effort: str | None = None,
+    temperature: float | None = None,
     checkpoint: bool = False,
 ):
     allowed_horizons = {"intraday", "multi_day", "multi_week", "long_term"}
@@ -501,7 +503,7 @@ def _run_mtime(dir_name: str, date: str) -> float:
     return 0.0
 
 
-def _load_run(dir_name: str, date: str) -> Optional[dict]:
+def _load_run(dir_name: str, date: str) -> dict | None:
     """Load one archived run from whichever layout exists.
 
     Prefers the JSON state log (richer — includes the bull/bear/risk debate),
@@ -698,8 +700,8 @@ def get_report(ticker: str, date: str, print: bool = False):
     """
     try:
         safe_ticker_component(ticker)  # reject path-traversal in the dir name
-    except ValueError:
-        raise HTTPException(status_code=400, detail="invalid ticker")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="invalid ticker") from exc
     data = _load_run(ticker, date)
     if not data:
         raise HTTPException(status_code=404, detail="report not found")

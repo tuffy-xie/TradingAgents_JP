@@ -126,3 +126,26 @@ def test_common_graph_boundary_covers_reports_debates_and_structured_decisions()
 def test_us_output_is_unchanged():
     text = "Current price 9999 and target 12345."
     assert enforce_agent_output(_state(market="US"), text, "Trader").text == text
+
+
+def test_unsupported_claims_are_rewritten_as_complete_sentences():
+    result = enforce_agent_output(
+        _state(),
+        "目标价9999附近减仓；EPS 77 增长；当前股价为1200，止损位为1100。",
+        "Trader",
+    )
+    assert "9999" not in result.text
+    assert "EPS 数据不可用" not in result.text
+    assert "目标价数据不可用附近" not in result.text
+    assert "该精确数值缺少上游证据支持，已不纳入本项判断。" in result.text
+    assert "当前价格仅以已验证行情快照为准" in result.text
+
+
+def test_evidence_audit_is_internal_not_appended_to_agent_prose():
+    result = enforce_agent_result(
+        _state(), {"trader_investment_plan": "目标价9999。"}, "Trader"
+    )
+    assert "Evidence enforcement" not in result["trader_investment_plan"]
+    assert result["evidence_audit"] == [
+        {"agent": "Trader", "field": "trader_investment_plan", "warnings": ["unsupported_precise_number"]}
+    ]

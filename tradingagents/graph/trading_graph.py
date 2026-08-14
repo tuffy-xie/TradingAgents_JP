@@ -555,6 +555,7 @@ class TradingAgentsGraph:
             "market_context": final_state.get("market_context", {}),
             "verified_market_snapshot": final_state.get("verified_market_snapshot", ""),
             "japan_data_bundle": final_state.get("japan_data_bundle", {}),
+            "evidence_audit": final_state.get("evidence_audit", []),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],

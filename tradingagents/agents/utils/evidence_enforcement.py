@@ -97,12 +97,11 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
 
     # Preserve markdown structure.  One line is a deliberately small enough
     # unit for reports and avoids splitting decimal values at their dot.
-    cleaned = "".join(clean_clause(line) for line in text.splitlines(keepends=True))
+    cleaned = "".join(_clean_line(line, clean_clause) for line in text.splitlines(keepends=True))
     if not warnings:
         return EvidenceEnforcementResult(cleaned)
     unique_warnings = tuple(dict.fromkeys(warnings))
-    audit = f"\n\n[Evidence enforcement | {agent_name}: " + ", ".join(unique_warnings) + "]"
-    return EvidenceEnforcementResult(cleaned + audit, unique_warnings)
+    return EvidenceEnforcementResult(cleaned, unique_warnings)
 
 
 def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent_name: str) -> dict[str, Any]:
@@ -110,9 +109,17 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
     if (state.get("market_context") or {}).get("market") != "JP":
         return result
     result = dict(result)
+    audit: list[dict[str, Any]] = list(state.get("evidence_audit") or [])
+
+    def clean_value(key: str, value: str) -> str:
+        checked = enforce_agent_output(state, value, agent_name)
+        if checked.warnings:
+            audit.append({"agent": agent_name, "field": key, "warnings": list(checked.warnings)})
+        return checked.text
+
     for key in ("market_report", "fundamentals_report", "news_report", "sentiment_report", "investment_plan", "trader_investment_plan", "final_trade_decision"):
         if isinstance(result.get(key), str):
-            result[key] = enforce_agent_output(state, result[key], agent_name).text
+            result[key] = clean_value(key, result[key])
     for debate_key in ("investment_debate_state", "risk_debate_state"):
         debate = result.get(debate_key)
         if not isinstance(debate, dict):
@@ -120,9 +127,17 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
         updated = dict(debate)
         for key, value in debate.items():
             if isinstance(value, str):
-                updated[key] = enforce_agent_output(state, value, agent_name).text
+                updated[key] = clean_value(f"{debate_key}.{key}", value)
         result[debate_key] = updated
+    if audit:
+        result["evidence_audit"] = audit
     return result
+
+
+def _clean_line(line: str, clean_clause) -> str:
+    """Apply a downgrade to complete sentences, never isolated number tokens."""
+    parts = re.split(r"(?<=[。！？；;])", line)
+    return "".join(clean_clause(part) for part in parts if part)
 
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
@@ -182,7 +197,14 @@ def _normalise_number(token: str) -> str:
 
 
 def _replace_unsupported(clause: str, permitted: frozenset[str] | set[str]) -> str:
-    def replace(match: re.Match[str]) -> str:
-        return match.group(0) if _normalise_number(match.group(0)) in permitted else "数据不可用"
-
-    return _NUMBER.sub(replace, clause)
+    """Downgrade the complete unsupported claim so prose remains readable."""
+    del permitted
+    if _CURRENT_PRICE.search(clause):
+        return "当前价格仅以已验证行情快照为准；本句未获支持的精确价格不纳入判断。"
+    if _GUIDANCE.search(clause):
+        return "公司指引仅采用同期间官方披露；本句未获支持的精确预测不纳入判断。"
+    if _CONSENSUS.search(clause):
+        return "分析师预期仅采用有日期的独立一致预期数据；本句未获支持的精确预测不纳入判断。"
+    if _CURRENT_WORD.search(clause):
+        return "该项数据并非当前口径，已不作为当前判断依据。"
+    return "该精确数值缺少上游证据支持，已不纳入本项判断。"

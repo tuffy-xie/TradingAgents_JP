@@ -11,7 +11,6 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-
 _US_COMMUNITY = re.compile(r"(?i)\b(?:stocktwits|reddit)\b")
 
 

@@ -51,6 +51,7 @@ class Propagator:
             )
             if context_dict.get("market") == "JP"
             else {},
+            "evidence_audit": [],
             "verified_market_snapshot": verified_market_snapshot,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),

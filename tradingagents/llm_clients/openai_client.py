@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -53,23 +54,57 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         start = time.perf_counter()
+        timeout = _hard_timeout_seconds(getattr(self, "request_timeout", None))
         logger.info(
-            "[LLM] request_start provider=%s model=%s timeout_seconds=%s retry_budget=%s",
+            "[LLM] request_start provider=%s model=%s configured_timeout_seconds=%s attempt=1 retry_budget=%s",
             getattr(self, "base_url", None) or "openai-compatible",
             self.model_name,
-            getattr(self, "request_timeout", None),
+            timeout,
             getattr(self, "max_retries", None),
         )
+        outcome: dict[str, Any] = {}
+
+        def call_provider() -> None:
+            try:
+                outcome["response"] = super(NormalizedChatOpenAI, self).invoke(input, config, **kwargs)
+            except BaseException as exc:
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=call_provider, daemon=True, name="tradingagents-llm")
+        worker.start()
+        worker.join(timeout)
+        elapsed = time.perf_counter() - start
+        if worker.is_alive():
+            logger.error(
+                "[LLM] request_failed model=%s configured_timeout_seconds=%s attempt=1 elapsed_seconds=%.2f class=TIMEOUT",
+                self.model_name, timeout, elapsed,
+            )
+            raise TimeoutError(f"LLM hard deadline exceeded after {timeout:.2f}s")
         try:
-            response = super().invoke(input, config, **kwargs)
+            if "error" in outcome:
+                raise outcome["error"]
+            response = outcome["response"]
         except Exception as exc:
             logger.error(
-                "[LLM] request_failed model=%s elapsed_seconds=%.2f class=%s error=%s",
-                self.model_name, time.perf_counter() - start, _classify_llm_error(exc), type(exc).__name__,
+                "[LLM] request_failed model=%s configured_timeout_seconds=%s attempt=1 elapsed_seconds=%.2f class=%s error=%s",
+                self.model_name, timeout, time.perf_counter() - start, _classify_llm_error(exc), type(exc).__name__,
             )
             raise
-        logger.info("[LLM] request_complete model=%s elapsed_seconds=%.2f", self.model_name, time.perf_counter() - start)
+        logger.info("[LLM] request_complete model=%s configured_timeout_seconds=%s attempt=1 elapsed_seconds=%.2f", self.model_name, timeout, time.perf_counter() - start)
         return normalize_content(response)
+
+
+def _hard_timeout_seconds(value: Any) -> float | None:
+    """Return the whole-call deadline, preserving an unset provider default."""
+    if value is None:
+        return None
+    if isinstance(value, (tuple, list)):
+        value = max(value)
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return None
+    return timeout if timeout > 0 else None
 
     def with_structured_output(self, schema, *, method=None, **kwargs):
         caps = get_capabilities(self.model_name)

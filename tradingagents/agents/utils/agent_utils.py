@@ -184,17 +184,10 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     """
     context = state.get("instrument_context")
     if isinstance(context, str) and context.strip():
-        base_context = context
-    else:
-        base_context = build_instrument_context(
+        return context
+    return build_instrument_context(
         str(state["company_of_interest"]),
         state.get("asset_type", "stock"),
-        )
-    snapshot = get_verified_market_snapshot_from_state(state)
-    return (
-        base_context
-        + "\n\nData-integrity rule: exact current price, OHLC, moving averages, RSI, MACD, ATR, and VWMA may only be copied from this verified market snapshot; do not use any other provider to recompute them.\n"
-        + snapshot
     )
 
 

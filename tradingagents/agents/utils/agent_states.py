@@ -51,6 +51,7 @@ class AgentState(MessagesState):
     verified_market_snapshot: Annotated[str, "Single verified OHLCV and technical-data source for this run"]
     japan_data_bundle: Annotated[dict, "Source-attributed Japan facts; empty for non-Japan markets"]
     decision_context: Annotated[dict, "Deterministic Japan decision dimensions; empty for non-Japan markets"]
+    evidence_audit: Annotated[list[dict], "Internal JP output-evidence violations; never user-facing"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     trade_date: Annotated[str, "What date we are trading at"]
     trade_constraints: Annotated[

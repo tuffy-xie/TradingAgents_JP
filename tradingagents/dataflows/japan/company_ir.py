@@ -6,7 +6,6 @@ import asyncio
 import re
 from datetime import UTC, datetime
 from html import unescape
-from typing import Iterable
 from urllib.parse import urljoin, urlparse
 
 import yfinance as yf
