@@ -2,6 +2,7 @@
 
 from .company_ir import CompanyIRProvider
 from .edinet import EDINETProvider
+from .expectations import JapanAnalystExpectationsProvider
 from .jpx import JPXProvider
 from .jquants import JQuantsProvider
 from .jsf import JSFProvider
@@ -23,4 +24,5 @@ def build_official_japan_providers():
         JapanMacroProvider(),
         JapanNewsProvider(),
         JapanSentimentProvider(),
+        JapanAnalystExpectationsProvider(),
     )
