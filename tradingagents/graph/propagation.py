@@ -6,6 +6,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
+from tradingagents.dataflows.japan.decision import build_japan_decision_context
 from tradingagents.dataflows.market import MarketContext, resolve_market_context
 
 
@@ -45,6 +46,11 @@ class Propagator:
             "asset_type": asset_type,
             "market_context": context_dict,
             "japan_data_bundle": japan_data_bundle or {},
+            "decision_context": build_japan_decision_context(
+                japan_data_bundle, verified_market_snapshot
+            )
+            if context_dict.get("market") == "JP"
+            else {},
             "verified_market_snapshot": verified_market_snapshot,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),

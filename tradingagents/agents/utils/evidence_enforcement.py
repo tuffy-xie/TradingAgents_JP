@@ -151,6 +151,7 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
         if (source, source_type, item.get("timestamp")) in stale_keys:
             stale_numbers.update(payload_numbers)
     all_numbers.update(_numbers_in(state.get("trade_constraints") or {}))
+    all_numbers.update(_numbers_in(state.get("decision_context") or {}))
     return _Catalog(
         frozenset(all_numbers),
         frozenset(snapshot_numbers),

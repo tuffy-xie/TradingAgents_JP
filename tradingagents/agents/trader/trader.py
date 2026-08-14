@@ -10,6 +10,7 @@ from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_japan_data_context_from_state,
+    get_japan_decision_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -29,6 +30,7 @@ def create_trader(llm):
         investment_plan = state["investment_plan"]
         trade_constraints = get_trade_constraints_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
+        decision_context = get_japan_decision_context_from_state(state)
 
         messages = [
             {
@@ -51,7 +53,7 @@ def create_trader(llm):
                     f"insights from current technical market trends, macroeconomic indicators, and "
                     f"social media sentiment. Use this plan as a foundation for evaluating your next "
                     f"trading decision.\n\nProposed Investment Plan: {investment_plan}\n\n"
-                    f"Leverage these insights to make an informed and strategic decision.\n\n{japan_data_context}\n\n{trade_constraints}"
+                    f"Leverage these insights to make an informed and strategic decision.\n\n{japan_data_context}\n\n{decision_context}\n\n{trade_constraints}"
                 ),
             },
         ]
