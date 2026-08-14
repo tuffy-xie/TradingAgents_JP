@@ -121,6 +121,10 @@ def create_sentiment_analyst(llm):
             render_sentiment_report,
             "Sentiment Analyst",
         )
+        report_text = _apply_source_status_integrity(
+            report_text,
+            reddit_block if (state.get("market_context") or {}).get("market") != "JP" else "",
+        )
 
         return {
             "messages": [AIMessage(content=report_text)],
@@ -128,6 +132,24 @@ def create_sentiment_analyst(llm):
         }
 
     return sentiment_analyst_node
+
+
+def _apply_source_status_integrity(report_text: str, reddit_block: str) -> str:
+    """Add a binding availability note for sources that could not be queried."""
+    unavailable = {
+        "RATE_LIMITED": "本次因限流不可用",
+        "TIMEOUT": "本次请求超时",
+        "FETCH_FAILED": "本次获取失败",
+    }
+    for status, reason in unavailable.items():
+        if f"reddit status={status}" in reddit_block:
+            return (
+                "## 数据源状态（必须遵守）\n"
+                f"Reddit：{reason}；帖子数量为未知，情绪与社区热度均无法判断。"
+                "不得将此来源视为零提及、低热度、无人关注或任何方向性证据。\n\n"
+                + report_text
+            )
+    return report_text
 
 
 def _build_system_message(
@@ -179,9 +201,15 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 6. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this explicitly in the `confidence` field and the narrative. If the sources are silent on a given subreddit, say so.
 
-7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
+7. **Critical status rule:** a Reddit block marked RATE_LIMITED or FETCH_FAILED
+   has an UNKNOWN count, not zero. Do not describe it as zero mentions, low
+   attention, lack of FOMO, no retail participation, or a directional signal.
+   It may only lower confidence. Only an explicit successful no-posts block
+   supports a zero-post statement.
 
-8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+8. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
+
+9. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
 
 ## Output fields
 

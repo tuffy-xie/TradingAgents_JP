@@ -147,6 +147,61 @@ class TestRss429Backoff:
             reddit._fetch_subreddit_rss("NVDA", "stocks", 5, 5.0)
         slept.assert_called_once_with(12.0)
 
+    def test_rate_limited_result_has_unknown_count_not_zero_posts(self):
+        err = HTTPError("url", 429, "Too Many Requests", {}, None)
+        with patch.object(reddit, "urlopen", side_effect=[err, err]), \
+             patch.object(reddit.time, "sleep"):
+            result = reddit.fetch_reddit_data(
+                "NVDA", subreddits=("stocks",), inter_request_delay=0
+            )
+        assert result.status == "RATE_LIMITED"
+        assert result.sample_count is None
+        assert result.posts == []
+
+
+@pytest.mark.unit
+class TestFetchStatusIntegrity:
+    def test_successful_empty_search_is_distinct_from_failure(self):
+        empty_atom = _resp(
+            lambda: b'<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"/>'
+        )
+        with patch.object(reddit, "urlopen", return_value=empty_atom):
+            result = reddit.fetch_reddit_data(
+                "NVDA", subreddits=("stocks",), inter_request_delay=0
+            )
+        assert result.status == "SUCCESS"
+        assert result.sample_count == 0
+
+    def test_failed_fetch_has_unknown_count(self):
+        with patch.object(reddit, "urlopen", side_effect=OSError("network down")):
+            result = reddit.fetch_reddit_data(
+                "NVDA", subreddits=("stocks",), inter_request_delay=0
+            )
+        assert result.status == "FETCH_FAILED"
+        assert result.sample_count is None
+
+    def test_timeout_has_unknown_count(self):
+        with patch.object(reddit, "urlopen", side_effect=TimeoutError("timed out")):
+            result = reddit.fetch_reddit_data(
+                "NVDA", subreddits=("stocks",), inter_request_delay=0
+            )
+        assert result.status == "TIMEOUT"
+        assert result.sample_count is None
+
+    def test_renderer_distinguishes_rate_limit_from_successful_zero_posts(self):
+        unavailable = reddit.RedditFetchResult(
+            "RATE_LIMITED", None, [], "r/stocks: HTTP 429"
+        )
+        with patch.object(reddit, "fetch_reddit_data", return_value=unavailable):
+            rendered = reddit.fetch_reddit_posts("NVDA", subreddits=("stocks",))
+        assert "sample_count=UNKNOWN" in rendered
+        assert "Do not infer post count" in rendered
+
+        successful_zero = reddit.RedditFetchResult("SUCCESS", 0, [])
+        with patch.object(reddit, "fetch_reddit_data", return_value=successful_zero):
+            rendered = reddit.fetch_reddit_posts("NVDA", subreddits=("stocks",))
+        assert "no Reddit posts found" in rendered
+
 
 @pytest.mark.unit
 class TestChunkedTransferErrorsHandled:

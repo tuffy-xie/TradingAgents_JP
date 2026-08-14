@@ -27,6 +27,13 @@ _PERIOD_MIX = re.compile(
     r"(?:\bFY\b(?:(?![。!?\n]).)*(?:\bQ[1-4]\b|\bTTM\b)|(?:\bQ[1-4]\b|\bTTM\b)(?:(?![。!?\n]).)*\bFY\b)",
     re.I,
 )
+_UNAVAILABLE_REDDIT = re.compile(
+    r"(?:reddit[^\n。！？;]*(?:0\s*(?:posts?|mentions?)|zero\s+(?:posts?|mentions?)|"
+    r"no\s+(?:posts?|mentions?|attention)|low\s+attention|lack\s+of\s+fomo|"
+    r"无人关注|零提及|低热度|散户未进场)|"
+    r"(?:0\s*(?:posts?|mentions?)|zero\s+(?:posts?|mentions?))[^\n。！？;]*reddit)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -105,10 +112,11 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
 
 
 def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent_name: str) -> dict[str, Any]:
-    """Apply the text guard at the graph's common node boundary for JP only."""
+    """Apply social status protection for all markets and JP evidence checks."""
+    result = dict(result)
+    result = _enforce_unavailable_social_source(state, result)
     if (state.get("market_context") or {}).get("market") != "JP":
         return result
-    result = dict(result)
     audit: list[dict[str, Any]] = list(state.get("evidence_audit") or [])
 
     def clean_value(key: str, value: str) -> str:
@@ -131,6 +139,53 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
         result[debate_key] = updated
     if audit:
         result["evidence_audit"] = audit
+    return result
+
+
+def _enforce_unavailable_social_source(
+    state: Mapping[str, Any], result: dict[str, Any]
+) -> dict[str, Any]:
+    """Remove downstream popularity claims when Reddit was not queryable."""
+    status_text = " ".join(
+        str(value)
+        for value in (
+            state.get("sentiment_report"),
+            result.get("sentiment_report"),
+        )
+        if value
+    )
+    if not re.search(r"Reddit：本次(?:因限流不可用|请求超时|获取失败)", status_text):
+        return result
+
+    def clean(text: str) -> str:
+        return "".join(
+            (
+                "【数据源约束：Reddit 本次不可用，相关热度或方向性推断已移除】"
+                if _UNAVAILABLE_REDDIT.search(part)
+                else part
+            )
+            for part in re.split(r"(?<=[。！？；;])", text)
+            if part
+        )
+
+    for key in (
+        "market_report",
+        "fundamentals_report",
+        "news_report",
+        "sentiment_report",
+        "investment_plan",
+        "trader_investment_plan",
+        "final_trade_decision",
+    ):
+        if isinstance(result.get(key), str):
+            result[key] = clean(result[key])
+    for debate_key in ("investment_debate_state", "risk_debate_state"):
+        debate = result.get(debate_key)
+        if isinstance(debate, dict):
+            result[debate_key] = {
+                key: clean(value) if isinstance(value, str) else value
+                for key, value in debate.items()
+            }
     return result
 
 

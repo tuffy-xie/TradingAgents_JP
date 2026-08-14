@@ -25,6 +25,7 @@ import re
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 from urllib.error import HTTPError
 from urllib.parse import urlencode
@@ -47,6 +48,25 @@ _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
 # discussion. wallstreetbets has the most volume but most noise; stocks /
 # investing trend more measured. Caller can override.
 DEFAULT_SUBREDDITS = ("wallstreetbets", "stocks", "investing")
+
+
+@dataclass(frozen=True)
+class RedditFetchResult:
+    """Outcome of a Reddit fetch, preserving availability separately from count."""
+
+    status: str
+    sample_count: int | None
+    posts: list[dict]
+    detail: str = ""
+
+
+class RedditPosts(list):
+    """List-compatible posts carrying the fetch outcome for internal callers."""
+
+    def __init__(self, posts: list[dict], status: str = "SUCCESS", detail: str = ""):
+        super().__init__(posts)
+        self.status = status
+        self.detail = detail
 
 
 def _search_qs(ticker: str, limit: int) -> str:
@@ -90,13 +110,13 @@ def _retry_after_seconds(exc: HTTPError) -> float | None:
         return None
 
 
-def _fetch_subreddit_rss(
+def _fetch_subreddit_rss_result(
     ticker: str,
     sub: str,
     limit: int,
     timeout: float,
     _retry: bool = True,
-) -> list[dict]:
+) -> tuple[list[dict], str, str]:
     """Default path: parse the public Atom search feed for a subreddit.
 
     Carries no score / comment counts, so those fields are left None and the
@@ -117,14 +137,18 @@ def _fetch_subreddit_rss(
                 sub, ticker, wait,
             )
             time.sleep(wait)
-            return _fetch_subreddit_rss(ticker, sub, limit, timeout, _retry=False)
+            return _fetch_subreddit_rss_result(ticker, sub, limit, timeout, _retry=False)
         logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
-        return []
+        status = "RATE_LIMITED" if exc.code == 429 else "FETCH_FAILED"
+        return [], status, f"HTTP {exc.code}"
+    except TimeoutError as exc:
+        logger.warning("Reddit RSS timed out for r/%s · %s: %s", sub, ticker, exc)
+        return [], "TIMEOUT", type(exc).__name__
     except (OSError, http.client.HTTPException, ET.ParseError) as exc:
         # OSError covers URLError/TimeoutError/connection resets; HTTPException
         # covers chunked-transfer errors (IncompleteRead/BadStatusLine, #1024).
         logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
-        return []
+        return [], "FETCH_FAILED", type(exc).__name__
 
     posts = []
     for entry in root.findall("atom:entry", _ATOM_NS)[:limit]:
@@ -141,7 +165,19 @@ def _fetch_subreddit_rss(
             "selftext": _strip_html(content_el.text if content_el is not None else ""),
             "source": "rss",
         })
-    return posts
+    return posts, "SUCCESS", ""
+
+
+def _fetch_subreddit_rss(
+    ticker: str,
+    sub: str,
+    limit: int,
+    timeout: float,
+    _retry: bool = True,
+) -> list[dict]:
+    """Backward-compatible RSS fetcher returning posts only."""
+    posts, status, detail = _fetch_subreddit_rss_result(ticker, sub, limit, timeout, _retry)
+    return RedditPosts(posts, status, detail)
 
 
 def _fetch_subreddit_json(
@@ -188,6 +224,40 @@ def _fetch_subreddit(
     return _fetch_subreddit_rss(ticker, sub, limit, timeout)
 
 
+def fetch_reddit_data(
+    ticker: str,
+    subreddits: Iterable[str] = DEFAULT_SUBREDDITS,
+    limit_per_sub: int = 5,
+    timeout: float = 10.0,
+    inter_request_delay: float = 1.0,
+) -> RedditFetchResult:
+    """Fetch Reddit posts without conflating unavailable data with zero posts."""
+    ticker = crypto_base(ticker) or ticker
+    posts: list[dict] = []
+    statuses: list[str] = []
+    details: list[str] = []
+    for i, sub in enumerate(subreddits):
+        if i > 0:
+            time.sleep(inter_request_delay)
+        sub_posts = _fetch_subreddit(ticker, sub, limit_per_sub, timeout)
+        status = getattr(sub_posts, "status", "SUCCESS")
+        detail = getattr(sub_posts, "detail", "")
+        posts.extend(sub_posts)
+        statuses.append(status)
+        if detail:
+            details.append(f"r/{sub}: {detail}")
+
+    # An unavailable subreddit means a cross-subreddit count is incomplete.
+    # Do not let partial/failed access become a popularity signal.
+    if "RATE_LIMITED" in statuses:
+        return RedditFetchResult("RATE_LIMITED", None, [], "; ".join(details))
+    if "TIMEOUT" in statuses:
+        return RedditFetchResult("TIMEOUT", None, [], "; ".join(details))
+    if any(status != "SUCCESS" for status in statuses):
+        return RedditFetchResult("FETCH_FAILED", None, [], "; ".join(details))
+    return RedditFetchResult("SUCCESS", len(posts), posts)
+
+
 def fetch_reddit_posts(
     ticker: str,
     subreddits: Iterable[str] = DEFAULT_SUBREDDITS,
@@ -202,18 +272,31 @@ def fetch_reddit_posts(
     stay under Reddit's public per-IP rate limit; combined with the RSS-first
     path it makes 429s rare even when several analyses run back-to-back.
     """
-    # Crypto reaches us as a Yahoo pair (BTC-USD); search Reddit for the base
-    # ("BTC") so the query actually matches discussion instead of near-nothing.
+    result = fetch_reddit_data(
+        ticker,
+        subreddits=subreddits,
+        limit_per_sub=limit_per_sub,
+        timeout=timeout,
+        inter_request_delay=inter_request_delay,
+    )
     ticker = crypto_base(ticker) or ticker
+    if result.status != "SUCCESS":
+        return (
+            f"<reddit status={result.status}; sample_count=UNKNOWN; "
+            f"detail={result.detail or 'request unavailable'}> "
+            "Reddit data is unavailable for this run. Do not infer post count, "
+            "community attention, or sentiment direction from this source."
+        )
+
     blocks = []
-    total_posts = 0
-    for i, sub in enumerate(subreddits):
-        if i > 0:
-            time.sleep(inter_request_delay)
-        posts = _fetch_subreddit(ticker, sub, limit_per_sub, timeout)
-        total_posts += len(posts)
+    total_posts = result.sample_count or 0
+    by_subreddit = {sub: [] for sub in subreddits}
+    for post in result.posts:
+        # RSS entries do not carry the subreddit; display all successful data
+        # as a single verified sample block rather than fabricating allocation.
+        by_subreddit.setdefault("successful search", []).append(post)
+    for sub, posts in by_subreddit.items():
         if not posts:
-            blocks.append(f"r/{sub}: <no posts found mentioning {ticker.upper()} in the past 7 days>")
             continue
 
         via_rss = any(p.get("source") == "rss" for p in posts)
