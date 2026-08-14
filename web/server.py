@@ -594,32 +594,12 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     )
     summary = summary_match.group(1).strip() if summary_match else decision[:1200]
 
-    debate = data.get("investment_debate_state") or {}
-    risk = data.get("risk_debate_state") or {}
-
     blocks = []
     for json_key, _stem, label in REPORT_SECTIONS:
         content = sanitize_report_section(data.get(json_key, ""), metadata["market"], json_key)
         if not content:
             continue
         blocks.append(f'<section class="report-section"><h2>{html.escape(label)}</h2>{_md(content)}</section>')
-
-    # Optional debate detail (bull/bear, risk team) — only present in the JSON
-    # layout; appended after the headline sections so the report mirrors the
-    # full agent transcript.
-    detail = []
-    for content, label in [
-        (debate.get("bull_history"),         "多头研究员"),
-        (debate.get("bear_history"),         "空头研究员"),
-        (risk.get("aggressive_history"),     "激进分析师"),
-        (risk.get("conservative_history"),   "保守分析师"),
-        (risk.get("neutral_history"),        "中性分析师"),
-    ]:
-        if content:
-            detail.append(f'<section class="report-section"><h2>🗣️ {html.escape(label)}</h2>{_md(content)}</section>')
-    if detail:
-        blocks.append('<section class="report-section debate-divider"><h2>辩论与风控细节</h2></section>')
-        blocks.extend(detail)
 
     sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
     auto = "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""

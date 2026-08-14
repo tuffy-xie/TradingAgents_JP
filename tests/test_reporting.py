@@ -7,6 +7,7 @@ import pytest
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.reporting import write_report_tree
+from web.server import _render_report_html
 
 
 def _state():
@@ -31,6 +32,52 @@ def test_write_report_tree_creates_files(tmp_path):
     complete = out.read_text()
     assert "Trading Analysis Report: AAPL" in complete
     assert "MKT" in complete and "PM DECISION" in complete
+
+
+@pytest.mark.unit
+def test_full_debate_is_kept_out_of_default_report_and_in_debug_log(tmp_path):
+    state = _state() | {
+        "investment_debate_state": {
+            "bull_history": "BULL RAW ARGUMENT",
+            "bear_history": "BEAR RAW ARGUMENT",
+            "judge_decision": "RM PLAN",
+        },
+        "risk_debate_state": {
+            "aggressive_history": "AGGRESSIVE RAW ARGUMENT",
+            "conservative_history": "CONSERVATIVE RAW ARGUMENT",
+            "neutral_history": "NEUTRAL RAW ARGUMENT",
+            "judge_decision": "PM DECISION",
+        },
+    }
+    report = write_report_tree(state, "AAPL", tmp_path)
+    default_report = report.read_text(encoding="utf-8")
+    agent_log = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
+
+    assert "BULL RAW ARGUMENT" not in default_report
+    assert "BEAR RAW ARGUMENT" not in default_report
+    assert "AGGRESSIVE RAW ARGUMENT" not in default_report
+    assert "RM PLAN" in default_report and "PM DECISION" in default_report
+    assert "BULL RAW ARGUMENT" in agent_log
+    assert "BEAR RAW ARGUMENT" in agent_log
+    assert "AGGRESSIVE RAW ARGUMENT" in agent_log
+    assert "NEUTRAL RAW ARGUMENT" in agent_log
+
+
+@pytest.mark.unit
+def test_web_report_excludes_raw_debate_and_risk_transcripts():
+    html = _render_report_html(
+        {
+            "company_of_interest": "AAPL",
+            "trade_date": "2026-08-14",
+            "market_report": "市场摘要",
+            "investment_debate_state": {"bull_history": "BULL RAW ARGUMENT"},
+            "risk_debate_state": {"aggressive_history": "AGGRESSIVE RAW ARGUMENT"},
+        },
+        auto_print=False,
+    )
+    assert "市场摘要" in html
+    assert "BULL RAW ARGUMENT" not in html
+    assert "AGGRESSIVE RAW ARGUMENT" not in html
 
 
 @pytest.mark.unit

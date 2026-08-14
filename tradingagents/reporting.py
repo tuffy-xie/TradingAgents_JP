@@ -18,6 +18,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
+    agent_log_parts = ["# 完整多智能体推理与风控日志"]
 
     metadata = canonical_report_metadata(final_state)
     market = metadata["market"]
@@ -61,15 +62,16 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         if debate.get("bull_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
-            research_parts.append(("Bull Researcher", debate["bull_history"]))
+            agent_log_parts.append(f"## 多头研究员\n\n{debate['bull_history']}")
         if debate.get("bear_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
-            research_parts.append(("Bear Researcher", debate["bear_history"]))
+            agent_log_parts.append(f"## 空头研究员\n\n{debate['bear_history']}")
         if debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "manager.md").write_text(debate["judge_decision"], encoding="utf-8")
             research_parts.append(("Research Manager", debate["judge_decision"]))
+            agent_log_parts.append(f"## 研究经理原始评判\n\n{debate['judge_decision']}")
         if research_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
@@ -79,28 +81,25 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         trading_dir = save_path / "3_trading"
         trading_dir.mkdir(exist_ok=True)
         (trading_dir / "trader.md").write_text(final_state["trader_investment_plan"], encoding="utf-8")
+        agent_log_parts.append(f"## 交易员原始决策\n\n{final_state['trader_investment_plan']}")
         sections.append(f"## III. Trading Team Plan\n\n### Trader\n{final_state['trader_investment_plan']}")
 
     # 4. Risk Management
     if final_state.get("risk_debate_state"):
         risk_dir = save_path / "4_risk"
         risk = final_state["risk_debate_state"]
-        risk_parts = []
         if risk.get("aggressive_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
-            risk_parts.append(("Aggressive Analyst", risk["aggressive_history"]))
+            agent_log_parts.append(f"## 激进风控分析师\n\n{risk['aggressive_history']}")
         if risk.get("conservative_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "conservative.md").write_text(risk["conservative_history"], encoding="utf-8")
-            risk_parts.append(("Conservative Analyst", risk["conservative_history"]))
+            agent_log_parts.append(f"## 保守风控分析师\n\n{risk['conservative_history']}")
         if risk.get("neutral_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "neutral.md").write_text(risk["neutral_history"], encoding="utf-8")
-            risk_parts.append(("Neutral Analyst", risk["neutral_history"]))
-        if risk_parts:
-            content = "\n\n".join(f"### {name}\n{text}" for name, text in risk_parts)
-            sections.append(f"## IV. Risk Management Team Decision\n\n{content}")
+            agent_log_parts.append(f"## 中性风控分析师\n\n{risk['neutral_history']}")
 
         # 5. Portfolio Manager
         if risk.get("judge_decision"):
@@ -108,12 +107,15 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             portfolio_dir.mkdir(exist_ok=True)
             (portfolio_dir / "decision.md").write_text(risk["judge_decision"], encoding="utf-8")
             sections.append(f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{risk['judge_decision']}")
+            agent_log_parts.append(f"## 投资组合经理原始决策\n\n{risk['judge_decision']}")
 
     # Write consolidated report
+    display_symbol = metadata["symbol"] or ticker
     header = (
-        f"# Trading Analysis Report: {metadata['symbol']}\n\n"
+        f"# Trading Analysis Report: {display_symbol}\n\n"
         f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     )
     (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
+    (save_path / "full_agent_log.md").write_text("\n\n".join(agent_log_parts) + "\n", encoding="utf-8")
     return save_path / "complete_report.md"
