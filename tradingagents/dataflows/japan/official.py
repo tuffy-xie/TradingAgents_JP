@@ -6,6 +6,7 @@ from .jpx import JPXProvider
 from .jquants import JQuantsProvider
 from .jsf import JSFProvider
 from .macro import JapanMacroProvider
+from .news import JapanNewsProvider
 from .tdnet import TDnetProvider
 
 
@@ -19,4 +20,5 @@ def build_official_japan_providers():
         CompanyIRProvider(),
         JSFProvider(),
         JapanMacroProvider(),
+        JapanNewsProvider(),
     )
