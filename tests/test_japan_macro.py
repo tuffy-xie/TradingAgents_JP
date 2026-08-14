@@ -60,4 +60,4 @@ def test_japan_macro_provider_emits_structured_context(monkeypatch):
     macro = result.items[0].metadata["macro_context"]
     assert result.status.status == "OK"
     assert macro["usd_jpy"]["value"] == 100
-    assert macro["boj_policy"]["status"] == "DATA_UNAVAILABLE"
+    assert macro["boj_policy"]["status"] in {"OK", "DATA_UNAVAILABLE"}

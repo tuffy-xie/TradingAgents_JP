@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import re
 from datetime import UTC, date, datetime, timedelta
+from io import StringIO
 
+import requests
 import yfinance as yf
 
 from tradingagents.dataflows import fred
@@ -12,6 +16,7 @@ from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
+from .tdnet import extract_pdf_text
 
 _MARKETS = {
     "usd_jpy": ("JPY=X", "USD/JPY"),
@@ -56,11 +61,13 @@ class JapanMacroProvider:
                     self.name, DataStatus.DISABLED, detail="disabled by markets.jp.datasources"
                 )
             )
-        markets, series = await asyncio.gather(_market_snapshot(), _fred_snapshot(end_date))
+        markets, series, official = await asyncio.gather(
+            _market_snapshot(), _fred_snapshot(end_date), _official_japan_snapshot()
+        )
         macro = {
             **markets,
             **series,
-            "boj_policy": _na("BOJ policy / recent meeting", "event-driven"),
+            **official,
             "fed_recent_meeting": _na("Fed recent meeting", "event-driven"),
             "sector_index": _na("issuer sector index", "daily"),
         }
@@ -146,6 +153,105 @@ async def _fred_snapshot(end_date):
             return key, _na(label, frequency, type(exc).__name__)
 
     return dict(await asyncio.gather(*(one(k, v) for k, v in _FRED.items())))
+
+
+async def _official_japan_snapshot():
+    return await asyncio.to_thread(_official_japan_snapshot_sync)
+
+
+def _official_japan_snapshot_sync():
+    result = {
+        "japan_cpi": _na("Statistics Bureau of Japan", "monthly"),
+        "boj_policy": _na("Bank of Japan", "event-driven"),
+    }
+    try:
+        url = "https://www.stat.go.jp/data/cpi/2025/youshiki/csv/zmi2025s.csv"
+        rows = list(csv.reader(StringIO(requests.get(url, timeout=15).content.decode("cp932"))))
+        values = [
+            (row[0], row)
+            for row in rows
+            if row and re.fullmatch(r"20\d{4}", row[0]) and len(row) > 5 and row[0] <= "202608"
+        ]
+        latest = next(((month, row) for month, row in reversed(values) if row[1]), None)
+        if latest:
+            month, row = latest
+            previous = next(
+                (
+                    candidate
+                    for candidate in reversed(values)
+                    if candidate[0] == f"{int(month[:4]) - 1}{month[4:]}"
+                ),
+                None,
+            )
+
+            def point(index):
+                value = float(row[index]) if row[index] else None
+                prior = float(previous[1][index]) if previous and previous[1][index] else None
+                return {
+                    "value": value,
+                    "reference_month": f"{month[:4]}-{month[4:]}",
+                    "release_date": None,
+                    "timestamp": f"{month[:4]}-{month[4:]}-01",
+                    "as_of": f"{month[:4]}-{month[4:]}-01",
+                    "source": "Statistics Bureau of Japan CPI CSV",
+                    "status": "OK",
+                    "frequency": "monthly",
+                    "yoy": round(value / prior - 1, 6) if value and prior else None,
+                    "mom": None,
+                    "release_date_status": "DATA_UNAVAILABLE_IN_SOURCE_CSV",
+                }
+
+            result["japan_cpi"] = {
+                "all_items": point(1),
+                "core": point(2),
+                "core_core": point(5),
+                "source": url,
+                "status": "OK",
+                "frequency": "monthly",
+            }
+    except Exception as exc:
+        result["japan_cpi"] = _na("Statistics Bureau of Japan", "monthly", type(exc).__name__)
+    try:
+        news = requests.get("https://www.boj.or.jp/en/whatsnew/", timeout=15).text
+        link = re.search(
+            r'href="(?P<href>[^"]+mpr_\d{4}/k(?P<date>\d{6})a\.(?:htm|pdf))"[^>]*>[^<]*Statement on Monetary Policy',
+            news,
+            re.I,
+        )
+        if link:
+            href = (
+                link["href"]
+                if link["href"].startswith("http")
+                else "https://www.boj.or.jp" + link["href"]
+            )
+            document = requests.get(href, timeout=15)
+            text = (
+                extract_pdf_text(document.content, 20_000)
+                if href.endswith(".pdf")
+                else document.text
+            )
+            rate = re.search(
+                r"(?:uncollateralized overnight call rate|policy interest rate).*?(\d+(?:\.\d+)?)\s*percent",
+                text,
+                re.I | re.S,
+            )
+            raw = link["date"]
+            release = f"20{raw[:2]}-{raw[2:4]}-{raw[4:]}"
+            result["boj_policy"] = {
+                "meeting_date": release,
+                "release_date": release,
+                "policy_rate": float(rate.group(1)) if rate else None,
+                "policy_guideline": "Statement on Monetary Policy (official text link)",
+                "policy_change": "UNDETERMINED",
+                "statement_title": "Statement on Monetary Policy",
+                "source": href,
+                "status": "OK",
+                "frequency": "event-driven",
+                "as_of": release,
+            }
+    except Exception as exc:
+        result["boj_policy"] = _na("Bank of Japan", "event-driven", type(exc).__name__)
+    return result
 
 
 def _value(value, timestamp, source, frequency, values=None):
