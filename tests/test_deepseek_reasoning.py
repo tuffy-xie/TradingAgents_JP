@@ -138,45 +138,24 @@ class TestStructuredOutputCapabilityDispatch:
 
     def _client(self, model):
         return DeepSeekChatOpenAI(
-            model=model, api_key="placeholder", base_url="https://api.deepseek.com",
+            model=model,
+            api_key="placeholder",
+            base_url="https://api.deepseek.com",
         )
 
-    def test_chat_sends_tool_choice(self):
-        bound = self._client("deepseek-chat").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is not None
-
-    def test_reasoner_suppresses_tool_choice(self):
-        bound = self._client("deepseek-reasoner").with_structured_output(self._Sample)
-        # tool_choice is either absent or explicitly None — both are valid
-        # signals that langchain's bind_tools will skip the parameter.
-        assert _bound_kwargs(bound).get("tool_choice") in (None, ...) or \
-            "tool_choice" not in _bound_kwargs(bound)
-
-    def test_v4_flash_suppresses_tool_choice(self):
-        bound = self._client("deepseek-v4-flash").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
-
-    def test_v4_pro_suppresses_tool_choice(self):
-        bound = self._client("deepseek-v4-pro").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
-
-    def test_future_v_variant_via_regex(self):
-        """Forward-compat: unknown deepseek-v\\d-* IDs inherit V4 quirks."""
-        bound = self._client("deepseek-v5-hypothetical").with_structured_output(self._Sample)
-        assert _bound_kwargs(bound).get("tool_choice") is None or \
-            "tool_choice" not in _bound_kwargs(bound)
-
-    def test_schema_is_still_bound_as_tool(self):
-        """tool_choice is suppressed, but the schema is still bound as a tool —
-        exactly matching DeepSeek's official tool-calling examples."""
-        bound = self._client("deepseek-reasoner").with_structured_output(self._Sample)
-        kwargs = _bound_kwargs(bound)
-        tools = kwargs.get("tools", [])
-        assert any(
-            t.get("function", {}).get("name") == "_Sample" for t in tools
-        ), f"schema not bound as a tool: {tools}"
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "deepseek-chat",
+            "deepseek-reasoner",
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+            "deepseek-v5-hypothetical",
+        ],
+    )
+    def test_models_skip_unverified_schema_route(self, model):
+        with pytest.raises(NotImplementedError, match="free-text"):
+            self._client(model).with_structured_output(self._Sample)
 
 
 # ---------------------------------------------------------------------------
@@ -213,14 +192,8 @@ class TestDeepSeekLiveStructuredOutput:
             base_url="https://api.deepseek.com",
             timeout=60,
         )
-        bound = client.with_structured_output(self._Pick)
-        result = bound.invoke(
-            "Pick BUY or SELL or HOLD for a tech stock with strong earnings. "
-            "Confidence is a float between 0 and 1."
-        )
-        assert isinstance(result, self._Pick)
-        assert result.action in {"BUY", "SELL", "HOLD"}
-        assert 0.0 <= result.confidence <= 1.0
+        with pytest.raises(NotImplementedError, match="free-text"):
+            client.with_structured_output(self._Pick)
 
 
 # ---------------------------------------------------------------------------

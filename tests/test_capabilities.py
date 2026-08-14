@@ -11,9 +11,9 @@ from tradingagents.llm_clients.capabilities import (
 
 @pytest.mark.unit
 class TestExactIdMatches:
-    def test_deepseek_chat_supports_tool_choice(self):
+    def test_deepseek_chat_uses_free_text_fallback(self):
         caps = get_capabilities("deepseek-chat")
-        assert caps.supports_tool_choice is True
+        assert caps.preferred_structured_method == "none"
 
     def test_deepseek_reasoner_rejects_tool_choice(self):
         caps = get_capabilities("deepseek-reasoner")
@@ -113,7 +113,8 @@ class TestDefault:
     def test_exact_match_precedes_pattern(self):
         """deepseek-chat must NOT match the v\\d regex."""
         caps = get_capabilities("deepseek-chat")
-        assert caps.supports_tool_choice is True
+        assert caps.preferred_structured_method == "none"
+        assert caps.requires_reasoning_content_roundtrip is False
 
 
 @pytest.mark.unit

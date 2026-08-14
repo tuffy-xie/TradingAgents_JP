@@ -106,7 +106,7 @@ DEFAULT_CONFIG = _apply_env_overrides({
     # Providers still use their own connect/read internals, but must complete
     # the complete request within this budget. Set via
     # TRADINGAGENTS_LLM_TIMEOUT_SECONDS when a slower model needs more time.
-    "llm_timeout_seconds": 90.0,
+    "llm_timeout_seconds": 180.0,
     # Checkpoint/resume: when True, LangGraph saves state after each node
     # so a crashed run can resume from the last successful step.
     "checkpoint_enabled": False,

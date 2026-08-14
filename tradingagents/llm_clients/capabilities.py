@@ -20,9 +20,9 @@ from typing import Literal
 
 StructuredMethod = Literal[
     "function_calling",  # uses tools; respects supports_tool_choice
-    "json_mode",         # uses response_format={"type":"json_object"}
-    "json_schema",       # uses response_format={"type":"json_schema",...}
-    "none",              # no structured output available; caller falls back to free-text
+    "json_mode",  # uses response_format={"type":"json_object"}
+    "json_schema",  # uses response_format={"type":"json_schema",...}
+    "none",  # no structured output available; caller falls back to free-text
 ]
 
 
@@ -45,25 +45,23 @@ class ModelCapabilities:
     requires_reasoning_split: bool = False
 
 
-# DeepSeek's thinking models accept the ``tools`` array but reject the
-# ``tool_choice`` parameter (official Oh My Pi integration guide and the
-# 400 response in issue #678). Their official tool-calling examples
-# (api-docs.deepseek.com/guides/tool_calls) pass ``tools=[...]`` without
-# ``tool_choice`` — we mirror that pattern by setting supports_tool_choice
-# to False and letting the client suppress the kwarg.
+# DeepSeek's current OpenAI-compatible endpoint returns 400 for the
+# response_format route LangChain uses to parse schemas.  Do not repeatedly
+# send that unsupported request: agent factories take their existing natural
+# language / local parsing fallback instead.
 _DEEPSEEK_THINKING = ModelCapabilities(
     supports_tool_choice=False,
-    supports_json_mode=True,
+    supports_json_mode=False,
     supports_json_schema=False,
-    preferred_structured_method="function_calling",
+    preferred_structured_method="none",
     requires_reasoning_content_roundtrip=True,
 )
 
 _DEEPSEEK_CHAT = ModelCapabilities(
-    supports_tool_choice=True,
-    supports_json_mode=True,
+    supports_tool_choice=False,
+    supports_json_mode=False,
     supports_json_schema=False,
-    preferred_structured_method="function_calling",
+    preferred_structured_method="none",
 )
 
 # MiniMax M2.x reasoning models accept the tools array, but their
