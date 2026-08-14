@@ -162,3 +162,16 @@ def test_graph_observer_passes_agent_result_without_rewriting_prose():
         retries=0,
     )
     assert observed(_state()) == expected
+
+
+def test_market_report_numbers_remain_valid_without_snapshot():
+    state = _state()
+    state["verified_market_snapshot"] = ""
+    state["market_report"] = "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。"
+    result = enforce_agent_output(
+        state,
+        "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。",
+        "Trader",
+    )
+    assert result.warnings == ()
+    assert result.text == state["market_report"]

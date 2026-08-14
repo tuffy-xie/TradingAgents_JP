@@ -472,8 +472,8 @@ class TradingAgentsGraph:
         except Exception as exc:  # fail closed: no fallback price source is permitted
             logger.warning("[VerifiedSnapshot] unavailable ticker=%s class=%s", company_name, type(exc).__name__)
             verified_market_snapshot = (
-                "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price, OHLC, moving-average, "
-                "RSI, MACD, ATR and VWMA values must be reported as unavailable."
+                    "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: optional diagnostic unavailable; "
+                    "use valid Market Analyst market-tool results."
             )
         logger.info(
             "[MarketResolver] market=%s symbol=%s japan_bundle=%s sources=%s",

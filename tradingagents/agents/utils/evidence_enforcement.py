@@ -46,6 +46,7 @@ class EvidenceEnforcementResult:
 class _Catalog:
     all_numbers: frozenset[str]
     snapshot_numbers: frozenset[str]
+    market_report_numbers: frozenset[str]
     guidance_numbers: frozenset[str]
     analyst_numbers: frozenset[str]
     stale_numbers: frozenset[str]
@@ -81,9 +82,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         tokens = _number_tokens(clause)
         if not tokens:
             return clause
-        if _CURRENT_PRICE.search(clause) and any(token not in catalog.snapshot_numbers for token in tokens):
+        current_price_numbers = catalog.snapshot_numbers | catalog.market_report_numbers
+        if _CURRENT_PRICE.search(clause) and any(token not in current_price_numbers for token in tokens):
             warnings.append("non_snapshot_current_price")
-            return _replace_unsupported(clause, catalog.snapshot_numbers)
+            return _replace_unsupported(clause, current_price_numbers)
         if _GUIDANCE.search(clause) and any(
             token in catalog.analyst_numbers and token not in catalog.guidance_numbers for token in tokens
         ):
@@ -197,7 +199,8 @@ def _clean_line(line: str, clean_clause) -> str:
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
     snapshot_numbers = _numbers_in(state.get("verified_market_snapshot", ""))
-    all_numbers = set(snapshot_numbers)
+    market_report_numbers = _numbers_in(state.get("market_report", ""))
+    all_numbers = set(snapshot_numbers) | set(market_report_numbers)
     guidance_numbers: set[str] = set()
     analyst_numbers: set[str] = set()
     stale_numbers: set[str] = set()
@@ -222,9 +225,14 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
             stale_numbers.update(payload_numbers)
     all_numbers.update(_numbers_in(state.get("trade_constraints") or {}))
     all_numbers.update(_numbers_in(state.get("decision_context") or {}))
+    # A current Market Analyst tool report is a separate upstream observation;
+    # stale Japan-bundle values with the same numeric token must not invalidate
+    # the tool result passed to downstream agents.
+    stale_numbers.difference_update(market_report_numbers)
     return _Catalog(
         frozenset(all_numbers),
         frozenset(snapshot_numbers),
+        frozenset(market_report_numbers),
         frozenset(guidance_numbers),
         frozenset(analyst_numbers),
         frozenset(stale_numbers),

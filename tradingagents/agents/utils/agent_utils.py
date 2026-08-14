@@ -265,7 +265,7 @@ def get_verified_market_snapshot_from_state(state: Mapping[str, Any]) -> str:
     snapshot = state.get("verified_market_snapshot")
     if isinstance(snapshot, str) and snapshot.strip():
         return snapshot
-    return "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price and technical values must be reported as unavailable."
+    return "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: optional diagnostic unavailable; use valid Market Analyst market-tool results."
 
 
 def create_msg_delete():

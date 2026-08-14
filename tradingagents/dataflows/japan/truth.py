@@ -51,7 +51,7 @@ _FRESHNESS = {
 def source_of_truth_rules() -> dict[str, str]:
     """Machine-readable policy rendered into every JP agent evidence block."""
     return {
-        "current_price_ohlcv_technical": "Verified Market Snapshot only",
+        "current_price_ohlcv_technical": "Market Analyst get_stock_data/get_indicators; Verified Market Snapshot is optional diagnostic",
         "company_results_guidance": "TDnet / Company IR > J-Quants; compare only same basis and period",
         "analyst_consensus": "Independent analyst expectation; never overwrites company guidance",
         "large_shareholding": "EDINET official source",

@@ -276,8 +276,8 @@ async def analyze(
             except Exception as exc:
                 logger.warning("[VerifiedSnapshot] unavailable ticker=%s class=%s", canonical_ticker, type(exc).__name__)
                 verified_market_snapshot = (
-                    "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: exact price, OHLC, moving-average, "
-                    "RSI, MACD, ATR and VWMA values must be reported as unavailable."
+                    "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: optional diagnostic unavailable; "
+                    "use valid Market Analyst market-tool results."
                 )
             init_state = ta.propagator.create_initial_state(
                 canonical_ticker, date,

@@ -128,7 +128,7 @@ def _parse_consensus(html):
             "90D": "DATA_UNAVAILABLE:no free dated 90-day target-price history",
         },
         "current_price": None,
-        "current_price_source": "Verified Market Snapshot required; not fetched by analyst-expectations provider",
+        "current_price_source": "Market Analyst market tools or optional Verified Market Snapshot; not fetched by analyst-expectations provider",
         "upside_downside": None,
         "earnings_expectations": earnings,
         "revision_trend": _revision_trend(earnings),

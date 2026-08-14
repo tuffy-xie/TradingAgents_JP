@@ -142,11 +142,11 @@ def test_frequency_specific_freshness_and_jsf_unit_preservation():
     assert jsf.metadata["unit"] == "株"
 
 
-def test_governance_requires_verified_snapshot_for_exact_price():
+def test_governance_allows_market_tools_with_optional_snapshot_diagnostic():
     governance = build_governance_item([], "6981.T", date(2026, 8, 14))
     assert (
         governance.metadata["source_of_truth"]["current_price_ohlcv_technical"]
-        == "Verified Market Snapshot only"
+        == "Market Analyst get_stock_data/get_indicators; Verified Market Snapshot is optional diagnostic"
     )
     assert governance.metadata["derived_values"].startswith("PROHIBITED")
 
@@ -156,7 +156,18 @@ def test_all_japan_agents_receive_exact_number_and_period_rules():
     rendered = render_japan_agent_context(
         {"market_context": {"market": "JP"}, "japan_data_bundle": {"items": [governance]}}
     )
-    assert "Verified Market Snapshot" in rendered
+    assert "get_stock_data/get_indicators" in rendered
+    assert "optional diagnostic" in rendered
     assert "FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate" in rendered
     assert "AI inference" in rendered
     assert render_japan_agent_context({"market_context": {"market": "US"}}) == ""
+
+
+def test_japan_context_does_not_make_snapshot_an_technical_data_gate():
+    governance = build_governance_item([], "5016.T", date(2026, 8, 14)).to_dict()
+    rendered = render_japan_agent_context(
+        {"market_context": {"market": "JP"}, "japan_data_bundle": {"items": [governance]}}
+    )
+    assert "get_stock_data/get_indicators" in rendered
+    assert "not an admission gate" in rendered
+    assert "may only be copied from Verified Market Snapshot" not in rendered

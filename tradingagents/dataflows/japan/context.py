@@ -138,7 +138,7 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
             *_item_lines(sentiment, include_metadata=True),
             "### Source-of-truth and conflict controls",
             *_item_lines(governance, include_metadata=True),
-            "Rules: exact price/OHLCV/technical numbers may only be copied from Verified Market Snapshot. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If upstream evidence lacks an exact number, mark it unavailable; label any conclusion as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
+            "Rules: use valid exact price/OHLCV/technical numbers returned by the Market Analyst's get_stock_data/get_indicators tools; the Verified Market Snapshot is an optional diagnostic and conflict check, not an admission gate. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If upstream evidence lacks an exact number, mark it unavailable; label any conclusion as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
         ]
     )
 
@@ -174,7 +174,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
                 else "DATA UNAVAILABLE: 未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
             ),
             "## 日本市场情绪\n暂无可用日本情绪数据。",
-            "## 日股波段交易计划\n以上官方披露与需给数据已注入 Analyst、Bull/Bear、Trader、Risk Manager 和 Portfolio Manager。交易计划以最终决策中的入场、止损、止盈及仓位上限为准；若关键数据不可用，应保持观望而非补造结论。",
+            "## 日股波段交易计划\n以上官方披露与需给数据作为补充上下文，最终交易计划由各 Agent 结合 Analyst 报告综合形成；若关键数据不可用，应保持观望而非补造结论。",
             "### Japan data source status\n" + source_status,
         ]
     )
