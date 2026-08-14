@@ -15,11 +15,21 @@ from pathlib import Path
 
 import pandas as pd
 
+from tradingagents.dataflows.stockstats_utils import load_ohlcv
+
 # A fixed, common indicator set so the snapshot is the same shape every run.
 DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
-    "close_10_ema", "close_50_sma", "close_200_sma",
-    "rsi", "boll", "boll_ub", "boll_lb",
-    "macd", "macds", "macdh", "atr",
+    "close_10_ema",
+    "close_50_sma",
+    "close_200_sma",
+    "rsi",
+    "boll",
+    "boll_ub",
+    "boll_lb",
+    "macd",
+    "macds",
+    "macdh",
+    "atr",
     "vwma",
 )
 
@@ -35,11 +45,14 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     # but avoids an incidental provider refresh while rendering/synthesizing a
     # report.  If no cache exists, the normal loader is imported lazily.
     cache_dir = Path.home() / ".tradingagents" / "cache"
-    candidates = sorted(cache_dir.glob(f"{symbol.upper()}-YFin-data-*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    candidates = sorted(
+        cache_dir.glob(f"{symbol.upper()}-YFin-data-*.csv"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
     if candidates:
         data = pd.read_csv(candidates[0], on_bad_lines="skip")
     else:
-        from tradingagents.dataflows.stockstats_utils import load_ohlcv
         data = load_ohlcv(symbol, curr_date)
     if data is None or data.empty:
         raise ValueError(f"No OHLCV data available for {symbol}.")
@@ -95,18 +108,37 @@ def _latest_indicators(df: pd.DataFrame, names: Iterable[str]) -> dict[str, str]
     rsi = 100 - 100 / (1 + gain / loss.replace(0, float("nan")))
     middle = close.rolling(20, min_periods=20).mean()
     std = close.rolling(20, min_periods=20).std(ddof=0)
-    macd = close.ewm(span=12, adjust=False, min_periods=26).mean() - close.ewm(span=26, adjust=False, min_periods=26).mean()
+    macd = (
+        close.ewm(span=12, adjust=False, min_periods=26).mean()
+        - close.ewm(span=26, adjust=False, min_periods=26).mean()
+    )
     macds = macd.ewm(span=9, adjust=False, min_periods=9).mean()
     prev_close = close.shift(1)
-    true_range = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    true_range = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
     atr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-    vwma = (close * volume).rolling(20, min_periods=20).sum() / volume.rolling(20, min_periods=20).sum()
+    vwma = (close * volume).rolling(20, min_periods=20).sum() / volume.rolling(
+        20, min_periods=20
+    ).sum()
     computed = {
-        "close_10_ema": ema10, "close_50_sma": sma50, "close_200_sma": sma200,
-        "rsi": rsi, "boll": middle, "boll_ub": middle + 2 * std, "boll_lb": middle - 2 * std,
-        "macd": macd, "macds": macds, "macdh": macd - macds, "atr": atr, "vwma": vwma,
+        "close_10_ema": ema10,
+        "close_50_sma": sma50,
+        "close_200_sma": sma200,
+        "rsi": rsi,
+        "boll": middle,
+        "boll_ub": middle + 2 * std,
+        "boll_lb": middle - 2 * std,
+        "macd": macd,
+        "macds": macds,
+        "macdh": macd - macds,
+        "atr": atr,
+        "vwma": vwma,
     }
-    return {name: _fmt(computed[name].iloc[-1]) if name in computed else "N/A (unsupported)" for name in names}
+    return {
+        name: _fmt(computed[name].iloc[-1]) if name in computed else "N/A (unsupported)"
+        for name in names
+    }
 
 
 def build_verified_market_snapshot(
@@ -140,13 +172,23 @@ def build_verified_market_snapshot(
     for field in ("Open", "High", "Low", "Close", "Volume"):
         lines.append(f"| {field} | {_fmt(latest.get(field))} |")
 
-    lines += ["", "### Verified technical indicators (latest row)", "",
-              "| Indicator | Value |", "|---|---:|"]
+    lines += [
+        "",
+        "### Verified technical indicators (latest row)",
+        "",
+        "| Indicator | Value |",
+        "|---|---:|",
+    ]
     for name, value in indicator_values.items():
         lines.append(f"| {name} | {value} |")
 
-    lines += ["", f"### Recent verified closes (last {len(recent)} rows)", "",
-              "| Date | Close |", "|---|---:|"]
+    lines += [
+        "",
+        f"### Recent verified closes (last {len(recent)} rows)",
+        "",
+        "| Date | Close |",
+        "|---|---:|",
+    ]
     for _, row in recent.iterrows():
         lines.append(f"| {_fmt(row['Date'])} | {_fmt(row.get('Close'))} |")
 

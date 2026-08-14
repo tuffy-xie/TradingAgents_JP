@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from collections.abc import Iterable, Sequence
+from datetime import date
 from typing import Protocol
 
 from tradingagents.dataflows.config import get_config
@@ -19,6 +21,7 @@ from .models import (
     ProviderResponse,
     SourceStatus,
 )
+from .truth import build_governance_item
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,9 @@ class JapanDataProvider(Protocol):
     name: str
     category: str
 
-    async def fetch(self, context: MarketContext, *, start_date: str, end_date: str) -> ProviderResponse: ...
+    async def fetch(
+        self, context: MarketContext, *, start_date: str, end_date: str
+    ) -> ProviderResponse: ...
 
 
 class JapanDataService:
@@ -63,7 +68,9 @@ class JapanDataService:
             raise ValueError("JapanDataService only accepts a JP MarketContext")
 
         wanted = set(categories or ())
-        providers = tuple(provider for provider in self.providers if not wanted or provider.category in wanted)
+        providers = tuple(
+            provider for provider in self.providers if not wanted or provider.category in wanted
+        )
         semaphore = asyncio.Semaphore(self.max_concurrency)
 
         async def collect_one(provider: JapanDataProvider) -> ProviderResponse:
@@ -72,10 +79,12 @@ class JapanDataService:
 
         responses = await asyncio.gather(*(collect_one(provider) for provider in providers))
         statuses = tuple(response.status for response in responses)
-        items = tuple(item for response in responses for item in response.items)
+        raw_items = tuple(item for response in responses for item in response.items)
+        items = tuple(self._deduplicate(raw_items))
+        governance = build_governance_item(items, context.symbol, date.fromisoformat(end_date))
         return JapanResearchBundle(
             ticker=context.symbol,
-            items=tuple(self._deduplicate(items)),
+            items=(*items, governance),
             source_statuses=statuses,
         )
 
@@ -109,12 +118,16 @@ class JapanDataService:
             )
         except TimeoutError:
             response = ProviderResponse(
-                status=SourceStatus(provider.name, DataStatus.DATA_UNAVAILABLE, detail="request timed out"),
+                status=SourceStatus(
+                    provider.name, DataStatus.DATA_UNAVAILABLE, detail="request timed out"
+                ),
             )
         except Exception as exc:  # provider errors must not fail the research bundle
             logger.warning("[JapanData] %s failed: %s", provider.name, exc)
             response = ProviderResponse(
-                status=SourceStatus(provider.name, DataStatus.DATA_UNAVAILABLE, detail=type(exc).__name__),
+                status=SourceStatus(
+                    provider.name, DataStatus.DATA_UNAVAILABLE, detail=type(exc).__name__
+                ),
             )
 
         logger.info("[JapanData] %s %s", provider.name, response.status.status)
@@ -131,6 +144,12 @@ class JapanDataService:
             previous = merged.get(key)
             if previous is None:
                 merged[key] = item
+                continue
+            if not JapanDataService._same_observation(previous, item):
+                # Similar titles from different sources can have different
+                # values, bases or periods.  Preserve both for the governance
+                # layer to label rather than silently retaining the first.
+                merged[f"{key}:{item.source}:{len(merged)}"] = item
                 continue
             source_names = list(previous.metadata.get("cross_sources", [previous.source]))
             if item.source not in source_names:
@@ -154,6 +173,18 @@ class JapanDataService:
                 metadata=metadata,
             )
         return list(merged.values())
+
+    @staticmethod
+    def _same_observation(left: MarketInformation, right: MarketInformation) -> bool:
+        """Only syndications with identical payloads can be safely merged."""
+        return (
+            left.source_type == right.source_type
+            and left.layer == right.layer
+            and left.content == right.content
+            and left.status == right.status
+            and json.dumps(left.metadata, sort_keys=True, default=str)
+            == json.dumps(right.metadata, sort_keys=True, default=str)
+        )
 
     @staticmethod
     def _event_key(item: MarketInformation) -> str:

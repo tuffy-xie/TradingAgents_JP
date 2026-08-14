@@ -79,6 +79,11 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
     macro = [item for item in items if item.get("source") == "Japan Macro"]
+    expectations = [
+        item for item in items if item.get("source_type") == "japan_analyst_expectations"
+    ]
+    sentiment = [item for item in items if item.get("layer") == "MARKET_SENTIMENT"]
+    governance = [item for item in items if item.get("source_type") == "source_of_truth_assessment"]
     return "\n".join(
         [
             "## Japan market data bundle (pre-fetched; source-attributed)",
@@ -93,9 +98,13 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
             *_item_lines(short, include_metadata=True),
             "### Japan macro and cross-market context",
             *_item_lines(macro, include_metadata=True),
+            "### Analyst consensus (separate from company guidance)",
+            *_item_lines(expectations, include_metadata=True),
             "### Japan sentiment",
-            "- 暂无可用日本情绪数据。",
-            "Rules: absence of a JPX >=0.5% reported short position does not mean no short interest. JSF balances are securities-finance data, not all broker margin positions. Do not turn a disclosure, forum absence, or a single balance into a buy/sell certainty.",
+            *_item_lines(sentiment, include_metadata=True),
+            "### Source-of-truth and conflict controls",
+            *_item_lines(governance, include_metadata=True),
+            "Rules: exact price/OHLCV/technical numbers may only be copied from Verified Market Snapshot. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If upstream evidence lacks an exact number, mark it unavailable; label any conclusion as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
         ]
     )
 

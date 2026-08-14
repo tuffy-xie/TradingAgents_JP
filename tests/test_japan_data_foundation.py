@@ -61,26 +61,35 @@ def test_cache_write_failure_is_non_fatal():
 
 
 @pytest.mark.unit
-def test_service_preserves_failure_status_and_deduplicates_sources(tmp_path):
+def test_service_preserves_failure_status_and_conflicting_source_evidence(tmp_path):
     official = _Provider(
         "TDnet",
         ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=1), (_item(),)),
     )
     news = _Provider(
         "Kabutan",
-        ProviderResponse(SourceStatus("Kabutan", DataStatus.OK, item_count=1), (_item("Kabutan", False),)),
+        ProviderResponse(
+            SourceStatus("Kabutan", DataStatus.OK, item_count=1), (_item("Kabutan", False),)
+        ),
     )
     failed = _Provider("EDINET", error=RuntimeError("offline"))
-    service = JapanDataService((official, news, failed), cache=JapanDataCache(tmp_path), timeout_seconds=1)
-
-    bundle = asyncio.run(
-        service.collect(resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13")
+    service = JapanDataService(
+        (official, news, failed), cache=JapanDataCache(tmp_path), timeout_seconds=1
     )
 
-    assert len(bundle.items) == 1
-    assert bundle.items[0].verified is True
-    assert bundle.items[0].metadata["cross_sources"] == ["TDnet", "Kabutan"]
-    assert {status.source: status.status for status in bundle.source_statuses}["EDINET"] == DataStatus.DATA_UNAVAILABLE
+    bundle = asyncio.run(
+        service.collect(
+            resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"
+        )
+    )
+
+    evidence = [item for item in bundle.items if item.source_type == "disclosure"]
+    assert len(evidence) == 2
+    assert {item.source for item in evidence} == {"TDnet", "Kabutan"}
+    assert any(item.source_type == "source_of_truth_assessment" for item in bundle.items)
+    assert {status.source: status.status for status in bundle.source_statuses}[
+        "EDINET"
+    ] == DataStatus.DATA_UNAVAILABLE
 
 
 @pytest.mark.unit
