@@ -34,7 +34,13 @@ def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[s
         return {
             "ticker": context.symbol,
             "items": [],
-            "source_statuses": [{"source": "JapanData", "status": "DATA_UNAVAILABLE", "detail": "invalid trade date"}],
+            "source_statuses": [
+                {
+                    "source": "JapanData",
+                    "status": "DATA_UNAVAILABLE",
+                    "detail": "invalid trade date",
+                }
+            ],
         }
     try:
         bundle = asyncio.run(
@@ -46,7 +52,9 @@ def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[s
         return {
             "ticker": context.symbol,
             "items": [],
-            "source_statuses": [{"source": "JapanData", "status": "DATA_UNAVAILABLE", "detail": type(exc).__name__}],
+            "source_statuses": [
+                {"source": "JapanData", "status": "DATA_UNAVAILABLE", "detail": type(exc).__name__}
+            ],
         }
     return bundle.to_dict()
 
@@ -63,42 +71,70 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
         + (f" ({status['detail']})" if status.get("detail") else "")
         for status in bundle.get("source_statuses", [])
     ]
-    official = [item for item in items if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}]
+    official = [
+        item
+        for item in items
+        if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}
+    ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
-    return "\n".join([
-        "## Japan market data bundle (pre-fetched; source-attributed)",
-        "This block is the only Japan-specific factual input. Treat VERIFIED FACT as fact; do not infer unavailable data.",
-        "### Source status", *(status_lines or ["- DATA_UNAVAILABLE"]),
-        "### Verified official disclosures", *_item_lines(official, include_metadata=False),
-        "### Credit supply/demand", *_item_lines(supply, include_metadata=True),
-        "### Reportable institutional short positions", *_item_lines(short, include_metadata=True),
-        "### Japan sentiment and macro", "- 暂无可用日本情绪数据。",
-        "Rules: absence of a JPX >=0.5% reported short position does not mean no short interest. JSF balances are securities-finance data, not all broker margin positions. Do not turn a disclosure, forum absence, or a single balance into a buy/sell certainty.",
-    ])
+    macro = [item for item in items if item.get("source") == "Japan Macro"]
+    return "\n".join(
+        [
+            "## Japan market data bundle (pre-fetched; source-attributed)",
+            "This block is the only Japan-specific factual input. Treat VERIFIED FACT as fact; do not infer unavailable data.",
+            "### Source status",
+            *(status_lines or ["- DATA_UNAVAILABLE"]),
+            "### Verified official disclosures",
+            *_item_lines(official, include_metadata=False),
+            "### Credit supply/demand",
+            *_item_lines(supply, include_metadata=True),
+            "### Reportable institutional short positions",
+            *_item_lines(short, include_metadata=True),
+            "### Japan macro and cross-market context",
+            *_item_lines(macro, include_metadata=True),
+            "### Japan sentiment",
+            "- 暂无可用日本情绪数据。",
+            "Rules: absence of a JPX >=0.5% reported short position does not mean no short interest. JSF balances are securities-finance data, not all broker margin positions. Do not turn a disclosure, forum absence, or a single balance into a buy/sell certainty.",
+        ]
+    )
 
 
 def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     """Render deterministic JP-only report sections without LLM invention."""
     bundle = bundle or {}
     items = bundle.get("items") or []
-    official = [item for item in items if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}]
+    official = [
+        item
+        for item in items
+        if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}
+    ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
     statuses = bundle.get("source_statuses") or []
-    source_status = "\n".join(
-        f"- {entry.get('source', 'Unknown')}: {entry.get('status', 'DATA_UNAVAILABLE')}"
-        + (f" — {entry['detail']}" if entry.get("detail") else "")
-        for entry in statuses
-    ) or "- DATA_UNAVAILABLE"
-    return "\n\n".join([
-        "## 日本官方披露\n" + "\n".join(_item_lines(official, include_metadata=False)),
-        "## 信用与需给\n" + "\n".join(_item_lines(supply, include_metadata=True)),
-        "## 空卖与机构行为\n" + ("\n".join(_item_lines(short, include_metadata=True)) if short else "DATA UNAVAILABLE: 未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"),
-        "## 日本市场情绪\n暂无可用日本情绪数据。",
-        "## 日股波段交易计划\n以上官方披露与需给数据已注入 Analyst、Bull/Bear、Trader、Risk Manager 和 Portfolio Manager。交易计划以最终决策中的入场、止损、止盈及仓位上限为准；若关键数据不可用，应保持观望而非补造结论。",
-        "### Japan data source status\n" + source_status,
-    ])
+    source_status = (
+        "\n".join(
+            f"- {entry.get('source', 'Unknown')}: {entry.get('status', 'DATA_UNAVAILABLE')}"
+            + (f" — {entry['detail']}" if entry.get("detail") else "")
+            for entry in statuses
+        )
+        or "- DATA_UNAVAILABLE"
+    )
+    return "\n\n".join(
+        [
+            "## 日本官方披露\n" + "\n".join(_item_lines(official, include_metadata=False)),
+            "## 信用与需给\n" + "\n".join(_item_lines(supply, include_metadata=True)),
+            "## 空卖与机构行为\n"
+            + (
+                "\n".join(_item_lines(short, include_metadata=True))
+                if short
+                else "DATA UNAVAILABLE: 未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
+            ),
+            "## 日本市场情绪\n暂无可用日本情绪数据。",
+            "## 日股波段交易计划\n以上官方披露与需给数据已注入 Analyst、Bull/Bear、Trader、Risk Manager 和 Portfolio Manager。交易计划以最终决策中的入场、止损、止盈及仓位上限为准；若关键数据不可用，应保持观望而非补造结论。",
+            "### Japan data source status\n" + source_status,
+        ]
+    )
 
 
 def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> list[str]:
@@ -111,7 +147,11 @@ def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> li
             prefix += f" ({item['url']})"
         if include_metadata and item.get("metadata"):
             metadata = item["metadata"]
-            selected = {key: value for key, value in metadata.items() if value is not None and key not in {"coverage", "company"}}
+            selected = {
+                key: value
+                for key, value in metadata.items()
+                if value is not None and key not in {"coverage", "company"}
+            }
             if selected:
                 prefix += f" — {selected}"
         lines.append(prefix)
