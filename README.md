@@ -114,6 +114,510 @@ SPY
 - 原有 US 数据源与 Agent 路径保持独立。
 
 ---
+---
+
+# 数据源与 API Key
+
+## 日股核心源
+
+| 数据源 | 用途 | 是否需要 Key | 环境变量 |
+|---|---|---:|---|
+| J-Quants API V2 | 日股官方资料 / 日线 / 财务摘要 | 是 | `JQUANTS_API_KEY` |
+| EDINET API V2 | 大量保有 / 变更报告 / PDF | 是 | `EDINET_API_KEY` |
+| TDnet | 官方适时披露 | 否 | - |
+| Company IR | 官方 IR PDF / 说明资料 | 否 | - |
+| JSF / 日証金 | 融资 / 贷株历史 | 否 | - |
+| BOJ | 日本央行政策 | 否 | - |
+| 总务省统计局 | 日本 CPI | 否 | - |
+| Yahoo Finance / yfinance | 行情 / 指数 / 汇率 | 否 | - |
+| Yahoo Finance Japan | 日股新闻 | 否 | - |
+| 株探 Kabutan | 日股新闻 | 否 | - |
+| Yahoo 掲示板 | 日股情绪 | 否 | - |
+| みんかぶ | 分析师共识 | 否 | - |
+
+> 公开网页来源可能因页面结构、条款、反爬策略或发布时间字段变化而临时不可用。项目遵循“宁缺毋滥”，不以低质量数据填满 Bundle。
+
+---
+
+## 美国 / 宏观相关
+
+| 数据源 | 用途 | 是否需要 Key | 环境变量 |
+|---|---|---:|---|
+| FRED | US10Y / Fed / CPI / PCE / 就业等 | 是 | `FRED_API_KEY` |
+| Alpha Vantage | 原版可选股票 / 新闻 / 基本面源 | 可选 | `ALPHA_VANTAGE_API_KEY` |
+| Reddit RSS | US 社区情绪 best-effort | 否 | - |
+| StockTwits | 原版 US 情绪 | 视现有实现 | - |
+| Yahoo Finance | US 行情 | 否 | - |
+
+### Reddit 当前说明
+
+当前 US 路径中的 Reddit RSS 可能出现：
+
+```text
+429 Too Many Requests
+```
+
+此时应快速降级为：
+
+```text
+RATE_LIMITED
+```
+
+而不是让整个股票分析失败。
+
+本分支当前没有要求配置 Reddit OAuth Key。
+
+---
+
+# API Key 官方获取地址
+
+## J-Quants
+
+官方网站：
+
+https://jpx-jquants.com/
+
+步骤：
+
+1. 注册 / 登录 J-Quants
+2. 选择可用方案
+3. 进入 Dashboard
+4. 获取 API Key
+5. 写入：
+
+```env
+JQUANTS_API_KEY=your_key
+```
+
+J-Quants API V2 使用 API Key 认证。
+
+---
+
+## EDINET
+
+EDINET：
+
+https://disclosure2.edinet-fsa.go.jp/
+
+API Key 注册：
+
+https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1
+
+如果登录后 API 注册页面空白，请确认浏览器允许：
+
+```text
+https://api.edinet-fsa.go.jp/
+```
+
+的弹出窗口 / Pop-up。
+
+写入：
+
+```env
+EDINET_API_KEY=your_key
+```
+
+---
+
+## FRED
+
+API Key 页面：
+
+https://fred.stlouisfed.org/docs/api/api_key.html
+
+写入：
+
+```env
+FRED_API_KEY=your_key
+```
+
+---
+
+## DeepSeek
+
+开放平台：
+
+https://platform.deepseek.com/
+
+写入：
+
+```env
+DEEPSEEK_API_KEY=your_key
+```
+
+---
+
+## OpenAI
+
+API Platform：
+
+https://platform.openai.com/
+
+写入：
+
+```env
+OPENAI_API_KEY=your_key
+```
+
+---
+
+## Google Gemini
+
+Google AI Studio：
+
+https://ai.google.dev/aistudio
+
+本项目沿用 TradingAgents 当前环境变量名：
+
+```env
+GOOGLE_API_KEY=your_key
+```
+
+> Google 官方 Gemini 文档可能使用 `GEMINI_API_KEY`，但请以本仓库当前代码读取的变量名为准，不要自行改名。
+
+---
+
+## Anthropic
+
+Console：
+
+https://console.anthropic.com/
+
+```env
+ANTHROPIC_API_KEY=your_key
+```
+
+---
+
+## xAI
+
+Console：
+
+https://console.x.ai/
+
+```env
+XAI_API_KEY=your_key
+```
+
+---
+
+## OpenRouter
+
+https://openrouter.ai/
+
+```env
+OPENROUTER_API_KEY=your_key
+```
+
+---
+
+## Alpha Vantage
+
+免费 API Key：
+
+https://www.alphavantage.co/support/#api-key
+
+```env
+ALPHA_VANTAGE_API_KEY=your_key
+```
+
+---
+
+# 推荐 .env
+
+先复制：
+
+```bash
+cp .env.example .env
+```
+
+然后只填写自己真正使用的 Key。
+
+## 推荐：DeepSeek + 日股完整数据
+
+```env
+# ============================================================
+# LLM
+# ============================================================
+
+DEEPSEEK_API_KEY=
+
+# 如果使用其他模型，再填写对应 Key
+OPENAI_API_KEY=
+GOOGLE_API_KEY=
+ANTHROPIC_API_KEY=
+XAI_API_KEY=
+OPENROUTER_API_KEY=
+
+# 原版 TradingAgents 其他可选 Provider
+DASHSCOPE_API_KEY=
+DASHSCOPE_CN_API_KEY=
+ZHIPU_API_KEY=
+ZHIPU_CN_API_KEY=
+MINIMAX_API_KEY=
+MINIMAX_CN_API_KEY=
+MISTRAL_API_KEY=
+MOONSHOT_API_KEY=
+GROQ_API_KEY=
+NVIDIA_API_KEY=
+
+# ============================================================
+# JAPAN OFFICIAL DATA
+# ============================================================
+
+JQUANTS_API_KEY=
+EDINET_API_KEY=
+
+# ============================================================
+# US / MACRO
+# ============================================================
+
+FRED_API_KEY=
+
+# 原版可选
+ALPHA_VANTAGE_API_KEY=
+
+# ============================================================
+# OPENAI-COMPATIBLE / LOCAL
+# ============================================================
+
+OPENAI_COMPATIBLE_API_KEY=
+#OLLAMA_BASE_URL=http://localhost:11434/v1
+
+# ============================================================
+# TRADINGAGENTS
+# ============================================================
+
+# 单次 LLM hard deadline
+TRADINGAGENTS_LLM_TIMEOUT_SECONDS=180
+
+# 选择 Provider
+#TRADINGAGENTS_LLM_PROVIDER=deepseek
+
+# 模型
+#TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro
+#TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash
+
+# OpenAI-compatible endpoint
+#TRADINGAGENTS_LLM_BACKEND_URL=
+
+# 输出语言
+#TRADINGAGENTS_OUTPUT_LANGUAGE=Chinese
+
+# Debate / Risk rounds
+#TRADINGAGENTS_MAX_DEBATE_ROUNDS=1
+#TRADINGAGENTS_MAX_RISK_ROUNDS=1
+
+# Checkpoint
+#TRADINGAGENTS_CHECKPOINT_ENABLED=false
+
+# Temperature
+#TRADINGAGENTS_TEMPERATURE=0.0
+
+# SDK retry budget
+# 注意：TIMEOUT_CLIENT_DETACHED 后不应立即重复相同请求
+#TRADINGAGENTS_LLM_MAX_RETRIES=2
+```
+---
+
+# 安装
+
+推荐 Python 3.11 / 3.12。
+
+```bash
+git clone <YOUR_REPOSITORY_URL>
+cd TradingAgents
+```
+
+创建环境：
+
+```bash
+conda create -n tradingagents python=3.12
+conda activate tradingagents
+```
+
+安装：
+
+```bash
+pip install .
+```
+
+开发环境：
+
+```bash
+pip install -e ".[dev]"
+```
+
+---
+
+# CLI
+
+```bash
+tradingagents
+```
+
+或：
+
+```bash
+python -m cli.main
+```
+
+程序会让你选择：
+
+- Ticker
+- Analysis date
+- LLM Provider
+- Deep / Quick model
+- Analyst
+- Research depth
+- Trading horizon
+- Output language
+- Checkpoint
+
+---
+
+# Web UI
+
+本分支包含 `web/` 服务与前端。
+
+请使用仓库当前的 Web 启动脚本启动 FastAPI / Uvicorn 服务。
+
+启动成功后，通常访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+日志中会看到：
+
+```text
+Uvicorn running on http://127.0.0.1:8000
+```
+
+如果端口被占用，请先结束占用 8000 的旧进程，或更换端口。
+
+---
+
+# Python Usage
+
+```python
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.default_config import DEFAULT_CONFIG
+
+config = DEFAULT_CONFIG.copy()
+
+ta = TradingAgentsGraph(
+    debug=True,
+    config=config,
+)
+
+_, decision = ta.propagate("5801.T", "2026-08-14")
+
+print(decision)
+```
+
+美股示例：
+
+```python
+_, decision = ta.propagate("CRCL", "2026-08-14")
+```
+
+---
+
+# Persistence / Checkpoint
+
+原版 Decision Log / Checkpoint 机制继续保留。
+
+Checkpoint 用于分析中断后的恢复。
+
+例如：
+
+```bash
+tradingagents analyze --checkpoint
+```
+
+清理 checkpoint：
+
+```bash
+tradingagents analyze --clear-checkpoints
+```
+
+如果运行长周期、高 research depth 分析，建议启用 checkpoint。
+
+---
+
+# 当前已知限制
+
+## 1. J-Quants 权限取决于方案
+
+不同账户可能出现：
+
+```text
+403
+429
+历史范围受限
+数据延迟
+```
+
+项目会透明记录，不静默伪造数据。
+
+## 2. TOPIX
+
+如果免费可靠近期数据源无法获得：
+
+```text
+DATA_UNAVAILABLE
+```
+
+## 3. Japan CPI
+
+优先使用日本官方数据。
+
+如果当前 CSV / 页面无法可靠解析最新数值，不会使用 stale 数据伪装成当前 CPI。
+
+## 4. Reuters Japan
+
+当前没有授权稳定的结构化 feed：
+
+```text
+DATA_UNAVAILABLE
+```
+
+不会通过脆弱抓取强行接入。
+
+## 5. 社区情绪
+
+Yahoo掲示板是辅助源。
+
+论坛语义分类可能偏保守，不应单独作为交易信号。
+
+## 6. Analyst Consensus
+
+当前免费层主要是整体共识。
+
+通常无法获得：
+
+- 每家券商逐条评级日期
+- 单家机构目标价变动明细
+- 完整 analyst revision history
+
+因此不能凭空写：
+
+```text
+某券商今日把目标价从 X 上调至 Y
+```
+
+除非上游证据真实存在。
+
+## 7. Timeout Client Detached
+
+180 秒 hard deadline 后 Graph 不再等待，但底层同步 SDK 请求不保证真实取消。
+
+详见：
+
+```text
+TIMEOUT_CLIENT_DETACHED
+```
 
 # 日股数据层
 
@@ -797,510 +1301,6 @@ FREE_TEXT_FALLBACK
 
 只有 provider / model 明确声明支持时才使用原生 structured output。
 
----
-
-# 数据源与 API Key
-
-## 日股核心源
-
-| 数据源 | 用途 | 是否需要 Key | 环境变量 |
-|---|---|---:|---|
-| J-Quants API V2 | 日股官方资料 / 日线 / 财务摘要 | 是 | `JQUANTS_API_KEY` |
-| EDINET API V2 | 大量保有 / 变更报告 / PDF | 是 | `EDINET_API_KEY` |
-| TDnet | 官方适时披露 | 否 | - |
-| Company IR | 官方 IR PDF / 说明资料 | 否 | - |
-| JSF / 日証金 | 融资 / 贷株历史 | 否 | - |
-| BOJ | 日本央行政策 | 否 | - |
-| 总务省统计局 | 日本 CPI | 否 | - |
-| Yahoo Finance / yfinance | 行情 / 指数 / 汇率 | 否 | - |
-| Yahoo Finance Japan | 日股新闻 | 否 | - |
-| 株探 Kabutan | 日股新闻 | 否 | - |
-| Yahoo 掲示板 | 日股情绪 | 否 | - |
-| みんかぶ | 分析师共识 | 否 | - |
-
-> 公开网页来源可能因页面结构、条款、反爬策略或发布时间字段变化而临时不可用。项目遵循“宁缺毋滥”，不以低质量数据填满 Bundle。
-
----
-
-## 美国 / 宏观相关
-
-| 数据源 | 用途 | 是否需要 Key | 环境变量 |
-|---|---|---:|---|
-| FRED | US10Y / Fed / CPI / PCE / 就业等 | 是 | `FRED_API_KEY` |
-| Alpha Vantage | 原版可选股票 / 新闻 / 基本面源 | 可选 | `ALPHA_VANTAGE_API_KEY` |
-| Reddit RSS | US 社区情绪 best-effort | 否 | - |
-| StockTwits | 原版 US 情绪 | 视现有实现 | - |
-| Yahoo Finance | US 行情 | 否 | - |
-
-### Reddit 当前说明
-
-当前 US 路径中的 Reddit RSS 可能出现：
-
-```text
-429 Too Many Requests
-```
-
-此时应快速降级为：
-
-```text
-RATE_LIMITED
-```
-
-而不是让整个股票分析失败。
-
-本分支当前没有要求配置 Reddit OAuth Key。
-
----
-
-# API Key 官方获取地址
-
-## J-Quants
-
-官方网站：
-
-https://jpx-jquants.com/
-
-步骤：
-
-1. 注册 / 登录 J-Quants
-2. 选择可用方案
-3. 进入 Dashboard
-4. 获取 API Key
-5. 写入：
-
-```env
-JQUANTS_API_KEY=your_key
-```
-
-J-Quants API V2 使用 API Key 认证。
-
----
-
-## EDINET
-
-EDINET：
-
-https://disclosure2.edinet-fsa.go.jp/
-
-API Key 注册：
-
-https://api.edinet-fsa.go.jp/api/auth/index.aspx?mode=1
-
-如果登录后 API 注册页面空白，请确认浏览器允许：
-
-```text
-https://api.edinet-fsa.go.jp/
-```
-
-的弹出窗口 / Pop-up。
-
-写入：
-
-```env
-EDINET_API_KEY=your_key
-```
-
----
-
-## FRED
-
-API Key 页面：
-
-https://fred.stlouisfed.org/docs/api/api_key.html
-
-写入：
-
-```env
-FRED_API_KEY=your_key
-```
-
----
-
-## DeepSeek
-
-开放平台：
-
-https://platform.deepseek.com/
-
-写入：
-
-```env
-DEEPSEEK_API_KEY=your_key
-```
-
----
-
-## OpenAI
-
-API Platform：
-
-https://platform.openai.com/
-
-写入：
-
-```env
-OPENAI_API_KEY=your_key
-```
-
----
-
-## Google Gemini
-
-Google AI Studio：
-
-https://ai.google.dev/aistudio
-
-本项目沿用 TradingAgents 当前环境变量名：
-
-```env
-GOOGLE_API_KEY=your_key
-```
-
-> Google 官方 Gemini 文档可能使用 `GEMINI_API_KEY`，但请以本仓库当前代码读取的变量名为准，不要自行改名。
-
----
-
-## Anthropic
-
-Console：
-
-https://console.anthropic.com/
-
-```env
-ANTHROPIC_API_KEY=your_key
-```
-
----
-
-## xAI
-
-Console：
-
-https://console.x.ai/
-
-```env
-XAI_API_KEY=your_key
-```
-
----
-
-## OpenRouter
-
-https://openrouter.ai/
-
-```env
-OPENROUTER_API_KEY=your_key
-```
-
----
-
-## Alpha Vantage
-
-免费 API Key：
-
-https://www.alphavantage.co/support/#api-key
-
-```env
-ALPHA_VANTAGE_API_KEY=your_key
-```
-
----
-
-# 推荐 .env
-
-先复制：
-
-```bash
-cp .env.example .env
-```
-
-然后只填写自己真正使用的 Key。
-
-## 推荐：DeepSeek + 日股完整数据
-
-```env
-# ============================================================
-# LLM
-# ============================================================
-
-DEEPSEEK_API_KEY=
-
-# 如果使用其他模型，再填写对应 Key
-OPENAI_API_KEY=
-GOOGLE_API_KEY=
-ANTHROPIC_API_KEY=
-XAI_API_KEY=
-OPENROUTER_API_KEY=
-
-# 原版 TradingAgents 其他可选 Provider
-DASHSCOPE_API_KEY=
-DASHSCOPE_CN_API_KEY=
-ZHIPU_API_KEY=
-ZHIPU_CN_API_KEY=
-MINIMAX_API_KEY=
-MINIMAX_CN_API_KEY=
-MISTRAL_API_KEY=
-MOONSHOT_API_KEY=
-GROQ_API_KEY=
-NVIDIA_API_KEY=
-
-# ============================================================
-# JAPAN OFFICIAL DATA
-# ============================================================
-
-JQUANTS_API_KEY=
-EDINET_API_KEY=
-
-# ============================================================
-# US / MACRO
-# ============================================================
-
-FRED_API_KEY=
-
-# 原版可选
-ALPHA_VANTAGE_API_KEY=
-
-# ============================================================
-# OPENAI-COMPATIBLE / LOCAL
-# ============================================================
-
-OPENAI_COMPATIBLE_API_KEY=
-#OLLAMA_BASE_URL=http://localhost:11434/v1
-
-# ============================================================
-# TRADINGAGENTS
-# ============================================================
-
-# 单次 LLM hard deadline
-TRADINGAGENTS_LLM_TIMEOUT_SECONDS=180
-
-# 选择 Provider
-#TRADINGAGENTS_LLM_PROVIDER=deepseek
-
-# 模型
-#TRADINGAGENTS_DEEP_THINK_LLM=deepseek-v4-pro
-#TRADINGAGENTS_QUICK_THINK_LLM=deepseek-v4-flash
-
-# OpenAI-compatible endpoint
-#TRADINGAGENTS_LLM_BACKEND_URL=
-
-# 输出语言
-#TRADINGAGENTS_OUTPUT_LANGUAGE=Chinese
-
-# Debate / Risk rounds
-#TRADINGAGENTS_MAX_DEBATE_ROUNDS=1
-#TRADINGAGENTS_MAX_RISK_ROUNDS=1
-
-# Checkpoint
-#TRADINGAGENTS_CHECKPOINT_ENABLED=false
-
-# Temperature
-#TRADINGAGENTS_TEMPERATURE=0.0
-
-# SDK retry budget
-# 注意：TIMEOUT_CLIENT_DETACHED 后不应立即重复相同请求
-#TRADINGAGENTS_LLM_MAX_RETRIES=2
-```
----
-
-# 安装
-
-推荐 Python 3.11 / 3.12。
-
-```bash
-git clone <YOUR_REPOSITORY_URL>
-cd TradingAgents
-```
-
-创建环境：
-
-```bash
-conda create -n tradingagents python=3.12
-conda activate tradingagents
-```
-
-安装：
-
-```bash
-pip install .
-```
-
-开发环境：
-
-```bash
-pip install -e ".[dev]"
-```
-
----
-
-# CLI
-
-```bash
-tradingagents
-```
-
-或：
-
-```bash
-python -m cli.main
-```
-
-程序会让你选择：
-
-- Ticker
-- Analysis date
-- LLM Provider
-- Deep / Quick model
-- Analyst
-- Research depth
-- Trading horizon
-- Output language
-- Checkpoint
-
----
-
-# Web UI
-
-本分支包含 `web/` 服务与前端。
-
-请使用仓库当前的 Web 启动脚本启动 FastAPI / Uvicorn 服务。
-
-启动成功后，通常访问：
-
-```text
-http://127.0.0.1:8000
-```
-
-日志中会看到：
-
-```text
-Uvicorn running on http://127.0.0.1:8000
-```
-
-如果端口被占用，请先结束占用 8000 的旧进程，或更换端口。
-
----
-
-# Python Usage
-
-```python
-from tradingagents.graph.trading_graph import TradingAgentsGraph
-from tradingagents.default_config import DEFAULT_CONFIG
-
-config = DEFAULT_CONFIG.copy()
-
-ta = TradingAgentsGraph(
-    debug=True,
-    config=config,
-)
-
-_, decision = ta.propagate("5801.T", "2026-08-14")
-
-print(decision)
-```
-
-美股示例：
-
-```python
-_, decision = ta.propagate("CRCL", "2026-08-14")
-```
-
----
-
-# Persistence / Checkpoint
-
-原版 Decision Log / Checkpoint 机制继续保留。
-
-Checkpoint 用于分析中断后的恢复。
-
-例如：
-
-```bash
-tradingagents analyze --checkpoint
-```
-
-清理 checkpoint：
-
-```bash
-tradingagents analyze --clear-checkpoints
-```
-
-如果运行长周期、高 research depth 分析，建议启用 checkpoint。
-
----
-
-# 当前已知限制
-
-## 1. J-Quants 权限取决于方案
-
-不同账户可能出现：
-
-```text
-403
-429
-历史范围受限
-数据延迟
-```
-
-项目会透明记录，不静默伪造数据。
-
-## 2. TOPIX
-
-如果免费可靠近期数据源无法获得：
-
-```text
-DATA_UNAVAILABLE
-```
-
-## 3. Japan CPI
-
-优先使用日本官方数据。
-
-如果当前 CSV / 页面无法可靠解析最新数值，不会使用 stale 数据伪装成当前 CPI。
-
-## 4. Reuters Japan
-
-当前没有授权稳定的结构化 feed：
-
-```text
-DATA_UNAVAILABLE
-```
-
-不会通过脆弱抓取强行接入。
-
-## 5. 社区情绪
-
-Yahoo掲示板是辅助源。
-
-论坛语义分类可能偏保守，不应单独作为交易信号。
-
-## 6. Analyst Consensus
-
-当前免费层主要是整体共识。
-
-通常无法获得：
-
-- 每家券商逐条评级日期
-- 单家机构目标价变动明细
-- 完整 analyst revision history
-
-因此不能凭空写：
-
-```text
-某券商今日把目标价从 X 上调至 Y
-```
-
-除非上游证据真实存在。
-
-## 7. Timeout Client Detached
-
-180 秒 hard deadline 后 Graph 不再等待，但底层同步 SDK 请求不保证真实取消。
-
-详见：
-
-```text
-TIMEOUT_CLIENT_DETACHED
-```
 
 ---
 
