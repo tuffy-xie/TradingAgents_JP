@@ -8,7 +8,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_japan_data_context_from_state,
     get_language_instruction,
-    get_verified_market_snapshot_from_state,
 )
 
 
@@ -17,7 +16,6 @@ def create_fundamentals_analyst(llm):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
-        verified_snapshot = get_verified_market_snapshot_from_state(state)
         is_etf = (state.get("market_context") or {}).get("instrument_type") == "ETF"
 
         tools = [get_fundamentals] if is_etf else [
@@ -35,8 +33,6 @@ def create_fundamentals_analyst(llm):
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + " " + framework
-            + "\n\nThe following is the single verified source for all current price, OHLC, moving-average, RSI, MACD, ATR, and VWMA claims. Do not obtain or infer these values from fundamentals tools; report unavailable if this snapshot is unavailable:\n"
-            + verified_snapshot
             + ("\n\n" + japan_data_context if japan_data_context else "")
             + get_language_instruction(),
         )

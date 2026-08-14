@@ -1,7 +1,6 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
     get_japan_data_context_from_state,
-    get_japan_decision_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -23,7 +22,6 @@ def create_aggressive_debator(llm):
         instrument_context = get_instrument_context_from_state(state)
         trade_constraints = get_trade_constraints_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
-        decision_context = get_japan_decision_context_from_state(state)
 
         trader_decision = state["trader_investment_plan"]
 
@@ -39,7 +37,6 @@ Social Media Sentiment Report: {sentiment_report}
 Latest World Affairs Report: {news_report}
 Company Fundamentals Report: {fundamentals_report}
 {japan_data_context}
-{decision_context}
 {trade_constraints}
 Here is the current conversation history: {history} Here are the last arguments from the conservative analyst: {current_conservative_response} Here are the last arguments from the neutral analyst: {current_neutral_response}. If there are no responses from the other viewpoints yet, present your own argument based on the available data.
 

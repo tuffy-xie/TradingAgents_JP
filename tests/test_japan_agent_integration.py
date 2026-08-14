@@ -56,12 +56,13 @@ def test_japan_report_sections_are_explicit_and_do_not_fabricate_sentiment(tmp_p
     assert (tmp_path / "0_japan_market_data" / "official_and_supply_demand.md").exists()
 
 
-def test_japan_sentiment_prompt_uses_bundle_not_us_community_sources(monkeypatch):
+def test_japan_sentiment_prompt_appends_to_original_community_sources(monkeypatch):
     from tradingagents.agents.analysts import sentiment_analyst as module
     from tradingagents.agents.schemas import SentimentBand, SentimentReport
 
-    monkeypatch.setattr(module, "fetch_stocktwits_messages", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()))
-    monkeypatch.setattr(module, "fetch_reddit_posts", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(module, "fetch_stocktwits_messages", lambda *_args, **_kwargs: "StockTwits sample")
+    monkeypatch.setattr(module, "fetch_reddit_posts", lambda *_args, **_kwargs: "Reddit sample")
+    monkeypatch.setattr(module.get_news, "func", lambda *_args, **_kwargs: "Yahoo news sample")
     captured = {}
     structured = MagicMock()
 
@@ -79,4 +80,6 @@ def test_japan_sentiment_prompt_uses_bundle_not_us_community_sources(monkeypatch
     assert "DATA UNAVAILABLE" in result["sentiment_report"]
     prompt_text = str(captured["prompt"])
     assert "自己株式の取得" in prompt_text
-    assert "StockTwits messages" not in prompt_text
+    assert "StockTwits messages" in prompt_text
+    assert "Reddit posts" in prompt_text
+    assert "Yahoo news sample" in prompt_text

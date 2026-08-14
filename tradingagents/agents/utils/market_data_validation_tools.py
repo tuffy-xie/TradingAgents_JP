@@ -13,11 +13,13 @@ def get_verified_market_snapshot(
         int, "number of recent trading rows to include for sanity-checking"
     ] = 30,
 ) -> str:
-    """Deterministic verification snapshot for exact market-data claims.
+    """Optional deterministic verification snapshot for market-data diagnostics.
 
     Returns the latest OHLCV row on or before curr_date, common technical
     indicators, and recent closes. Call this before making exact claims about
     price levels, Bollinger bands, RSI, MACD, moving averages, support /
-    resistance, or historical comparisons, and treat it as the source of truth.
+    resistance, or historical comparisons. Compare it with the normal market
+    and indicator tools when useful; an incomplete snapshot does not invalidate
+    otherwise valid tool results.
     """
     return build_verified_market_snapshot(symbol, curr_date, look_back_days)

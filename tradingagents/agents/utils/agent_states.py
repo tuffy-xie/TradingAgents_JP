@@ -48,7 +48,7 @@ class AgentState(MessagesState):
     company_of_interest: Annotated[str, "Company that we are interested in trading"]
     asset_type: Annotated[str, "Asset type under analysis such as stock or crypto"]
     market_context: Annotated[dict, "Canonical market, exchange, symbol, currency, timezone and instrument type"]
-    verified_market_snapshot: Annotated[str, "Single verified OHLCV and technical-data source for this run"]
+    verified_market_snapshot: Annotated[str, "Optional OHLCV and technical-data validation snapshot for this run"]
     japan_data_bundle: Annotated[dict, "Source-attributed Japan facts; empty for non-Japan markets"]
     decision_context: Annotated[dict, "Deterministic Japan decision dimensions; empty for non-Japan markets"]
     evidence_audit: Annotated[list[dict], "Internal JP output-evidence violations; never user-facing"]

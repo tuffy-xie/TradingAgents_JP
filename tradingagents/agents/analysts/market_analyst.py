@@ -7,7 +7,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_stock_data,
     get_verified_market_snapshot,
-    get_verified_market_snapshot_from_state,
 )
 
 
@@ -17,7 +16,6 @@ def create_market_analyst(llm):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
-        verified_snapshot = get_verified_market_snapshot_from_state(state)
 
         tools = [
             get_stock_data,
@@ -52,9 +50,7 @@ Volume-Based Indicators:
 
 - Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names.
 
-The run-level verified snapshot below was created before any agent ran. Treat it as the sole source of truth for exact OHLCV, price-level, moving-average, RSI, MACD, ATR, and VWMA claims. Do not use other tools to replace or reconcile those values. If the snapshot is unavailable, state that exact data is unavailable.
-
-{verified_snapshot}
+The verified market snapshot is an optional pre-run cross-check. Use the results from get_stock_data and get_indicators normally when they return valid data; do not treat an incomplete snapshot as a reason to discard otherwise valid tool output.
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
@@ -84,7 +80,6 @@ Write a very detailed and nuanced report of the trends you observe. Provide spec
         prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(instrument_context=instrument_context)
-        prompt = prompt.partial(verified_snapshot=verified_snapshot)
 
         chain = prompt | llm.bind_tools(tools)
 

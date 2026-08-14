@@ -66,25 +66,23 @@ def create_sentiment_analyst(llm):
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
 
+        # Keep the original sentiment preload for every market. Japan
+        # sentiment is supplemental context, not a replacement for the
+        # existing Yahoo/StockTwits/Reddit path.
+        news_block = get_news.func(ticker, start_date, end_date)
+        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+        reddit_block = fetch_reddit_posts(ticker)
+        system_message = _build_system_message(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            news_block=news_block,
+            stocktwits_block=stocktwits_block,
+            reddit_block=reddit_block,
+        )
         if (state.get("market_context") or {}).get("market") == "JP":
-            # Do not use US-centric Reddit/StockTwits as a negative Japanese
-            # sentiment signal. Japan community providers arrive in a later
-            # phase, so report the limitation instead of inventing a score.
-            system_message = _build_japan_system_message(ticker, start_date, end_date, japan_data_context)
-        else:
-            # Pre-fetch all three US sources. Each fetcher degrades gracefully
-            # and returns a string, so the LLM always sees a real block or an
-            # explicit unavailable placeholder.
-            news_block = get_news.func(ticker, start_date, end_date)
-            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-            reddit_block = fetch_reddit_posts(ticker)
-            system_message = _build_system_message(
-                ticker=ticker,
-                start_date=start_date,
-                end_date=end_date,
-                news_block=news_block,
-                stocktwits_block=stocktwits_block,
-                reddit_block=reddit_block,
+            system_message += "\n\n" + _build_japan_system_message(
+                ticker, start_date, end_date, japan_data_context
             )
 
         prompt = ChatPromptTemplate.from_messages(
@@ -123,7 +121,7 @@ def create_sentiment_analyst(llm):
         )
         report_text = _apply_source_status_integrity(
             report_text,
-            reddit_block if (state.get("market_context") or {}).get("market") != "JP" else "",
+            reddit_block,
         )
 
         return {
@@ -224,10 +222,10 @@ Fill the following fields:
 
 
 def _build_japan_system_message(ticker: str, start_date: str, end_date: str, japan_data_context: str) -> str:
-    """Build the JP-specific sentiment prompt without US-community substitution."""
-    return f"""You are a Japanese-equity market sentiment analyst for {ticker}, covering {start_date} to {end_date}.
+    """Build supplemental JP context without replacing the original sources."""
+    return f"""Supplemental Japanese-market context for {ticker}, covering {start_date} to {end_date}.
 
-The data below contains official disclosures and supply/demand facts, not a community-sentiment sample. Do not substitute foreign community platforms or fabricate Japanese community metrics. If no Japanese community data is present, set confidence to low and state exactly: 暂无可用日本情绪数据。
+The original Yahoo Finance, StockTwits, and Reddit blocks above remain active for this ticker. The data below is supplemental Japanese disclosure and supply/demand context, not a community-sentiment sample. Do not fabricate Japanese community metrics. If no Japanese community data is present, set confidence to low and state exactly: 暂无可用日本情绪数据。
 
 {japan_data_context}
 
@@ -235,7 +233,7 @@ Use official disclosures only as facts, distinguish them from AI inference, and 
 
 ## Output fields
 - **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Neutral when community evidence is unavailable.
-- **overall_score**: 0 to 10. Use 5 when no direct Japanese sentiment sample exists.
+- **overall_score**: 0 to 10. Do not override the primary sentiment sources with a default score merely because Japanese community data is unavailable.
 - **confidence**: low / medium / high. It must be low without direct Japanese community data.
 - **narrative**: Separate VERIFIED FACT, MARKET SENTIMENT, and AI INFERENCE. Include a markdown table of data availability and constraints. When no direct Japanese sample exists, include exactly “暂无可用日本情绪数据”。
 

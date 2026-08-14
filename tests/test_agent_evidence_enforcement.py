@@ -6,6 +6,7 @@ from tradingagents.agents.utils.evidence_enforcement import (
     enforce_agent_output,
     enforce_agent_result,
 )
+from tradingagents.graph.setup import _observe_agent_node
 
 
 def _state(*, market="JP"):
@@ -149,3 +150,15 @@ def test_evidence_audit_is_internal_not_appended_to_agent_prose():
     assert result["evidence_audit"] == [
         {"agent": "Trader", "field": "trader_investment_plan", "warnings": ["unsupported_precise_number"]}
     ]
+
+
+def test_graph_observer_passes_agent_result_without_rewriting_prose():
+    expected = {"market_report": "50日均线为1234。"}
+    observed = _observe_agent_node(
+        "Market Analyst",
+        lambda _state: expected,
+        provider="test",
+        timeout=1,
+        retries=0,
+    )
+    assert observed(_state()) == expected
