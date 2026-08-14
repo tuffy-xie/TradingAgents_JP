@@ -24,6 +24,7 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.evidence_enforcement import enforce_agent_result
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -70,6 +71,8 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
                 name, ticker, time.perf_counter() - start, _classify_agent_error(exc), type(exc).__name__,
             )
             raise
+        if isinstance(state, dict) and isinstance(result, dict):
+            result = enforce_agent_result(state, result, name)
         logger.info(
             "[Agent] complete name=%s ticker=%s elapsed_seconds=%.2f",
             name, ticker, time.perf_counter() - start,
