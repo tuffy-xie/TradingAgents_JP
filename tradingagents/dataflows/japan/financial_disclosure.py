@@ -67,9 +67,11 @@ def parse_financial_disclosure(
     actual_text = _actual_region(normalized)
     guidance_text = _guidance_region(normalized)
     actual = {field: _single_value(actual_text, labels) for field, labels in _FIELD_LABELS.items()}
+    actual.update(_tdnet_actual_values(actual_text))
     guidance = {
         field: _revision_value(guidance_text, labels) for field, labels in _FIELD_LABELS.items()
     }
+    guidance.update(_tdnet_guidance_values(guidance_text))
     standard = metadata["accounting_standard"]
     if standard == "IFRS" and actual["ordinary_profit"]["status"] == NOT_PROVIDED:
         actual["ordinary_profit"] = _missing(NOT_APPLICABLE)
@@ -106,6 +108,99 @@ def _guidance_region(text: str) -> str:
 def _single_value(text: str, labels: tuple[str, ...]) -> dict[str, Any]:
     match = _find_amount(text, labels)
     return _value(match) if match else _missing(NOT_PROVIDED)
+
+
+_NUMBER = r"(?:△|-)?[0-9０-９][0-9０-９,，]*(?:\.[0-9０-９]+)?"
+
+
+def _number_tokens(text: str) -> list[str]:
+    return re.findall(_NUMBER, text)
+
+
+def _tdnet_actual_values(text: str) -> dict[str, dict[str, Any]]:
+    """Read the fixed column order used by TDnet earnings-summary tables.
+
+    Extracted PDFs flatten the header and rows, so label-to-value matching is
+    unsafe.  This narrow path only applies when the standard consolidated
+    performance table and its current-period row are both present.
+    """
+    marker = re.search(r"連結経営成績.*?売上高.*?親会社の所有者に", text)
+    if not marker:
+        return {}
+    tail = text[marker.start():]
+    row = re.search(
+        r"(?P<period>20\d{2}年[^ ]*第[１２３1-3]四半期)\s+(?P<body>.*?)(?=20\d{2}年[^ ]*第[１２３1-3]四半期)",
+        tail,
+    )
+    if not row:
+        return {}
+    tokens = _number_tokens(row.group("body"))
+    # Each amount is followed by its YoY percentage; the first five amounts
+    # are revenue, operating profit, tax/pre-tax profit, quarter profit, and
+    # parent-attributable quarter profit.
+    if len(tokens) < 9:
+        return {}
+    unit_match = re.search(r"(百万円|億円|千万円|千円|万円|円)", tail[: row.end()])
+    unit = unit_match.group(1) if unit_match else None
+    if not unit:
+        return {}
+    fields = ("revenue", "operating_profit", "_tax_profit", "net_income", "_parent_income")
+    values = {}
+    for field, token in zip(fields, tokens[0:9:2], strict=True):
+        values[field] = _value_from_parts((token, unit))
+    eps_match = re.search(
+        r"基本的[１1]株当たり\s*四半期利益.*?20\d{2}年[^ ]*第[１２３1-3]四半期\s+(" + _NUMBER + r")",
+        tail,
+    )
+    if eps_match:
+        values["eps"] = _value_from_parts((eps_match.group(1), "円"))
+    result = {
+        "revenue": values["revenue"],
+        "operating_profit": values["operating_profit"],
+        "net_income": values["net_income"],
+        "eps": values.get("eps", _missing(NOT_PROVIDED)),
+    }
+    return result
+
+
+def _tdnet_guidance_values(text: str) -> dict[str, dict[str, Any]]:
+    """Read TDnet's 前回発表予想/今回修正予想 rows by column position."""
+    marker = re.search(r"前回発表予想", text)
+    current_marker = re.search(r"今回修正予想", text)
+    if not marker or not current_marker or current_marker.start() <= marker.start():
+        return {}
+    previous_segment = text[marker.end(): current_marker.start()]
+    # The row repeats the unit before each amount ("百万円 930,000").
+    # Discard the announcement date and take the values following the first
+    # unit marker, rather than treating the date as a financial number.
+    first_unit = re.search(r"(?:百万円|億円|千万円|千円|万円|円)", previous_segment)
+    previous_tokens = _number_tokens(previous_segment[first_unit.end():] if first_unit else previous_segment)
+    current_tail = text[current_marker.end():]
+    current_tokens = _number_tokens(current_tail)
+    if len(previous_tokens) < 5 or len(current_tokens) < 5:
+        return {}
+    unit_match = re.search(r"(百万円|億円|千万円|千円|万円|円)", text[marker.start(): current_marker.start()])
+    unit = unit_match.group(1) if unit_match else None
+    if not unit:
+        return {}
+    names = ("revenue", "operating_profit", "_tax_profit", "net_income", "eps")
+    result = {}
+    for name, previous, current in zip(names, previous_tokens[:5], current_tokens[:5], strict=True):
+        value_unit = "円" if name == "eps" else unit
+        prev = _value_from_parts((previous, value_unit))
+        curr = _value_from_parts((current, value_unit))
+        result[name] = {
+            "status": "OK",
+            "previous_value": prev,
+            "current_value": curr,
+            "revision_direction": _direction(prev["value"], curr["value"]),
+        }
+    return {
+        "revenue": result["revenue"],
+        "operating_profit": result["operating_profit"],
+        "net_income": result["net_income"],
+        "eps": result["eps"],
+    }
 
 
 def _revision_value(text: str, labels: tuple[str, ...]) -> dict[str, Any]:
@@ -177,7 +272,7 @@ def _direction(previous: float | None, current: float | None) -> str | None:
 
 def _metadata(text: str, timestamp: str | datetime | None, source_url: str | None) -> dict[str, Any]:
     period = _period(text)
-    standard = "IFRS" if re.search(r"\bIFRS\b|国際会計基準", text, re.I) else (
+    standard = "IFRS" if re.search(r"\bIFRS\b|ＩＦＲＳ|国際会計基準", text, re.I) else (
         "J-GAAP" if re.search(r"日本基準|日本会計基準", text) else DATA_UNAVAILABLE
     )
     scope = "CONSOLIDATED" if "連結" in text else (
@@ -196,6 +291,19 @@ def _metadata(text: str, timestamp: str | datetime | None, source_url: str | Non
 
 
 def _period(text: str) -> tuple[str, str]:
+    # Prefer the fiscal-year expression (e.g. 2027年３月期) over the
+    # disclosure date that often appears first in a TDnet notice.
+    fiscal = re.search(
+        r"(?P<year>20\d{2})\s*年\s*[0-9０-９]{1,2}月期\s*(?:第\s*(?P<quarter>[１２３1-3])\s*四半期)?",
+        text,
+    )
+    if fiscal:
+        quarter = fiscal.group("quarter")
+        if quarter:
+            quarter = {"１": "Q1", "２": "Q2", "３": "Q3", "1": "Q1", "2": "Q2", "3": "Q3"}[quarter]
+        else:
+            quarter = "FY"
+        return fiscal.group("year"), quarter
     match = _PERIOD.search(text)
     if not match:
         return DATA_UNAVAILABLE, DATA_UNAVAILABLE
@@ -206,8 +314,11 @@ def _period(text: str) -> tuple[str, str]:
 
 
 def _first_unit(text: str) -> str | None:
-    match = re.search(_AMOUNT, text)
-    return match.group("unit") if match else None
+    # Flattened TDnet tables place the unit in a header before the numbers.
+    for unit in ("百万円", "億円", "千万円", "千円", "万円", "円"):
+        if unit in text:
+            return unit
+    return None
 
 
 def _timestamp(value: str | datetime | None) -> str | None:
