@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -54,7 +53,7 @@ class NormalizedChatOpenAI(ChatOpenAI):
 
     def invoke(self, input, config=None, **kwargs):
         start = time.perf_counter()
-        timeout = _hard_timeout_seconds(getattr(self, "request_timeout", None))
+        timeout = _configured_timeout_seconds(getattr(self, "request_timeout", None))
         logger.info(
             "[LLM] request_start provider=%s model=%s configured_timeout_seconds=%s attempt=1 retry_budget=%s",
             getattr(self, "base_url", None) or "openai-compatible",
@@ -62,34 +61,10 @@ class NormalizedChatOpenAI(ChatOpenAI):
             timeout,
             getattr(self, "max_retries", None),
         )
-        outcome: dict[str, Any] = {}
-
-        def call_provider() -> None:
-            try:
-                outcome["response"] = super(NormalizedChatOpenAI, self).invoke(
-                    input, config, **kwargs
-                )
-            except BaseException as exc:
-                outcome["error"] = exc
-
-        worker = threading.Thread(target=call_provider, daemon=True, name="tradingagents-llm")
-        worker.start()
-        worker.join(timeout)
-        elapsed = time.perf_counter() - start
-        if worker.is_alive():
-            logger.error(
-                "[LLM] request_failed model=%s configured_timeout_seconds=%s attempt=1 elapsed_seconds=%.2f class=TIMEOUT_CLIENT_DETACHED",
-                self.model_name,
-                timeout,
-                elapsed,
-            )
-            raise TimeoutError(
-                f"LLM hard deadline exceeded after {timeout:.2f}s; client detached from provider invocation"
-            )
         try:
-            if "error" in outcome:
-                raise outcome["error"]
-            response = outcome["response"]
+            # Let the provider SDK/HTTP transport enforce ``timeout``. Keeping
+            # this call synchronous prevents detached background requests.
+            response = super().invoke(input, config, **kwargs)
         except Exception as exc:
             logger.error(
                 "[LLM] request_failed model=%s configured_timeout_seconds=%s attempt=1 elapsed_seconds=%.2f class=%s error=%s",
@@ -121,8 +96,8 @@ class NormalizedChatOpenAI(ChatOpenAI):
         return super().with_structured_output(schema, method=method, **kwargs)
 
 
-def _hard_timeout_seconds(value: Any) -> float | None:
-    """Return the whole-call deadline, preserving an unset provider default."""
+def _configured_timeout_seconds(value: Any) -> float | None:
+    """Normalize the provider-native timeout for observability logging."""
     if value is None:
         return None
     if isinstance(value, (tuple, list)):
