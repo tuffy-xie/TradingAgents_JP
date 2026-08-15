@@ -2,7 +2,10 @@
 
 from datetime import UTC, date, datetime
 
-from tradingagents.dataflows.japan.context import render_japan_agent_context
+from tradingagents.dataflows.japan.context import (
+    render_japan_agent_context,
+    render_japan_provider_diagnostics,
+)
 from tradingagents.dataflows.japan.models import InformationLayer, MarketInformation
 from tradingagents.dataflows.japan.truth import (
     EvidenceValue,
@@ -157,7 +160,7 @@ def test_all_japan_agents_receive_exact_number_and_period_rules():
         {"market_context": {"market": "JP"}, "japan_data_bundle": {"items": [governance]}}
     )
     assert "get_stock_data/get_indicators" in rendered
-    assert "optional diagnostic" in rendered
+    assert "Verified Market Snapshot" not in rendered
     assert "FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate" in rendered
     assert "AI inference" in rendered
     assert render_japan_agent_context({"market_context": {"market": "US"}}) == ""
@@ -169,7 +172,8 @@ def test_japan_context_does_not_make_snapshot_an_technical_data_gate():
         {"market_context": {"market": "JP"}, "japan_data_bundle": {"items": [governance]}}
     )
     assert "get_stock_data/get_indicators" in rendered
-    assert "not an admission gate" in rendered
+    assert "valid exact price/OHLCV/technical numbers" in rendered
+    assert "Verified Market Snapshot" not in rendered
     assert "may only be copied from Verified Market Snapshot" not in rendered
 
 
@@ -190,8 +194,23 @@ def test_jquants_daily_bars_failure_cannot_downgrade_market_tool_evidence():
             },
         }
     )
-    assert "daily_bars=DATA_UNAVAILABLE:HTTP 400" in rendered
-    assert "supplemental Japan data only" in rendered
-    assert "does not invalidate, downgrade" in rendered
+    assert "daily_bars=DATA_UNAVAILABLE:HTTP 400" not in rendered
+    assert "HTTP 400" not in rendered
+    diagnostics = render_japan_provider_diagnostics(
+        {
+            "market_context": {"market": "JP"},
+            "japan_data_bundle": {
+                "source_statuses": [
+                    {
+                        "source": "J-Quants",
+                        "status": "OK",
+                        "detail": "daily_bars=DATA_UNAVAILABLE:HTTP 400",
+                    }
+                ],
+            },
+            "verified_market_snapshot": "VWMA tool=3809.08 snapshot=3792.03",
+        }
+    )
+    assert "daily_bars=DATA_UNAVAILABLE:HTTP 400" in diagnostics
+    assert "VWMA tool=3809.08 snapshot=3792.03" in diagnostics
     assert "无法独立复核" not in rendered
-    assert "technical values as unverified solely because J-Quants daily_bars is unavailable" in rendered

@@ -24,7 +24,6 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     get_prediction_markets,
     get_stock_data,
-    get_verified_market_snapshot,
     resolve_instrument_identity,
 )
 from tradingagents.agents.utils.memory import TradingMemoryLog
@@ -220,10 +219,6 @@ class TradingAgentsGraph:
                     get_stock_data,
                     # Technical indicators
                     get_indicators,
-                    # Deterministic verification snapshot (bound to the analyst
-                    # LLM and required by its prompt; must be executable here or
-                    # the call fails and the model reports it "unavailable").
-                    get_verified_market_snapshot,
                 ]
             ),
             "social": ToolNode(

@@ -94,17 +94,12 @@ def _official_event_days(trading_horizon: str) -> int:
 
 
 def render_japan_agent_context(state: Mapping[str, Any]) -> str:
-    """Return a compact fact-only Japan context, or an empty string for US."""
+    """Return research facts for JP agents, excluding provider diagnostics."""
     market = (state.get("market_context") or {}).get("market")
     bundle = state.get("japan_data_bundle") or {}
     if market != Market.JP or not bundle:
         return ""
     items = bundle.get("items") or []
-    status_lines = [
-        f"- {status.get('source', 'Unknown')}: {status.get('status', 'DATA_UNAVAILABLE')}"
-        + (f" ({status['detail']})" if status.get("detail") else "")
-        for status in bundle.get("source_statuses", [])
-    ]
     official = [
         item
         for item in items
@@ -117,13 +112,10 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
         item for item in items if item.get("source_type") == "japan_analyst_expectations"
     ]
     sentiment = [item for item in items if item.get("layer") == "MARKET_SENTIMENT"]
-    governance = [item for item in items if item.get("source_type") == "source_of_truth_assessment"]
     return "\n".join(
         [
             "## Japan market data bundle (pre-fetched; source-attributed)",
-            "This block is the only Japan-specific factual input. Treat VERIFIED FACT as fact; do not infer unavailable data.",
-            "### Source status",
-            *(status_lines or ["- DATA_UNAVAILABLE"]),
+            "Use the dated research facts below as supplemental evidence. Treat VERIFIED FACT as fact; do not infer unavailable data.",
             "### Verified official disclosures",
             *_item_lines(official, include_metadata=False),
             "### Credit supply/demand",
@@ -136,13 +128,29 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
             *_item_lines(expectations, include_metadata=True),
             "### Japan sentiment",
             *_item_lines(sentiment, include_metadata=True),
-            "### Source-of-truth and conflict controls",
-            *_item_lines(governance, include_metadata=True),
-            "### Data-role boundaries",
-            "J-Quants daily_bars is supplemental Japan data only. A DATA_UNAVAILABLE, AUTH_REQUIRED, or other failure for this endpoint does not invalidate, downgrade, or independently qualify Market Analyst get_stock_data/get_indicators results. Do not describe valid Market Analyst technical values as unverified solely because J-Quants daily_bars is unavailable.",
-            "Rules: use valid exact price/OHLCV/technical numbers returned by the Market Analyst's get_stock_data/get_indicators tools; the Verified Market Snapshot is an optional diagnostic and conflict check, not an admission gate. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If upstream evidence lacks an exact number, mark it unavailable; label any conclusion as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
+            "### Research controls",
+            "Use valid exact price/OHLCV/technical numbers returned by the Market Analyst get_stock_data/get_indicators tools. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If a requested upstream research field is absent, mark that field unavailable; label conclusions as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
         ]
     )
+
+
+def render_japan_provider_diagnostics(state: Mapping[str, Any]) -> str:
+    """Render provider and snapshot diagnostics for internal logs, not prompts."""
+    market = (state.get("market_context") or {}).get("market")
+    bundle = state.get("japan_data_bundle") or {}
+    if market != Market.JP or not bundle:
+        return ""
+    lines = ["## Japan provider diagnostics"]
+    statuses = bundle.get("source_statuses") or []
+    lines.extend(
+        f"- {status.get('source', 'Unknown')}: {status.get('status', 'DATA_UNAVAILABLE')}"
+        + (f" ({status['detail']})" if status.get("detail") else "")
+        for status in statuses
+    )
+    snapshot = state.get("verified_market_snapshot")
+    if snapshot:
+        lines.extend(["### Verified market snapshot diagnostic", str(snapshot)])
+    return "\n".join(lines)
 
 
 def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
@@ -197,7 +205,44 @@ def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> li
                 for key, value in metadata.items()
                 if value is not None and key not in {"coverage", "company"}
             }
+            selected = _research_metadata(selected)
             if selected:
                 prefix += f" — {selected}"
         lines.append(prefix)
     return lines
+
+
+_DIAGNOSTIC_KEYS = {
+    "cache",
+    "cache_hit",
+    "from_cache",
+    "fallback",
+    "fallback_level",
+    "retry",
+    "retries",
+    "provider_status",
+    "source_statuses",
+    "debug",
+    "diagnostics",
+}
+
+
+def _research_metadata(value: Any) -> Any:
+    """Strip operational metadata while preserving normalized research fields."""
+    if isinstance(value, Mapping):
+        result = {}
+        for key, nested in value.items():
+            key_text = str(key).lower()
+            if key_text in _DIAGNOSTIC_KEYS or "snapshot" in key_text:
+                continue
+            cleaned = _research_metadata(nested)
+            if cleaned is not None:
+                result[key] = cleaned
+        return result
+    if isinstance(value, list):
+        return [_research_metadata(item) for item in value]
+    if isinstance(value, str):
+        lowered = value.lower()
+        if any(term in lowered for term in ("verified market snapshot", "http 4", "cache hit", "retry")):
+            return None
+    return value
