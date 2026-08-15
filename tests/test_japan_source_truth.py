@@ -171,3 +171,27 @@ def test_japan_context_does_not_make_snapshot_an_technical_data_gate():
     assert "get_stock_data/get_indicators" in rendered
     assert "not an admission gate" in rendered
     assert "may only be copied from Verified Market Snapshot" not in rendered
+
+
+def test_jquants_daily_bars_failure_cannot_downgrade_market_tool_evidence():
+    governance = build_governance_item([], "5016.T", date(2026, 8, 15)).to_dict()
+    rendered = render_japan_agent_context(
+        {
+            "market_context": {"market": "JP"},
+            "japan_data_bundle": {
+                "items": [governance],
+                "source_statuses": [
+                    {
+                        "source": "J-Quants",
+                        "status": "OK",
+                        "detail": "daily_bars=DATA_UNAVAILABLE:HTTP 400; security_master=OK; financial_summary=OK",
+                    }
+                ],
+            },
+        }
+    )
+    assert "daily_bars=DATA_UNAVAILABLE:HTTP 400" in rendered
+    assert "supplemental Japan data only" in rendered
+    assert "does not invalidate, downgrade" in rendered
+    assert "无法独立复核" not in rendered
+    assert "technical values as unverified solely because J-Quants daily_bars is unavailable" in rendered

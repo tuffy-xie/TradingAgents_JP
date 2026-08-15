@@ -138,6 +138,8 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
             *_item_lines(sentiment, include_metadata=True),
             "### Source-of-truth and conflict controls",
             *_item_lines(governance, include_metadata=True),
+            "### Data-role boundaries",
+            "J-Quants daily_bars is supplemental Japan data only. A DATA_UNAVAILABLE, AUTH_REQUIRED, or other failure for this endpoint does not invalidate, downgrade, or independently qualify Market Analyst get_stock_data/get_indicators results. Do not describe valid Market Analyst technical values as unverified solely because J-Quants daily_bars is unavailable.",
             "Rules: use valid exact price/OHLCV/technical numbers returned by the Market Analyst's get_stock_data/get_indicators tools; the Verified Market Snapshot is an optional diagnostic and conflict check, not an admission gate. Company guidance and analyst consensus are different bases, not conflicts. Do not calculate across FY/H1/Q1/Q2/Q3/Q4/TTM/Forecast/Analyst Estimate. JSF units and dates must be quoted unchanged. If upstream evidence lacks an exact number, mark it unavailable; label any conclusion as AI inference. Absence of a JPX >=0.5% reported short position does not mean no short interest.",
         ]
     )
