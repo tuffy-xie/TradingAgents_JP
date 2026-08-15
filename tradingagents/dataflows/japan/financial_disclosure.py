@@ -8,6 +8,7 @@ infer missing values.  TDnet and Company IR can call the same function later.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field as dataclass_field
 from datetime import datetime
 from typing import Any
 
@@ -41,6 +42,182 @@ _PERIOD = re.compile(
     r"|(?P<fy>FY\s*20\d{2})\s*(?P<fy_period>Q[1-4]|H[12]|FY)?",
     re.I,
 )
+_ACTUAL_SECTION = re.compile(
+    r"(?P<year>20\d{2})\s*年\s*[0-9０-９]{1,2}月期\s*第\s*(?P<quarter>[１２３1-3])\s*四半期"
+    r"(?:の)?\s*(?P<scope>連結|個別|単体)業績(?!予想)",
+)
+_GUIDANCE_SECTION = re.compile(
+    r"(?P<year>20\d{2})\s*年\s*[0-9０-９]{1,2}月期"
+    r"(?:\s*第\s*(?P<quarter>[１２３1-3])\s*四半期(?:\s*[（(]中間期[）)])?)?"
+    r"(?:の)?\s*(?:通期\s*)?(?P<scope>連結|個別|単体)業績予想(?:数値)?(?:の修正)?",
+)
+
+
+@dataclass(frozen=True)
+class FinancialRecord:
+    """One period/scope-specific official financial section."""
+
+    record_type: str
+    fiscal_year: str
+    period_type: str
+    period_basis: str
+    scope: str
+    accounting_standard: str
+    currency: str
+    unit: str
+    metrics: dict[str, dict[str, Any]]
+    revision_reason: str
+    section_text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "record_type": self.record_type,
+            "fiscal_year": self.fiscal_year,
+            "period_type": self.period_type,
+            "period_basis": self.period_basis,
+            "scope": self.scope,
+            "accounting_standard": self.accounting_standard,
+            "currency": self.currency,
+            "unit": self.unit,
+            "metrics": self.metrics,
+            "revision_reason": self.revision_reason,
+            "section_text": self.section_text,
+        }
+
+
+@dataclass(frozen=True)
+class FinancialDocument:
+    """Official disclosure segmented into independently scoped records."""
+
+    status: str
+    source: str
+    title: str
+    disclosure_timestamp: str | None
+    source_url: str | None
+    accounting_standard: str
+    records: tuple[FinancialRecord, ...] = dataclass_field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "source": self.source,
+            "title": self.title,
+            "disclosure_timestamp": self.disclosure_timestamp,
+            "source_url": self.source_url,
+            "accounting_standard": self.accounting_standard,
+            "records": [record.to_dict() for record in self.records],
+        }
+
+
+def parse_financial_document(
+    text: str,
+    *,
+    title: str = "",
+    source: str = "",
+    disclosure_timestamp: str | datetime | None = None,
+    source_url: str | None = None,
+) -> FinancialDocument:
+    """Segment official disclosure text before any table-value extraction.
+
+    A Japanese disclosure can contain multiple periods and both consolidated
+    and non-consolidated guidance. This function identifies those sections
+    without deciding which values are present in each table.
+    """
+    normalized = _normalize(text)
+    document_metadata = _metadata(normalized, disclosure_timestamp, source_url)
+    if not normalized:
+        return FinancialDocument(
+            status=DATA_UNAVAILABLE,
+            source=source,
+            title=title,
+            disclosure_timestamp=document_metadata["disclosure_timestamp"],
+            source_url=source_url,
+            accounting_standard=document_metadata["accounting_standard"],
+        )
+
+    matches: list[tuple[int, str, re.Match[str]]] = []
+    matches.extend(
+        (match.start(), "ACTUAL", match)
+        for match in _ACTUAL_SECTION.finditer(normalized)
+        if _has_financial_table_header(normalized, match.end())
+    )
+    matches.extend(
+        (match.start(), "GUIDANCE", match)
+        for match in _GUIDANCE_SECTION.finditer(normalized)
+        if _has_financial_table_header(normalized, match.end())
+    )
+    matches.sort(key=lambda item: item[0])
+
+    records: list[FinancialRecord] = []
+    for index, (start, record_type, match) in enumerate(matches):
+        end = matches[index + 1][0] if index + 1 < len(matches) else len(normalized)
+        section_text = normalized[start:end].strip()
+        record_metadata = _metadata(section_text, disclosure_timestamp, source_url)
+        standard = record_metadata["accounting_standard"]
+        if standard == DATA_UNAVAILABLE:
+            standard = document_metadata["accounting_standard"]
+        period_type = _section_period_type(match.groupdict().get("quarter"))
+        records.append(
+            FinancialRecord(
+                record_type=record_type,
+                fiscal_year=match.group("year"),
+                period_type=period_type,
+                period_basis="FULL_YEAR" if period_type == "FY" else "CUMULATIVE",
+                scope=_section_scope(match.group("scope")),
+                accounting_standard=standard,
+                currency=record_metadata["currency"],
+                unit=record_metadata["unit"],
+                metrics=_section_metrics(record_type, standard),
+                revision_reason=(
+                    _revision_reason(section_text, True)
+                    if record_type == "GUIDANCE"
+                    else NOT_APPLICABLE
+                ),
+                section_text=section_text,
+            )
+        )
+
+    return FinancialDocument(
+        status="OK" if records else DATA_UNAVAILABLE,
+        source=source,
+        title=title,
+        disclosure_timestamp=document_metadata["disclosure_timestamp"],
+        source_url=source_url,
+        accounting_standard=document_metadata["accounting_standard"],
+        records=tuple(records),
+    )
+
+
+def _section_period_type(quarter: str | None) -> str:
+    if not quarter:
+        return "FY"
+    normalized = quarter.translate(str.maketrans("１２３", "123"))
+    return {"1": "Q1", "2": "H1", "3": "Q3"}[normalized]
+
+
+def _has_financial_table_header(text: str, start: int) -> bool:
+    """Reject narrative references to a forecast that are not a table block."""
+    window = text[start : start + 150]
+    labels = sum(label in window for labels in _FIELD_LABELS.values() for label in labels)
+    return labels >= 2 and any(unit in window for unit in ("百万円", "億円", "円"))
+
+
+def _section_scope(value: str) -> str:
+    return "CONSOLIDATED" if value == "連結" else "NON_CONSOLIDATED"
+
+
+def _section_metrics(record_type: str, accounting_standard: str) -> dict[str, dict[str, Any]]:
+    if record_type == "ACTUAL":
+        metrics = {field: _missing(DATA_UNAVAILABLE) for field in _FIELD_LABELS}
+    else:
+        metrics = {field: _guidance_missing(DATA_UNAVAILABLE) for field in _FIELD_LABELS}
+    if accounting_standard == "IFRS":
+        metrics["ordinary_profit"] = (
+            _missing(NOT_APPLICABLE)
+            if record_type == "ACTUAL"
+            else _guidance_missing(NOT_APPLICABLE)
+        )
+    return metrics
 
 
 def parse_financial_disclosure(

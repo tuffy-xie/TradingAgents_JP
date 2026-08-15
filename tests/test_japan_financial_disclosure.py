@@ -5,6 +5,7 @@ from tradingagents.dataflows.japan.financial_disclosure import (
     NOT_APPLICABLE,
     NOT_PROVIDED,
     parse_financial_disclosure,
+    parse_financial_document,
 )
 
 ACTUAL_FIXTURE = """
@@ -42,6 +43,39 @@ TDNET_5016_GUIDANCE_FIXTURE = """
 今回修正予想（Ｂ） 1,025,000 232,000 221,000 141,000 155.80
 （２）修正の理由 資源事業における天候不良による鉱山の減産影響を見込むものの、
 フォーカス事業においてＡＩサーバ関連需要の拡大を背景とした増販及び販売単価改善が進展したことを踏まえ修正いたします。
+"""
+
+# Cropped from the same cached public TDnet Q1 disclosure. This fixture keeps
+# the official section order but intentionally omits table values: Task 1 only
+# validates record segmentation, not financial amount extraction.
+TDNET_5016_SEGMENTATION_FIXTURE = TDNET_5016_Q1_FIXTURE + """
+３．2027年３月期の連結業績予想（2026年４月１日～2027年３月31日）
+売上高 営業利益 税引前利益 当期利益 親会社の所有者に帰属する当期利益 基本的１株当たり当期利益
+百万円 ％ 百万円 ％ 百万円 ％ 百万円 ％ 百万円 ％ 円 銭
+通期 1,025,000 15.9 232,000 32.6 221,000 30.7 174,000 35.2 141,000 34.7 155.80
+"""
+
+# Cropped from cached public TDnet text for 6324.T, disclosed 2026-08-07.
+TDNET_6324_SEGMENTATION_FIXTURE = """
+2027年３月期 第１四半期決算短信〔日本基準〕(連結)
+１．2027年３月期第１四半期の連結業績（2026年４月１日～2026年６月30日）
+（１）連結経営成績(累計) 売上高 営業利益 経常利益 親会社株主に帰属する四半期純利益
+百万円 ％ 百万円 ％ 百万円 ％ 百万円 ％
+2027年３月期第１四半期 16,681 23.6 1,840 － 1,719 － 1,274 －
+１. 連結業績予想の修正
+① 2027 年３月期 第２四半期（中間期）連結業績予想数値の修正
+売上高 営業利益 経常利益 親会社株主に帰属する中間純利益 1株当たり中間純利益
+前回予想（Ａ） 百万円 33,500 百万円 3,000 百万円 3,000 百万円 2,200 円 銭 23 24
+② 2027 年３月期 通期連結業績予想数値の修正
+売上高 営業利益 経常利益 親会社株主に帰属する当期純利益 1株当たり当期純利益
+前回予想（Ａ） 百万円 68,000 百万円 6,200 百万円 6,200 百万円 4,500 円 銭 47 54
+２. 個別業績予想の修正
+① 2027 年３月期 第２四半期（中間期）個別業績予想数値の修正
+売上高 営業利益 経常利益 中間純利益 1株当たり中間純利益
+前回予想（Ａ） 百万円 20,300 百万円 1,800 百万円 3,500 百万円 2,900 円 銭 30 63
+② 2027 年３月期 通期個別業績予想数値の修正
+売上高 営業利益 経常利益 当期純利益 1株当たり当期純利益
+前回予想（Ａ） 百万円 42,000 百万円 4,000 百万円 4,800 百万円 3,800 円 銭 40 00
 """
 
 
@@ -149,3 +183,40 @@ def test_real_tdnet_5016_guidance_revision_preserves_before_after_values():
         guidance[name]["revision_direction"] == "INCREASED"
         for name in ("revenue", "operating_profit", "net_income", "eps")
     )
+
+
+def _record_keys(document):
+    return {
+        (record.record_type, record.fiscal_year, record.period_type, record.scope)
+        for record in document.records
+    }
+
+
+def test_segments_5016_ifrs_actual_and_fy_consolidated_guidance():
+    document = parse_financial_document(
+        TDNET_5016_SEGMENTATION_FIXTURE,
+        title="2027年３月期第１四半期決算短信〔IFRS〕(連結)",
+        source="TDnet",
+    )
+    keys = _record_keys(document)
+    assert document.status == "OK"
+    assert ("ACTUAL", "2027", "Q1", "CONSOLIDATED") in keys
+    assert ("GUIDANCE", "2027", "FY", "CONSOLIDATED") in keys
+    actual = next(record for record in document.records if record.record_type == "ACTUAL")
+    assert actual.metrics["ordinary_profit"]["status"] == NOT_APPLICABLE
+
+
+def test_segments_6324_jgaap_periods_and_scopes_without_document_level_override():
+    document = parse_financial_document(
+        TDNET_6324_SEGMENTATION_FIXTURE,
+        title="業績予想の修正に関するお知らせ",
+        source="TDnet",
+    )
+    assert _record_keys(document) == {
+        ("ACTUAL", "2027", "Q1", "CONSOLIDATED"),
+        ("GUIDANCE", "2027", "H1", "CONSOLIDATED"),
+        ("GUIDANCE", "2027", "FY", "CONSOLIDATED"),
+        ("GUIDANCE", "2027", "H1", "NON_CONSOLIDATED"),
+        ("GUIDANCE", "2027", "FY", "NON_CONSOLIDATED"),
+    }
+    assert all(record.metrics["revenue"]["status"] == DATA_UNAVAILABLE for record in document.records)
