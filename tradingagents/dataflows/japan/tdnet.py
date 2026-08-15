@@ -8,6 +8,7 @@ the paid TDnet API, authenticate, or attempt to defeat access controls.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
@@ -61,15 +62,25 @@ class TDnetProvider:
         days = _date_range(start_date, end_date, maximum_days=31)
         if not days:
             return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
-        results = await asyncio.gather(*(self._fetch_day(context, day) for day in days))
-        items = tuple(item for day_items, _ in results for item in day_items)
+        results = await asyncio.gather(*(self._fetch_day_detailed(context, day) for day in days))
+        items = tuple(item for day_items, _, _ in results for item in day_items)
         if self.extract_pdf_text:
             items = await self._enrich_pdf_text(items)
-        capped_days = sum(capped for _, capped in results)
-        detail = ""
+        capped_days = sum(capped for _, capped, _ in results)
+        failures = [failure for _, _, failure in results if failure]
+        detail_parts = []
+        status = DataStatus.OK
+        if failures:
+            status = DataStatus.DATA_UNAVAILABLE
+            detail_parts.append("retrieval_failed=true")
+            detail_parts.append(f"failures={json.dumps(failures, ensure_ascii=False)}")
+        elif not items:
+            detail_parts.append("empty_result=true")
         if capped_days:
-            detail = f"{capped_days} day(s) reached tdnet_max_pages_per_day={self.max_pages_per_day}"
-        return ProviderResponse(SourceStatus(self.name, DataStatus.OK, detail=detail, item_count=len(items)), items)
+            detail_parts.append(f"{capped_days} day(s) reached tdnet_max_pages_per_day={self.max_pages_per_day}")
+        return ProviderResponse(
+            SourceStatus(self.name, status, detail="; ".join(detail_parts), item_count=len(items)), items
+        )
 
     async def _enrich_pdf_text(
         self, items: tuple[MarketInformation, ...]
@@ -123,10 +134,21 @@ class TDnetProvider:
         return ProviderResponse(SourceStatus(self.name, DataStatus.OK, item_count=len(items)), items)
 
     async def _fetch_day(self, context: MarketContext, day: date) -> tuple[tuple[MarketInformation, ...], bool]:
+        items, capped, _ = await self._fetch_day_detailed(context, day)
+        return items, capped
+
+    async def _fetch_day_detailed(
+        self, context: MarketContext, day: date
+    ) -> tuple[tuple[MarketInformation, ...], bool, dict[str, str] | None]:
         first_url = _PUBLIC_INDEX_URL.format(page=1, day=day)
-        status, html, _ = await get_text(first_url, timeout=self.timeout)
+        status, html, error_detail = await get_text(first_url, timeout=self.timeout)
         if status != DataStatus.OK:
-            return (), False  # Weekends/holidays are simply absent from the public index.
+            return (), False, {
+                "requested_date": day.isoformat(),
+                "requested_url": first_url,
+                "failure_type": status.value,
+                "error": error_detail or status.value,
+            }
         page_count = min(_page_count(html), self.max_pages_per_day)
         pages = [html]
         if page_count > 1:
@@ -134,13 +156,25 @@ class TDnetProvider:
                 get_text(_PUBLIC_INDEX_URL.format(page=number, day=day), timeout=self.timeout)
                 for number in range(2, page_count + 1)
             ))
-            pages.extend(body for status, body, _ in remaining if status == DataStatus.OK)
+            page_failures = []
+            for number, (page_status, body, page_error) in enumerate(remaining, start=2):
+                if page_status == DataStatus.OK:
+                    pages.append(body)
+                else:
+                    page_failures.append({
+                        "requested_date": day.isoformat(),
+                        "requested_url": _PUBLIC_INDEX_URL.format(page=number, day=day),
+                        "failure_type": page_status.value,
+                        "error": page_error or page_status.value,
+                    })
+            if page_failures:
+                return (), _page_count(html) > self.max_pages_per_day, page_failures[0]
         items = tuple(
             item
             for page_number, page_html in enumerate(pages, start=1)
             for item in _parse_public_list(page_html, context, day, page_number)
         )
-        return items, _page_count(html) > self.max_pages_per_day
+        return items, _page_count(html) > self.max_pages_per_day, None
 
 
 def _date_range(start_date: str, end_date: str, *, maximum_days: int) -> tuple[date, ...]:

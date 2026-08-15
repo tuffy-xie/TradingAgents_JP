@@ -109,6 +109,73 @@ def test_service_reuses_cached_provider_response(tmp_path):
 
 
 @pytest.mark.unit
+def test_tdnet_expired_successful_cache_falls_back_on_live_failure(tmp_path):
+    item = _item()
+    item = MarketInformation(
+        **{**item.__dict__, "url": "https://www.release.tdnet.info/inbs/official.pdf", "metadata": {"official_index": True}}
+    )
+    good = ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=1), (item,))
+    provider = _Provider("TDnet", ProviderResponse(SourceStatus("TDnet", DataStatus.DATA_UNAVAILABLE, detail="ConnectionError")))
+    cache = JapanDataCache(tmp_path)
+    key = "TDnet:1:6981.T:2026-08-01:2026-08-13"
+    cache.set("news", key, good.to_dict(), -1)
+    service = JapanDataService((provider,), cache=cache, timeout_seconds=1)
+    result = asyncio.run(service.collect(resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"))
+    status = result.source_statuses[0]
+    assert status.from_cache is True
+    assert status.status == DataStatus.DATA_UNAVAILABLE
+    assert "live_refresh_failed=true" in status.detail
+    assert result.items[0].url == item.url
+    assert result.items[0].verified is True
+
+
+@pytest.mark.unit
+def test_tdnet_successful_empty_does_not_use_unrelated_expired_cache(tmp_path):
+    old = _item()
+    old = MarketInformation(**{**old.__dict__, "metadata": {"official_index": True}})
+    cache = JapanDataCache(tmp_path)
+    key = "TDnet:1:6981.T:2026-08-01:2026-08-13"
+    cache.set("news", key, ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=1), (old,)).to_dict(), -1)
+    provider = _Provider("TDnet", ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=0), ()))
+    service = JapanDataService((provider,), cache=cache, timeout_seconds=1)
+    result = asyncio.run(service.collect(resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"))
+    assert result.source_statuses[0].from_cache is False
+    assert result.source_statuses[0].status == DataStatus.OK
+    assert result.source_statuses[0].item_count == 0
+
+
+@pytest.mark.unit
+def test_tdnet_failure_without_last_good_cache_remains_unavailable(tmp_path):
+    provider = _Provider(
+        "TDnet",
+        ProviderResponse(SourceStatus("TDnet", DataStatus.DATA_UNAVAILABLE, detail="TimeoutError")),
+    )
+    service = JapanDataService((provider,), cache=JapanDataCache(tmp_path), timeout_seconds=1)
+    result = asyncio.run(service.collect(resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"))
+    assert result.source_statuses[0].status == DataStatus.DATA_UNAVAILABLE
+    assert result.source_statuses[0].from_cache is False
+    assert result.source_statuses[0].item_count == 0
+
+
+@pytest.mark.unit
+def test_tdnet_live_success_replaces_expired_cache(tmp_path):
+    old = _item()
+    old = MarketInformation(**{**old.__dict__, "metadata": {"official_index": True}})
+    new = MarketInformation(
+        **{**old.__dict__, "title": "新しい公式披露", "url": "https://www.release.tdnet.info/inbs/new.pdf"}
+    )
+    cache = JapanDataCache(tmp_path)
+    key = "TDnet:1:6981.T:2026-08-01:2026-08-13"
+    cache.set("news", key, ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=1), (old,)).to_dict(), -1)
+    provider = _Provider("TDnet", ProviderResponse(SourceStatus("TDnet", DataStatus.OK, item_count=1), (new,)))
+    service = JapanDataService((provider,), cache=cache, timeout_seconds=1)
+    result = asyncio.run(service.collect(resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"))
+    assert result.source_statuses[0].from_cache is False
+    assert result.source_statuses[0].status == DataStatus.OK
+    assert result.items[0].url == new.url
+
+
+@pytest.mark.unit
 def test_service_allows_official_provider_window_to_exceed_news_window(tmp_path):
     tdnet = _Provider("TDnet", ProviderResponse(SourceStatus("TDnet", DataStatus.OK)))
     news = _Provider("Japan News", ProviderResponse(SourceStatus("Japan News", DataStatus.OK)))

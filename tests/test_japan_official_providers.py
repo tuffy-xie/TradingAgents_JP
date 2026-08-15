@@ -223,6 +223,50 @@ def test_tdnet_public_index_parser_keeps_only_matching_code_and_pdf_link():
 
 
 @pytest.mark.unit
+def test_tdnet_fetch_preserves_transport_failure_details(monkeypatch):
+    async def failed_get_text(*_args, **_kwargs):
+        return DataStatus.DATA_UNAVAILABLE, "", "ConnectionError: DNS failure"
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", failed_get_text)
+    result = __import__("asyncio").run(
+        TDnetProvider().fetch(resolve_market_context("5016.T"), start_date="2026-08-06", end_date="2026-08-06")
+    )
+    assert result.items == ()
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert "retrieval_failed=true" in result.status.detail
+    assert "2026-08-06" in result.status.detail
+    assert "I_list_001_20260806.html" in result.status.detail
+
+
+@pytest.mark.unit
+def test_tdnet_timeout_is_not_reported_as_empty(monkeypatch):
+    async def timed_out_get_text(*_args, **_kwargs):
+        return DataStatus.DATA_UNAVAILABLE, "", "TimeoutError: request timed out"
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", timed_out_get_text)
+    result = __import__("asyncio").run(
+        TDnetProvider().fetch(resolve_market_context("5016.T"), start_date="2026-08-06", end_date="2026-08-06")
+    )
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert result.items == ()
+    assert "TimeoutError" in result.status.detail
+
+
+@pytest.mark.unit
+def test_tdnet_successful_empty_is_not_a_fetch_failure(monkeypatch):
+    async def empty_get_text(*_args, **_kwargs):
+        return DataStatus.OK, "<html><body>no disclosures</body></html>", ""
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", empty_get_text)
+    result = __import__("asyncio").run(
+        TDnetProvider().fetch(resolve_market_context("5016.T"), start_date="2026-08-06", end_date="2026-08-06")
+    )
+    assert result.status.status == DataStatus.OK
+    assert result.items == ()
+    assert "empty_result=true" in result.status.detail
+
+
+@pytest.mark.unit
 def test_tdnet_pdf_body_wins_when_it_explicitly_conflicts_with_index_title(monkeypatch):
     html = """
     <tr><td class="kjTime">15:00</td><td class="kjCode">69810</td><td class="kjName">Murata</td>

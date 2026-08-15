@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from typing import Protocol
@@ -137,10 +138,55 @@ class JapanDataService:
                 ),
             )
 
+        if (
+            provider.name == "TDnet"
+            and response.status.status == DataStatus.DATA_UNAVAILABLE
+            and not response.items
+        ):
+            fallback = self._last_good_tdnet(cache_key, provider.category)
+            if fallback is not None:
+                cached_response, cache_age = fallback
+                detail = response.status.detail or "live refresh failed"
+                detail = (
+                    f"{detail}; live_refresh_failed=true; "
+                    f"fallback=previous_successful_cache; cache_age_seconds={cache_age:.0f}"
+                )
+                status = SourceStatus(
+                    source="TDnet",
+                    status=DataStatus.DATA_UNAVAILABLE,
+                    fetched_at=response.status.fetched_at,
+                    detail=detail,
+                    item_count=len(cached_response.items),
+                    from_cache=True,
+                )
+                return ProviderResponse(status=status, items=cached_response.items)
+
         logger.info("[JapanData] %s %s", provider.name, response.status.status)
         ttl = int(self.source_ttls.get(provider.category, self.source_ttls.get(provider.name, 900)))
         self.cache.set(provider.category, cache_key, response.to_dict(), ttl)
         return response
+
+    def _last_good_tdnet(
+        self, cache_key: str, category: str
+    ) -> tuple[ProviderResponse, float] | None:
+        record = self.cache.get_stale(category, cache_key)
+        if not record:
+            return None
+        try:
+            response = ProviderResponse.from_dict(record["data"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if response.status.status != DataStatus.OK or not response.items:
+            return None
+        if any(
+            item.source != "TDnet"
+            or not item.verified
+            or not item.metadata.get("official_index")
+            for item in response.items
+        ):
+            return None
+        fetched_at = response.status.fetched_at.timestamp()
+        return response, max(0.0, time.time() - fetched_at)
 
     @staticmethod
     def _deduplicate(items: Sequence[MarketInformation]) -> list[MarketInformation]:
