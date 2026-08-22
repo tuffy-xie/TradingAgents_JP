@@ -1,4 +1,4 @@
-"""Synthetic fixture tests for the standalone official-disclosure parser."""
+"""Fixture tests for the standalone official-disclosure parser."""
 
 from tradingagents.dataflows.japan.financial_disclosure import (
     DATA_UNAVAILABLE,
@@ -62,6 +62,11 @@ TDNET_6324_SEGMENTATION_FIXTURE = """
 （１）連結経営成績(累計) 売上高 営業利益 経常利益 親会社株主に帰属する四半期純利益
 百万円 ％ 百万円 ％ 百万円 ％ 百万円 ％
 2027年３月期第１四半期 16,681 23.6 1,840 － 1,719 － 1,274 －
+2026年３月期第１四半期 13,496 3.8 122 － 131 － △38 －
+１株当たり四半期純利益 潜在株式調整後１株当たり四半期純利益
+円 銭 円 銭
+2027年３月期第１四半期 13.46 －
+2026年３月期第１四半期 △0.40 －
 １. 連結業績予想の修正
 ① 2027 年３月期 第２四半期（中間期）連結業績予想数値の修正
 売上高 営業利益 経常利益 親会社株主に帰属する中間純利益 1株当たり中間純利益
@@ -153,7 +158,7 @@ def test_real_tdnet_5016_q1_table_values_are_mapped_by_columns():
     )
     assert result["actual"]["revenue"]["value"] == 260604
     assert result["actual"]["operating_profit"]["value"] == 81446
-    assert result["actual"]["net_income"]["value"] == 60418
+    assert result["actual"]["net_income"]["value"] == 53070
     assert result["actual"]["ordinary_profit"]["status"] == NOT_APPLICABLE
     assert result["actual"]["eps"]["value"] == 56.8
     assert result["unit"] == "百万円"
@@ -203,7 +208,18 @@ def test_segments_5016_ifrs_actual_and_fy_consolidated_guidance():
     assert ("ACTUAL", "2027", "Q1", "CONSOLIDATED") in keys
     assert ("GUIDANCE", "2027", "FY", "CONSOLIDATED") in keys
     actual = next(record for record in document.records if record.record_type == "ACTUAL")
+    assert actual.metrics["revenue"]["value"] == 260604
+    assert actual.metrics["operating_profit"]["value"] == 81446
     assert actual.metrics["ordinary_profit"]["status"] == NOT_APPLICABLE
+    assert actual.metrics["net_income"]["value"] == 53070
+    assert actual.metrics["net_income"]["value"] != 60418
+    assert actual.metrics["eps"]["value"] == 56.8
+
+
+def test_legacy_entry_point_uses_ifrs_parent_attributable_profit():
+    result = parse_financial_disclosure(TDNET_5016_Q1_FIXTURE)
+    assert result["actual"]["net_income"]["value"] == 53070
+    assert result["actual"]["net_income"]["value"] != 60418
 
 
 def test_segments_6324_jgaap_periods_and_scopes_without_document_level_override():
@@ -219,4 +235,73 @@ def test_segments_6324_jgaap_periods_and_scopes_without_document_level_override(
         ("GUIDANCE", "2027", "H1", "NON_CONSOLIDATED"),
         ("GUIDANCE", "2027", "FY", "NON_CONSOLIDATED"),
     }
-    assert all(record.metrics["revenue"]["status"] == DATA_UNAVAILABLE for record in document.records)
+    actual = next(record for record in document.records if record.record_type == "ACTUAL")
+    assert actual.metrics["revenue"]["value"] == 16681
+    assert actual.metrics["operating_profit"]["value"] == 1840
+    assert actual.metrics["ordinary_profit"]["value"] == 1719
+    assert actual.metrics["ordinary_profit"]["status"] == "OK"
+    assert actual.metrics["net_income"]["value"] == 1274
+    assert actual.metrics["eps"]["value"] == 13.46
+    assert all(
+        record.metrics["revenue"]["status"] == DATA_UNAVAILABLE
+        for record in document.records
+        if record.record_type == "GUIDANCE"
+    )
+
+
+def test_actual_selects_current_period_instead_of_previous_period():
+    document = parse_financial_document(
+        TDNET_6324_SEGMENTATION_FIXTURE,
+        title="2027年３月期第１四半期決算短信〔日本基準〕(連結)",
+    )
+    actual = next(record for record in document.records if record.record_type == "ACTUAL")
+    assert actual.metrics["revenue"]["value"] == 16681
+    assert actual.metrics["operating_profit"]["value"] == 1840
+    assert actual.metrics["net_income"]["value"] == 1274
+
+
+def test_pre_tax_profit_is_not_mapped_to_ifrs_ordinary_profit():
+    document = parse_financial_document(
+        TDNET_5016_Q1_FIXTURE,
+        title="2027年３月期第１四半期決算短信〔IFRS〕(連結)",
+    )
+    actual = document.records[0]
+    assert actual.metrics["ordinary_profit"]["status"] == NOT_APPLICABLE
+    assert actual.metrics["ordinary_profit"]["value"] is None
+
+
+def test_split_yen_sen_is_recombined_only_in_eps_context():
+    fixture = """
+2027年３月期 第１四半期決算短信〔日本基準〕(連結)
+１．2027年３月期第１四半期の連結業績
+（１）連結経営成績(累計) 売上高 営業利益 経常利益 親会社株主に帰属する四半期純利益
+百万円 ％ 百万円 ％ 百万円 ％ 百万円 ％
+2027年３月期第１四半期 13 46 8 － 7 － 5 －
+2026年３月期第１四半期 12 1.0 6 － 5 － 4 －
+１株当たり四半期純利益 円 銭
+2027年３月期第１四半期 7 08
+2026年３月期第１四半期 6 12
+"""
+    document = parse_financial_document(fixture, title="決算短信")
+    actual = document.records[0]
+    assert actual.metrics["revenue"]["value"] == 13
+    assert actual.metrics["revenue"]["raw_value"] == "13"
+    assert actual.metrics["eps"]["value"] == 7.08
+    assert actual.metrics["eps"]["raw_value"] == "7 08"
+
+
+def test_missing_actual_field_is_not_zero_or_parse_failure():
+    fixture = """
+2027年３月期 第１四半期決算短信〔日本基準〕(連結)
+１．2027年３月期第１四半期の連結業績
+（１）連結経営成績(累計) 売上高 営業利益
+百万円 ％ 百万円 ％
+2027年３月期第１四半期 1,200 2.0 80 3.0
+2026年３月期第１四半期 1,100 1.0 70 2.0
+"""
+    document = parse_financial_document(fixture, title="決算短信")
+    actual = document.records[0]
+    assert actual.metrics["ordinary_profit"]["status"] == NOT_PROVIDED
+    assert actual.metrics["ordinary_profit"]["value"] is None
+    assert actual.metrics["net_income"]["status"] == NOT_PROVIDED
+    assert actual.metrics["net_income"]["value"] is None

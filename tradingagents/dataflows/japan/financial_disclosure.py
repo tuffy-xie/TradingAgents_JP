@@ -51,6 +51,23 @@ _GUIDANCE_SECTION = re.compile(
     r"(?:\s*第\s*(?P<quarter>[１２３1-3])\s*四半期(?:\s*[（(]中間期[）)])?)?"
     r"(?:の)?\s*(?:通期\s*)?(?P<scope>連結|個別|単体)業績予想(?:数値)?(?:の修正)?",
 )
+_ACTUAL_TABLE_HEAD = re.compile(r"(?:連結|個別|単体)経営成績(?:\s*[（(]累計[）)])?")
+_HEADER_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "parent_income",
+        re.compile(
+            r"親会社(?:株主|の所有者)に\s*帰属(?:する)?\s*(?:四半期|当期)(?:純)?利益"
+        ),
+    ),
+    ("revenue", re.compile(r"売上高|営業収益|売上収益")),
+    ("operating_profit", re.compile(r"営業利益")),
+    ("ordinary_profit", re.compile(r"経常利益")),
+    ("pre_tax_profit", re.compile(r"税引前(?:四半期|当期)?利益")),
+    ("net_income", re.compile(r"(?:四半期|当期)(?:純)?利益")),
+    ("comprehensive_income", re.compile(r"四半期\s*包括利益(?:\s*合計額)?")),
+)
+_TABLE_CELL = re.compile(r"△?[0-9０-９][0-9０-９,，]*(?:\.[0-9０-９]+)?|[－―—-]")
+_EPS_HEAD = re.compile(r"(?:基本的\s*)?[１1]\s*株当たり\s*(?:四半期|当期)(?:純)?利益")
 
 
 @dataclass(frozen=True)
@@ -167,7 +184,17 @@ def parse_financial_document(
                 accounting_standard=standard,
                 currency=record_metadata["currency"],
                 unit=record_metadata["unit"],
-                metrics=_section_metrics(record_type, standard),
+                metrics=(
+                    _parse_actual_metrics(
+                        section_text,
+                        fiscal_year=match.group("year"),
+                        period_type=period_type,
+                        accounting_standard=standard,
+                        unit=record_metadata["unit"],
+                    )
+                    if record_type == "ACTUAL"
+                    else _section_metrics(record_type, standard)
+                ),
                 revision_reason=(
                     _revision_reason(section_text, True)
                     if record_type == "GUIDANCE"
@@ -218,6 +245,149 @@ def _section_metrics(record_type: str, accounting_standard: str) -> dict[str, di
             else _guidance_missing(NOT_APPLICABLE)
         )
     return metrics
+
+
+def _parse_actual_metrics(
+    section_text: str,
+    *,
+    fiscal_year: str,
+    period_type: str,
+    accounting_standard: str,
+    unit: str,
+) -> dict[str, dict[str, Any]]:
+    """Parse one already-segmented Actual table by its header and current row."""
+    unavailable = _section_metrics("ACTUAL", accounting_standard)
+    table_head = _ACTUAL_TABLE_HEAD.search(section_text)
+    if not table_head:
+        return unavailable
+    row = _find_period_row(section_text, table_head.end(), fiscal_year, period_type)
+    if not row:
+        return unavailable
+    header_text = section_text[table_head.end() : row.start()]
+    columns = _actual_header_columns(header_text)
+    if not columns:
+        return unavailable
+    row_text = _period_row_body(section_text, row.end())
+    cells = _TABLE_CELL.findall(row_text)
+    has_percent_columns = header_text.count("％") >= len(columns)
+    stride = 2 if has_percent_columns else 1
+    if len(cells) < (len(columns) - 1) * stride + 1:
+        return unavailable
+
+    metrics = {field: _missing(NOT_PROVIDED) for field in _FIELD_LABELS}
+    if accounting_standard == "IFRS":
+        metrics["ordinary_profit"] = _missing(NOT_APPLICABLE)
+    for index, column in enumerate(columns):
+        target = _actual_metric_target(column, metrics, accounting_standard)
+        if not target:
+            continue
+        token = cells[index * stride]
+        metrics[target] = _table_value(token, unit)
+
+    eps = _parse_actual_eps(section_text, fiscal_year, period_type)
+    if eps is not None:
+        metrics["eps"] = eps
+    return metrics
+
+
+def _actual_header_columns(header_text: str) -> list[str]:
+    matches: list[tuple[int, int, str]] = []
+    for name, pattern in _HEADER_PATTERNS:
+        matches.extend((match.start(), match.end(), name) for match in pattern.finditer(header_text))
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    columns: list[str] = []
+    accepted: list[tuple[int, int]] = []
+    for start, end, name in matches:
+        if any(start < accepted_end and end > accepted_start for accepted_start, accepted_end in accepted):
+            continue
+        accepted.append((start, end))
+        columns.append(name)
+    return columns
+
+
+def _actual_metric_target(
+    column: str,
+    metrics: dict[str, dict[str, Any]],
+    accounting_standard: str,
+) -> str | None:
+    if column in {"revenue", "operating_profit", "ordinary_profit"}:
+        return column
+    if column == "parent_income":
+        # Both J-GAAP and IFRS may expose an explicit parent-attributable
+        # profit column. It is the only acceptable IFRS source for the
+        # normalized net_income field when a separate total-period profit
+        # column is also present.
+        return "net_income"
+    if column == "net_income" and accounting_standard != "IFRS":
+        # Some J-GAAP tables use a generic 純利益 label instead of the more
+        # specific parent-attributable label.
+        return "net_income"
+    return None
+
+
+def _find_period_row(
+    text: str,
+    start: int,
+    fiscal_year: str,
+    period_type: str,
+) -> re.Match[str] | None:
+    pattern = _period_row_pattern(fiscal_year, period_type)
+    return re.compile(pattern).search(text, start)
+
+
+def _period_row_pattern(fiscal_year: str, period_type: str) -> str:
+    base = rf"{re.escape(fiscal_year)}\s*年\s*[0-9０-９]{{1,2}}月期"
+    suffixes = {
+        "Q1": r"\s*第\s*[１1]\s*四半期",
+        "H1": r"(?:\s*第\s*[２2]\s*四半期|\s*[（(]?中間期[）)]?)",
+        "Q3": r"\s*第\s*[３3]\s*四半期",
+        "FY": "",
+    }
+    return base + suffixes[period_type]
+
+
+def _period_row_body(text: str, start: int) -> str:
+    next_row = re.search(
+        r"20\d{2}\s*年\s*[0-9０-９]{1,2}月期(?:\s*第\s*[１２３1-3]\s*四半期|\s*[（(]?中間期[）)]?)?",
+        text[start:],
+    )
+    end = start + next_row.start() if next_row else min(len(text), start + 500)
+    return text[start:end]
+
+
+def _table_value(token: str, unit: str) -> dict[str, Any]:
+    if re.fullmatch(r"[－―—-]", token):
+        return _missing(NOT_PROVIDED)
+    return _value_from_parts((token, unit))
+
+
+def _parse_actual_eps(
+    section_text: str,
+    fiscal_year: str,
+    period_type: str,
+) -> dict[str, Any] | None:
+    eps_head = _EPS_HEAD.search(section_text)
+    if not eps_head:
+        return None
+    row = _find_period_row(section_text, eps_head.end(), fiscal_year, period_type)
+    if not row:
+        return _missing(DATA_UNAVAILABLE)
+    cells = _TABLE_CELL.findall(_period_row_body(section_text, row.end()))
+    if not cells or re.fullmatch(r"[－―—-]", cells[0]):
+        return _missing(NOT_PROVIDED)
+    first = cells[0]
+    if "." in first or "．" in first:
+        return _value_from_parts((first.replace("．", "."), "円"))
+    # TDnet PDF extraction may split the yen/sen columns into "13 46".
+    # Recombine only under an explicit EPS header with a two-digit sen token.
+    if len(cells) >= 2 and re.fullmatch(r"[0-9０-９]{2}", cells[1]):
+        raw = f"{first} {cells[1]}"
+        integer = first.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        decimals = cells[1].translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        sign = "-" if integer.startswith("△") else ""
+        integer = integer.removeprefix("△")
+        return {"status": "OK", "value": float(f"{sign}{integer}.{decimals}"), "raw_value": raw, "unit": "円"}
+    return _value_from_parts((first, "円"))
 
 
 def parse_financial_disclosure(
@@ -295,49 +465,23 @@ def _number_tokens(text: str) -> list[str]:
 
 
 def _tdnet_actual_values(text: str) -> dict[str, dict[str, Any]]:
-    """Read the fixed column order used by TDnet earnings-summary tables.
+    """Reuse the header-aware Actual parser for the legacy entry point.
 
-    Extracted PDFs flatten the header and rows, so label-to-value matching is
-    unsafe.  This narrow path only applies when the standard consolidated
-    performance table and its current-period row are both present.
+    The previous implementation assigned the fourth flattened amount
+    (IFRS total period profit) to ``net_income`` before seeing the explicit
+    parent-attributable column. Keeping one semantic parser for both public
+    entry points prevents that column-position error.
     """
-    marker = re.search(r"連結経営成績.*?売上高.*?親会社の所有者に", text)
-    if not marker:
+    metadata = _metadata(text, None, None)
+    if metadata["fiscal_period"] == DATA_UNAVAILABLE or not _ACTUAL_TABLE_HEAD.search(text):
         return {}
-    tail = text[marker.start():]
-    row = re.search(
-        r"(?P<period>20\d{2}年[^ ]*第[１２３1-3]四半期)\s+(?P<body>.*?)(?=20\d{2}年[^ ]*第[１２３1-3]四半期)",
-        tail,
+    return _parse_actual_metrics(
+        text,
+        fiscal_year=metadata["fiscal_period"],
+        period_type=metadata["period_type"],
+        accounting_standard=metadata["accounting_standard"],
+        unit=metadata["unit"],
     )
-    if not row:
-        return {}
-    tokens = _number_tokens(row.group("body"))
-    # Each amount is followed by its YoY percentage; the first five amounts
-    # are revenue, operating profit, tax/pre-tax profit, quarter profit, and
-    # parent-attributable quarter profit.
-    if len(tokens) < 9:
-        return {}
-    unit_match = re.search(r"(百万円|億円|千万円|千円|万円|円)", tail[: row.end()])
-    unit = unit_match.group(1) if unit_match else None
-    if not unit:
-        return {}
-    fields = ("revenue", "operating_profit", "_tax_profit", "net_income", "_parent_income")
-    values = {}
-    for field, token in zip(fields, tokens[0:9:2], strict=True):
-        values[field] = _value_from_parts((token, unit))
-    eps_match = re.search(
-        r"基本的[１1]株当たり\s*四半期利益.*?20\d{2}年[^ ]*第[１２３1-3]四半期\s+(" + _NUMBER + r")",
-        tail,
-    )
-    if eps_match:
-        values["eps"] = _value_from_parts((eps_match.group(1), "円"))
-    result = {
-        "revenue": values["revenue"],
-        "operating_profit": values["operating_profit"],
-        "net_income": values["net_income"],
-        "eps": values.get("eps", _missing(NOT_PROVIDED)),
-    }
-    return result
 
 
 def _tdnet_guidance_values(text: str) -> dict[str, dict[str, Any]]:
