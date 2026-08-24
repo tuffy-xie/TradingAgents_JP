@@ -15,6 +15,9 @@ from typing import Any
 NOT_PROVIDED = "NOT_PROVIDED"
 DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
 NOT_APPLICABLE = "NOT_APPLICABLE"
+VALUE_ORIGIN_SOURCE = "SOURCE"
+VALUE_ORIGIN_DERIVED = "DERIVED"
+VALUE_ORIGIN_UNKNOWN = "UNKNOWN"
 
 _AMOUNT = r"(?P<value>[+-]?[0-9０-９][0-9０-９,，]*(?:\.[0-9０-９]+)?)\s*(?P<unit>百万円|億円|千万円|千円|万円|円)"
 _AMOUNT_PLAIN = r"([+-]?[0-9０-９][0-9０-９,，]*(?:\.[0-9０-９]+)?)\s*(百万円|億円|千万円|千円|万円|円)"
@@ -85,6 +88,9 @@ class FinancialRecord:
     metrics: dict[str, dict[str, Any]]
     revision_reason: str
     section_text: str
+    target_period_end: str | None = None
+    scope_origin: str = "UNKNOWN"
+    revision_reason_status: str = NOT_APPLICABLE
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -99,6 +105,9 @@ class FinancialRecord:
             "metrics": self.metrics,
             "revision_reason": self.revision_reason,
             "section_text": self.section_text,
+            "target_period_end": self.target_period_end,
+            "scope_origin": self.scope_origin,
+            "revision_reason_status": self.revision_reason_status,
         }
 
 
@@ -113,6 +122,10 @@ class FinancialDocument:
     source_url: str | None
     accounting_standard: str
     records: tuple[FinancialRecord, ...] = dataclass_field(default_factory=tuple)
+    source_type: str = "UNKNOWN"
+    fetched_at: str | None = None
+    source_as_of: str | None = None
+    source_record_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -123,6 +136,10 @@ class FinancialDocument:
             "source_url": self.source_url,
             "accounting_standard": self.accounting_standard,
             "records": [record.to_dict() for record in self.records],
+            "source_type": self.source_type,
+            "fetched_at": self.fetched_at,
+            "source_as_of": self.source_as_of,
+            "source_record_id": self.source_record_id,
         }
 
 
@@ -236,6 +253,7 @@ def _section_scope(value: str) -> str:
 def _section_metrics(record_type: str, accounting_standard: str) -> dict[str, dict[str, Any]]:
     if record_type == "ACTUAL":
         metrics = {field: _missing(DATA_UNAVAILABLE) for field in _FIELD_LABELS}
+        metrics["profit_total"] = _missing(NOT_PROVIDED)
     else:
         metrics = {field: _guidance_missing(DATA_UNAVAILABLE) for field in _FIELD_LABELS}
     if accounting_standard == "IFRS":
@@ -322,6 +340,10 @@ def _actual_metric_target(
         # Some J-GAAP tables use a generic 純利益 label instead of the more
         # specific parent-attributable label.
         return "net_income"
+    if column == "net_income" and accounting_standard == "IFRS":
+        # IFRS tables may report total period profit separately from the
+        # parent-attributable profit used for normalized net_income.
+        return "profit_total"
     return None
 
 

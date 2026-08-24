@@ -4,6 +4,8 @@ from tradingagents.dataflows.japan.financial_disclosure import (
     DATA_UNAVAILABLE,
     NOT_APPLICABLE,
     NOT_PROVIDED,
+    VALUE_ORIGIN_DERIVED,
+    FinancialRecord,
     parse_financial_disclosure,
     parse_financial_document,
 )
@@ -213,7 +215,57 @@ def test_segments_5016_ifrs_actual_and_fy_consolidated_guidance():
     assert actual.metrics["ordinary_profit"]["status"] == NOT_APPLICABLE
     assert actual.metrics["net_income"]["value"] == 53070
     assert actual.metrics["net_income"]["value"] != 60418
+    assert actual.metrics["profit_total"]["value"] == 60418
     assert actual.metrics["eps"]["value"] == 56.8
+
+
+def test_financial_schema_extensions_have_backward_compatible_defaults():
+    document = parse_financial_document(
+        TDNET_5016_Q1_FIXTURE,
+        title="2027年３月期第１四半期決算短信〔IFRS〕(連結)",
+        source="TDnet",
+    )
+    actual = document.records[0]
+
+    assert document.source_type == "UNKNOWN"
+    assert document.fetched_at is None
+    assert document.source_as_of is None
+    assert document.source_record_id is None
+    assert actual.target_period_end is None
+    assert actual.scope_origin == "UNKNOWN"
+    assert actual.revision_reason_status == NOT_APPLICABLE
+
+
+def test_metric_status_and_derived_origin_are_independent():
+    record = FinancialRecord(
+        record_type="GUIDANCE",
+        fiscal_year="2027",
+        period_type="FY",
+        period_basis="FULL_YEAR",
+        scope="CONSOLIDATED",
+        accounting_standard="IFRS",
+        currency="JPY",
+        unit="百万円",
+        metrics={
+            "revenue": {
+                "status": "OK",
+                "value": 1025000,
+                "source_field": "forecast_revenue",
+                "semantic_basis": "REVENUE",
+                "value_origin": VALUE_ORIGIN_DERIVED,
+                "derivation": {"method": "COMPARE_PREVIOUS_CURRENT_GUIDANCE"},
+            }
+        },
+        revision_reason=NOT_PROVIDED,
+        section_text="",
+    )
+
+    metric = record.metrics["revenue"]
+    assert metric["status"] == "OK"
+    assert metric["value_origin"] == "DERIVED"
+    assert metric["source_field"] == "forecast_revenue"
+    assert metric["semantic_basis"] == "REVENUE"
+    assert metric["derivation"]["method"] == "COMPARE_PREVIOUS_CURRENT_GUIDANCE"
 
 
 def test_legacy_entry_point_uses_ifrs_parent_attributable_profit():
