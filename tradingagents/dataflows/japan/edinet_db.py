@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -31,6 +32,13 @@ class EDINETDBStatus(StrEnum):
     DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
 
 
+class IssuerIdentityStatus(StrEnum):
+    """Fail-closed result states for issuer identity resolution."""
+
+    OK = "OK"
+    DATA_UNAVAILABLE = "DATA_UNAVAILABLE"
+
+
 @dataclass(frozen=True)
 class EDINETDBResponse:
     """Raw EDINET DB earnings response and source metadata.
@@ -47,6 +55,22 @@ class EDINETDBResponse:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class IssuerIdentity:
+    """Exact listed-issuer identity resolved from the EDINET DB company master."""
+
+    input_ticker: str
+    security_code: str | None
+    source_security_code: str | None
+    edinet_code: str | None
+    listing_status: str | None
+    source: str
+    source_as_of: str | None
+    fetched_at: str
+    status: IssuerIdentityStatus
+    detail: str = ""
+
+
 class EDINETDBProvider:
     """Fetch raw earnings disclosures from EDINET DB.
 
@@ -57,6 +81,7 @@ class EDINETDBProvider:
 
     name = "EDINET DB"
     source_type = "STRUCTURED_SOURCE"
+    identity_source = "EDINET_DB_COMPANY_MASTER"
     default_base_url = "https://edinetdb.jp/v1"
 
     def __init__(
@@ -71,6 +96,100 @@ class EDINETDBProvider:
         self.base_url = (base_url or self.default_base_url).rstrip("/")
         self.timeout = timeout
         self._http_get = http_get or requests.get
+
+    async def resolve_issuer_identity(self, input_ticker: object) -> IssuerIdentity:
+        """Resolve a JP security code through the exact company-master filter.
+
+        The resolver never uses the fuzzy ``/search`` endpoint.  A result is
+        accepted only when exactly one response security code normalizes back
+        to the requested code, carries a valid EDINET code, and is explicitly
+        marked as a currently listed issuer.
+        """
+        raw_input = str(input_ticker or "")
+        security_code = normalize_security_code(input_ticker)
+        if security_code is None:
+            return self._identity(
+                raw_input,
+                None,
+                detail="INVALID_SECURITY_CODE",
+            )
+        if not self.api_key.strip():
+            return self._identity(
+                raw_input,
+                security_code,
+                detail=EDINETDBStatus.AUTH_REQUIRED.value,
+            )
+
+        url = f"{self.base_url}/companies"
+        status, payload, detail = await self._get_json(
+            url,
+            params={"sec_code": security_code, "per_page": 2},
+        )
+        if status != EDINETDBStatus.OK:
+            return self._identity(
+                raw_input,
+                security_code,
+                detail=_identity_transport_detail(status, detail),
+            )
+
+        records = _company_records(payload)
+        if records is None:
+            return self._identity(
+                raw_input,
+                security_code,
+                detail="INVALID_RESPONSE",
+            )
+        candidates = tuple(
+            record
+            for record in records
+            if normalize_security_code(record.get("sec_code")) == security_code
+        )
+        if not candidates:
+            return self._identity(
+                raw_input,
+                security_code,
+                source_as_of=_source_as_of(payload),
+                detail="NO_EXACT_MATCH",
+            )
+        if len(candidates) != 1:
+            return self._identity(
+                raw_input,
+                security_code,
+                source_as_of=_source_as_of(payload),
+                detail="AMBIGUOUS_IDENTITY",
+            )
+
+        candidate = candidates[0]
+        source_security_code = str(candidate.get("sec_code") or "").strip() or None
+        edinet_code = str(candidate.get("edinet_code") or "").strip().upper()
+        listing_status = str(candidate.get("listing_status") or "").strip().lower()
+        is_delisted = _explicit_bool(candidate.get("is_delisted"))
+        common = {
+            "source_security_code": source_security_code,
+            "listing_status": listing_status or None,
+            "source_as_of": _source_as_of(payload),
+        }
+        if _EDINET_CODE.fullmatch(edinet_code) is None:
+            return self._identity(
+                raw_input,
+                security_code,
+                detail="INVALID_EDINET_CODE",
+                **common,
+            )
+        if listing_status != "listed" or is_delisted is not False:
+            return self._identity(
+                raw_input,
+                security_code,
+                detail="ISSUER_NOT_CURRENTLY_LISTED",
+                **common,
+            )
+        return self._identity(
+            raw_input,
+            security_code,
+            edinet_code=edinet_code,
+            status=IssuerIdentityStatus.OK,
+            **common,
+        )
 
     async def fetch_earnings(
         self,
@@ -100,45 +219,13 @@ class EDINETDBProvider:
             )
 
         url = f"{self.base_url}/companies/{quote(issuer_code, safe='')}/earnings"
-        try:
-            response = await asyncio.to_thread(
-                self._http_get,
-                url,
-                params={"limit": limit},
-                headers={"Accept": "application/json", "X-API-Key": self.api_key},
-                timeout=self.timeout,
-            )
-        except requests.Timeout as exc:
-            return self._response(
-                EDINETDBStatus.TIMEOUT,
-                issuer_code,
-                requested_url=url,
-                detail=type(exc).__name__,
-            )
-        except requests.RequestException as exc:
-            return self._response(
-                EDINETDBStatus.API_ERROR,
-                issuer_code,
-                requested_url=url,
-                detail=type(exc).__name__,
-            )
-
-        status = self._http_status(response.status_code)
+        status, payload, detail = await self._get_json(url, params={"limit": limit})
         if status != EDINETDBStatus.OK:
             return self._response(
                 status,
                 issuer_code,
                 requested_url=url,
-                detail=f"HTTP {response.status_code}",
-            )
-        try:
-            payload = response.json()
-        except (TypeError, ValueError):
-            return self._response(
-                EDINETDBStatus.DATA_UNAVAILABLE,
-                issuer_code,
-                requested_url=url,
-                detail="invalid JSON response",
+                detail=detail,
             )
 
         records = _earnings_records(payload)
@@ -156,6 +243,59 @@ class EDINETDBProvider:
             requested_url=url,
             records=records,
             raw_response=payload,
+        )
+
+    async def _get_json(
+        self,
+        url: str,
+        *,
+        params: Mapping[str, Any],
+    ) -> tuple[EDINETDBStatus, Any, str]:
+        """Perform one authenticated JSON GET for EDINET DB transports."""
+        try:
+            response = await asyncio.to_thread(
+                self._http_get,
+                url,
+                params=dict(params),
+                headers={"Accept": "application/json", "X-API-Key": self.api_key},
+                timeout=self.timeout,
+            )
+        except requests.Timeout as exc:
+            return EDINETDBStatus.TIMEOUT, None, type(exc).__name__
+        except requests.RequestException as exc:
+            return EDINETDBStatus.API_ERROR, None, type(exc).__name__
+
+        status = self._http_status(response.status_code)
+        if status != EDINETDBStatus.OK:
+            return status, None, f"HTTP {response.status_code}"
+        try:
+            return EDINETDBStatus.OK, response.json(), ""
+        except (TypeError, ValueError):
+            return EDINETDBStatus.DATA_UNAVAILABLE, None, "invalid JSON response"
+
+    def _identity(
+        self,
+        input_ticker: str,
+        security_code: str | None,
+        *,
+        source_security_code: str | None = None,
+        edinet_code: str | None = None,
+        listing_status: str | None = None,
+        source_as_of: str | None = None,
+        status: IssuerIdentityStatus = IssuerIdentityStatus.DATA_UNAVAILABLE,
+        detail: str = "",
+    ) -> IssuerIdentity:
+        return IssuerIdentity(
+            input_ticker=input_ticker,
+            security_code=security_code,
+            source_security_code=source_security_code,
+            edinet_code=edinet_code,
+            listing_status=listing_status,
+            source=self.identity_source,
+            source_as_of=source_as_of,
+            fetched_at=datetime.now(UTC).isoformat(),
+            status=status,
+            detail=detail,
         )
 
     def _response(
@@ -195,6 +335,60 @@ class EDINETDBProvider:
         if status_code == 404:
             return EDINETDBStatus.DATA_UNAVAILABLE
         return EDINETDBStatus.API_ERROR
+
+
+_CANONICAL_SECURITY_CODE = re.compile(r"^(?:\d{4}|\d{3}[A-Z])$")
+_EDINET_SECURITY_CODE = re.compile(r"^(?P<canonical>(?:\d{4}|\d{3}[A-Z]))0$")
+_EDINET_CODE = re.compile(r"^E\d{5}$")
+
+
+def normalize_security_code(value: object) -> str | None:
+    """Return a canonical four-character JP security code, without guessing."""
+    raw = str(value or "").strip().upper()
+    if raw.endswith(".T"):
+        raw = raw[:-2]
+    extended = _EDINET_SECURITY_CODE.fullmatch(raw)
+    if extended is not None:
+        raw = extended.group("canonical")
+    return raw if _CANONICAL_SECURITY_CODE.fullmatch(raw) is not None else None
+
+
+def _company_records(payload: Any) -> tuple[dict[str, Any], ...] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    records = payload.get("data")
+    if not isinstance(records, list) or not all(isinstance(record, Mapping) for record in records):
+        return None
+    return tuple(dict(record) for record in records)
+
+
+def _source_as_of(payload: Any) -> str | None:
+    if not isinstance(payload, Mapping) or not isinstance(payload.get("meta"), Mapping):
+        return None
+    value = payload["meta"].get("data_as_of")
+    return str(value) if value is not None and str(value).strip() else None
+
+
+def _explicit_bool(value: Any) -> bool | None:
+    if value is True or value == 1:
+        return True
+    if value is False or value == 0:
+        return False
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1"}:
+            return True
+        if normalized in {"false", "0"}:
+            return False
+    return None
+
+
+def _identity_transport_detail(status: EDINETDBStatus, detail: str) -> str:
+    if status == EDINETDBStatus.DATA_UNAVAILABLE and detail == "invalid JSON response":
+        return "INVALID_RESPONSE"
+    if detail == "HTTP 400":
+        return EDINETDBStatus.DATA_UNAVAILABLE.value
+    return status.value
 
 
 def _earnings_records(payload: Any) -> tuple[dict[str, Any], ...] | None:
