@@ -225,17 +225,20 @@ class EDINETDBProvider:
                 status,
                 issuer_code,
                 requested_url=url,
+                requested_limit=limit,
                 detail=detail,
             )
 
-        records = _earnings_records(payload)
+        records, reported_count, envelope_detail = _earnings_records(payload)
         if records is None:
             return self._response(
                 EDINETDBStatus.DATA_UNAVAILABLE,
                 issuer_code,
                 requested_url=url,
                 raw_response=payload,
-                detail="earnings response has no list data field",
+                requested_limit=limit,
+                data_as_of=_source_as_of(payload),
+                detail=envelope_detail,
             )
         return self._response(
             EDINETDBStatus.OK,
@@ -243,6 +246,10 @@ class EDINETDBProvider:
             requested_url=url,
             records=records,
             raw_response=payload,
+            requested_limit=limit,
+            reported_count=reported_count,
+            data_as_of=_source_as_of(payload),
+            window_may_be_truncated=len(records) >= limit,
         )
 
     async def _get_json(
@@ -306,6 +313,10 @@ class EDINETDBProvider:
         requested_url: str | None = None,
         records: tuple[dict[str, Any], ...] = (),
         raw_response: Any = None,
+        requested_limit: int | None = None,
+        reported_count: int | None = None,
+        data_as_of: str | None = None,
+        window_may_be_truncated: bool | None = None,
         detail: str = "",
     ) -> EDINETDBResponse:
         record_metadata = tuple(_record_metadata(record) for record in records)
@@ -319,6 +330,11 @@ class EDINETDBProvider:
                 "fetched_at": datetime.now(UTC).isoformat(),
                 "issuer_identifier": issuer_identifier or None,
                 "requested_url": requested_url,
+                "requested_limit": requested_limit,
+                "returned_count": len(records),
+                "reported_count": reported_count,
+                "data_as_of": data_as_of,
+                "window_may_be_truncated": window_may_be_truncated,
                 "record_metadata": record_metadata,
             },
             detail=detail,
@@ -391,13 +407,33 @@ def _identity_transport_detail(status: EDINETDBStatus, detail: str) -> str:
     return status.value
 
 
-def _earnings_records(payload: Any) -> tuple[dict[str, Any], ...] | None:
+def _earnings_records(
+    payload: Any,
+) -> tuple[tuple[dict[str, Any], ...] | None, int | None, str]:
     if not isinstance(payload, Mapping):
-        return None
-    records = payload.get("data")
-    if not isinstance(records, list) or not all(isinstance(record, Mapping) for record in records):
-        return None
-    return tuple(dict(record) for record in records)
+        return None, None, "INVALID_EARNINGS_PAYLOAD"
+    if "data" not in payload:
+        return None, None, "MISSING_EARNINGS_DATA"
+
+    data = payload["data"]
+    if not isinstance(data, Mapping):
+        return None, None, "INVALID_EARNINGS_DATA"
+    if "earnings" not in data:
+        return None, _reported_count(data), "MISSING_EARNINGS_RECORDS"
+
+    records = data["earnings"]
+    if not isinstance(records, list):
+        return None, _reported_count(data), "INVALID_EARNINGS_RECORDS"
+    if not all(isinstance(record, Mapping) for record in records):
+        return None, _reported_count(data), "INVALID_EARNINGS_RECORD"
+    return tuple(dict(record) for record in records), _reported_count(data), ""
+
+
+def _reported_count(data: Mapping[str, Any]) -> int | None:
+    value = data.get("count")
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return None
 
 
 def _record_metadata(record: Mapping[str, Any]) -> dict[str, Any]:

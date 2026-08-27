@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 import requests
 
 from tradingagents.dataflows.japan.edinet_db import (
@@ -24,8 +25,8 @@ class _Response:
         return self._payload
 
 
-def _fetch(provider: EDINETDBProvider, issuer: str = "E01081"):
-    return asyncio.run(provider.fetch_earnings(issuer))
+def _fetch(provider: EDINETDBProvider, issuer: str = "E01081", *, limit: int = 8):
+    return asyncio.run(provider.fetch_earnings(issuer, limit=limit))
 
 
 def _resolve(provider: EDINETDBProvider, ticker: object = "5016.T"):
@@ -68,14 +69,19 @@ def test_fetch_earnings_returns_raw_records_and_source_metadata(monkeypatch):
         return _Response(
             200,
             {
-                "data": [
-                    {
-                        "id": "earnings-1",
-                        "pdf_url": "https://example.test/earnings-1.pdf",
-                        "revenue": 260604,
-                    }
-                ],
-                "meta": {"total": 1},
+                "data": {
+                    "edinet_code": "E01081",
+                    "count": 2,
+                    "earnings": [
+                        {
+                            "quarter": 1,
+                            "pdf_url": "https://example.test/earnings-q1.pdf",
+                            "revenue": 260604,
+                        },
+                        {"quarter": 4, "revenue": 930000},
+                    ],
+                },
+                "meta": {"data_as_of": "2026-08-25"},
             },
         )
 
@@ -85,20 +91,28 @@ def test_fetch_earnings_returns_raw_records_and_source_metadata(monkeypatch):
     assert result.status == EDINETDBStatus.OK
     assert result.records == (
         {
-            "id": "earnings-1",
-            "pdf_url": "https://example.test/earnings-1.pdf",
+            "quarter": 1,
+            "pdf_url": "https://example.test/earnings-q1.pdf",
             "revenue": 260604,
         },
+        {"quarter": 4, "revenue": 930000},
     )
-    assert result.raw_response["meta"] == {"total": 1}
+    assert result.raw_response["meta"] == {"data_as_of": "2026-08-25"}
     assert result.metadata["source"] == "EDINET DB"
+    assert result.metadata["source_type"] == "STRUCTURED_SOURCE"
     assert result.metadata["issuer_identifier"] == "E01081"
     assert result.metadata["fetched_at"]
+    assert result.metadata["requested_limit"] == 8
+    assert result.metadata["returned_count"] == 2
+    assert result.metadata["reported_count"] == 2
+    assert result.metadata["data_as_of"] == "2026-08-25"
+    assert result.metadata["window_may_be_truncated"] is False
     assert result.metadata["record_metadata"] == (
         {
-            "source_record_id": "earnings-1",
-            "source_url": "https://example.test/earnings-1.pdf",
+            "source_record_id": None,
+            "source_url": "https://example.test/earnings-q1.pdf",
         },
+        {"source_record_id": None, "source_url": None},
     )
     assert captured["url"] == "https://edinetdb.jp/v1/companies/E01081/earnings"
     assert captured["params"] == {"limit": 8}
@@ -150,15 +164,112 @@ def test_fetch_earnings_maps_500_to_api_error():
     assert result.detail == "HTTP 500"
 
 
-def test_fetch_earnings_maps_malformed_response_to_data_unavailable():
+@pytest.mark.parametrize(
+    ("payload", "detail"),
+    (
+        ([], "INVALID_EARNINGS_PAYLOAD"),
+        ({"unexpected": []}, "MISSING_EARNINGS_DATA"),
+        ({"data": []}, "INVALID_EARNINGS_DATA"),
+        ({"data": {}}, "MISSING_EARNINGS_RECORDS"),
+        ({"data": {"earnings": {}}}, "INVALID_EARNINGS_RECORDS"),
+        ({"data": {"earnings": [{"quarter": 1}, "not-an-object"]}}, "INVALID_EARNINGS_RECORD"),
+    ),
+)
+def test_fetch_earnings_maps_malformed_response_to_data_unavailable(payload, detail):
     result = _fetch(
         EDINETDBProvider(
             api_key="test-key",
-            http_get=lambda _url, **_: _Response(200, {"unexpected": []}),
+            http_get=lambda _url, **_: _Response(200, payload),
         )
     )
     assert result.status == EDINETDBStatus.DATA_UNAVAILABLE
-    assert result.detail == "earnings response has no list data field"
+    assert result.records == ()
+    assert result.detail == detail
+
+
+def test_fetch_earnings_preserves_missing_or_invalid_reported_count():
+    for count in (None, "2", True, -1):
+        data = {"earnings": [{"quarter": 1}]}
+        if count is not None:
+            data["count"] = count
+        result = _fetch(
+            EDINETDBProvider(
+                api_key="test-key",
+                http_get=lambda _url, response_data=data, **_: _Response(
+                    200,
+                    {"data": response_data, "meta": {}},
+                ),
+            )
+        )
+        assert result.status == EDINETDBStatus.OK
+        assert result.metadata["reported_count"] is None
+        assert result.metadata["returned_count"] == 1
+
+
+def test_fetch_earnings_marks_full_requested_window_as_possibly_truncated():
+    result = _fetch(
+        EDINETDBProvider(
+            api_key="test-key",
+            http_get=lambda _url, **_: _Response(
+                200,
+                {
+                    "data": {
+                        "count": 3,
+                        "earnings": [{"quarter": 1}, {"quarter": 2}],
+                    },
+                    "meta": {"data_as_of": "2026-08-25"},
+                },
+            ),
+        ),
+        limit=2,
+    )
+
+    assert result.status == EDINETDBStatus.OK
+    assert result.metadata["returned_count"] == 2
+    assert result.metadata["reported_count"] == 3
+    assert result.metadata["window_may_be_truncated"] is True
+
+
+def test_reported_count_difference_does_not_imply_truncated_window():
+    result = _fetch(
+        EDINETDBProvider(
+            api_key="test-key",
+            http_get=lambda _url, **_: _Response(
+                200,
+                {
+                    "data": {"count": 3, "earnings": [{"quarter": 1}]},
+                    "meta": {},
+                },
+            ),
+        )
+    )
+
+    assert result.status == EDINETDBStatus.OK
+    assert result.metadata["reported_count"] == 3
+    assert result.metadata["returned_count"] == 1
+    assert result.metadata["window_may_be_truncated"] is False
+
+
+def test_fetch_earnings_accepts_limit_30_and_rejects_limit_31_without_http():
+    calls = []
+
+    def fake_get(_url, *, params, **_):
+        calls.append(params)
+        return _Response(200, {"data": {"count": 0, "earnings": []}, "meta": {}})
+
+    provider = EDINETDBProvider(api_key="test-key", http_get=fake_get)
+    accepted = _fetch(provider, limit=30)
+    rejected = _fetch(provider, limit=31)
+
+    assert accepted.status == EDINETDBStatus.OK
+    assert accepted.records == ()
+    assert accepted.metadata["requested_limit"] == 30
+    assert accepted.metadata["returned_count"] == 0
+    assert accepted.metadata["reported_count"] == 0
+    assert accepted.metadata["window_may_be_truncated"] is False
+    assert rejected.status == EDINETDBStatus.DATA_UNAVAILABLE
+    assert rejected.detail == "limit must be an integer from 1 to 30"
+    assert calls == [{"limit": 30}]
 
 
 def test_fetch_earnings_maps_invalid_json_to_data_unavailable():
