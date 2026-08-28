@@ -8,7 +8,9 @@ Company IR official disclosures.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 from .financial_disclosure import (
@@ -48,7 +50,19 @@ _CANONICAL_STANDARDS = {
     "JAPANESE_GAAP": "J_GAAP",
     "US_GAAP": "US_GAAP",
 }
-_PERIODS = {"Q1": "Q1", "H1": "H1", "Q3": "Q3", "FY": "FY"}
+_PERIODS = {
+    "1": "Q1",
+    "Q1": "Q1",
+    "2": "H1",
+    "Q2": "H1",
+    "H1": "H1",
+    "3": "Q3",
+    "Q3": "Q3",
+    "4": "FY",
+    "Q4": "FY",
+    "FY": "FY",
+}
+_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def normalize_accounting_standard(value: Any) -> str:
@@ -111,12 +125,12 @@ def normalize_actual_record(raw: Mapping[str, Any]) -> FinancialRecord:
     """Build one Actual record from one EDINET DB earnings record."""
     standard = normalize_accounting_standard(raw.get("accounting_standard"))
     scope, scope_origin = normalize_scope(raw.get("is_consolidated"))
-    period_type = _normalize_period(raw.get("period") or raw.get("period_type"))
+    period_type = _resolve_period(raw, "period", "period_type", "quarter")
     return FinancialRecord(
         record_type="ACTUAL",
         fiscal_year=_normalize_fiscal_year(raw.get("fiscal_year")),
         period_type=period_type,
-        period_basis="FULL_YEAR" if period_type == "FY" else "CUMULATIVE",
+        period_basis=_period_basis(period_type),
         scope=scope,
         accounting_standard=standard,
         currency=_normalize_currency(raw.get("currency")),
@@ -124,7 +138,7 @@ def normalize_actual_record(raw: Mapping[str, Any]) -> FinancialRecord:
         metrics=normalize_actual_metrics(raw),
         revision_reason=NOT_APPLICABLE,
         section_text="",
-        target_period_end=_text_or_none(raw.get("target_period_end")),
+        target_period_end=_resolve_date_fields(raw, "target_period_end", "fiscal_year_end"),
         scope_origin=scope_origin,
         revision_reason_status=NOT_APPLICABLE,
     )
@@ -165,18 +179,14 @@ def normalize_guidance_record(raw: Mapping[str, Any]) -> FinancialRecord:
     """Build Current Guidance only; historical matching belongs to a later task."""
     standard = normalize_accounting_standard(raw.get("accounting_standard"))
     scope, scope_origin = normalize_scope(raw.get("is_consolidated"))
-    period_type = _normalize_period(
-        raw.get("forecast_period")
-        or raw.get("forecast_period_type")
-        or raw.get("guidance_period")
-    )
+    period_type = _guidance_period(raw)
     return FinancialRecord(
         record_type="GUIDANCE",
         fiscal_year=_normalize_fiscal_year(
             raw.get("forecast_fiscal_year") or raw.get("fiscal_year")
         ),
         period_type=period_type,
-        period_basis="FULL_YEAR" if period_type == "FY" else "CUMULATIVE",
+        period_basis=_period_basis(period_type),
         scope=scope,
         accounting_standard=standard,
         currency=_normalize_currency(raw.get("currency")),
@@ -184,7 +194,7 @@ def normalize_guidance_record(raw: Mapping[str, Any]) -> FinancialRecord:
         metrics=_normalize_guidance_metrics(raw, standard),
         revision_reason=NOT_PROVIDED,
         section_text="",
-        target_period_end=_text_or_none(raw.get("forecast_target_period_end")),
+        target_period_end=_guidance_target_period_end(raw),
         scope_origin=scope_origin,
         revision_reason_status=NOT_PROVIDED,
     )
@@ -350,6 +360,84 @@ def _number(value: Any) -> float | int | None:
 def _normalize_period(value: Any) -> str:
     normalized = str(value or "").strip().upper().replace(" ", "")
     return _PERIODS.get(normalized, DATA_UNAVAILABLE)
+
+
+def _resolve_period(raw: Mapping[str, Any], *field_names: str) -> str:
+    values = [
+        _normalize_period(raw[field_name])
+        for field_name in field_names
+        if field_name in raw and raw[field_name] is not None
+    ]
+    if not values or DATA_UNAVAILABLE in values or len(set(values)) != 1:
+        return DATA_UNAVAILABLE
+    return values[0]
+
+
+def _guidance_period(raw: Mapping[str, Any]) -> str:
+    explicit_fields = ("forecast_period", "forecast_period_type", "guidance_period")
+    explicit_period = _resolve_period(raw, *explicit_fields)
+    has_explicit = any(field in raw and raw[field] is not None for field in explicit_fields)
+    live_actual_period = _resolve_period(raw, "quarter")
+
+    if has_explicit:
+        if explicit_period == DATA_UNAVAILABLE:
+            return DATA_UNAVAILABLE
+        if live_actual_period != DATA_UNAVAILABLE and explicit_period != "FY":
+            return DATA_UNAVAILABLE
+        return explicit_period
+    return "FY" if live_actual_period != DATA_UNAVAILABLE else DATA_UNAVAILABLE
+
+
+def _period_basis(period_type: str) -> str:
+    if period_type == "FY":
+        return "FULL_YEAR"
+    if period_type in {"Q1", "H1", "Q3"}:
+        return "CUMULATIVE"
+    return DATA_UNAVAILABLE
+
+
+def _guidance_target_period_end(raw: Mapping[str, Any]) -> str | None:
+    explicit_fields = ("forecast_target_period_end", "guidance_target_period_end")
+    explicit_target = _resolve_date_fields(raw, *explicit_fields)
+    has_explicit = any(field in raw and raw[field] is not None for field in explicit_fields)
+    actual_period = _resolve_period(raw, "quarter")
+
+    if has_explicit:
+        if explicit_target is None:
+            return None
+        if actual_period in {"Q1", "H1", "Q3"} and "fiscal_year_end" in raw:
+            live_target = _resolve_date_fields(raw, "fiscal_year_end")
+            if live_target is None or live_target != explicit_target:
+                return None
+        return explicit_target
+
+    if actual_period in {"Q1", "H1", "Q3"}:
+        return _resolve_date_fields(raw, "fiscal_year_end")
+    return None
+
+
+def _resolve_date_fields(raw: Mapping[str, Any], *field_names: str) -> str | None:
+    values = [
+        _strict_date(raw[field_name])
+        for field_name in field_names
+        if field_name in raw and raw[field_name] is not None
+    ]
+    if not values or None in values or len(set(values)) != 1:
+        return None
+    return values[0]
+
+
+def _strict_date(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        return None
+    if isinstance(value, date):
+        return value.isoformat()
+    if not isinstance(value, str) or _DATE_PATTERN.fullmatch(value.strip()) is None:
+        return None
+    try:
+        return date.fromisoformat(value.strip()).isoformat()
+    except ValueError:
+        return None
 
 
 def _normalize_fiscal_year(value: Any) -> str:
