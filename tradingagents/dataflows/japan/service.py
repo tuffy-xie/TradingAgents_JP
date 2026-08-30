@@ -94,6 +94,18 @@ class JapanDataService:
             for response in responses
             if response.metadata
         }
+        if "EDINET DB Financials" in provider_metadata:
+            from .financial_authority import assess_japan_financial_data
+
+            provider_metadata["Japan Financial Authority"] = assess_japan_financial_data(
+                items=tuple(item.to_dict() for item in items),
+                source_statuses=tuple(status.to_dict() for status in statuses),
+                provider_metadata=provider_metadata,
+                analysis_as_of=date.fromisoformat(end_date),
+                official_scan_start=date.fromisoformat(
+                    provider_start_dates.get("TDnet", start_date)
+                ),
+            )
         governance = build_governance_item(items, context.symbol, date.fromisoformat(end_date))
         return JapanResearchBundle(
             ticker=context.symbol,

@@ -30,6 +30,7 @@ def _bundle(items):
         for item in items
     ]
     return {
+        "analysis_date": "2026-08-15",
         "items": [
             *items,
             _item(

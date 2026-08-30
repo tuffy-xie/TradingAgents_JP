@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from unittest.mock import MagicMock
 
@@ -22,7 +23,10 @@ from tradingagents.dataflows.japan.edinet_db import (
     IssuerIdentityStatus,
 )
 from tradingagents.dataflows.japan.edinet_db_bundle import EDINETDBFinancialBundleProvider
+from tradingagents.dataflows.japan.edinet_db_guidance_selector import LatestGuidanceSelection
 from tradingagents.dataflows.japan.edinet_db_normalizer import normalize_financial_document
+from tradingagents.dataflows.japan.edinet_db_selector import LatestEarningsSelection
+from tradingagents.dataflows.japan.edinet_db_service import EDINETDBFinancialSnapshot
 from tradingagents.dataflows.japan.models import (
     DataStatus,
     InformationLayer,
@@ -95,9 +99,39 @@ class _FinancialService:
         self.result = result
         self.calls: list[tuple[str, date]] = []
 
-    async def fetch_financial_document(self, issuer_id, *, analysis_as_of):
+    async def fetch_financial_snapshot(self, issuer_id, *, analysis_as_of):
         self.calls.append((issuer_id, analysis_as_of))
-        return self.result
+        if isinstance(self.result, EDINETDBResponse):
+            return self.result
+        actual = next(
+            (record for record in self.result.records if record.record_type == "ACTUAL"),
+            None,
+        )
+        guidance = next(
+            (record for record in self.result.records if record.record_type == "GUIDANCE"),
+            None,
+        )
+        actual_document = replace(self.result, records=(actual,)) if actual else None
+        guidance_document = replace(self.result, records=(guidance,)) if guidance else None
+        actual_selection = LatestEarningsSelection(
+            "OK", {}, issuer_id, self.result.source_record_id,
+            actual.target_period_end if actual else None,
+            actual.period_type if actual else None,
+            str(self.result.disclosure_timestamp)[:10], "DATE",
+            "LATEST_FISCAL_PERIOD_AS_OF", "",
+        )
+        guidance_selection = LatestGuidanceSelection(
+            "OK" if guidance else "NOT_PROVIDED", {}, issuer_id,
+            self.result.source_record_id, guidance.target_period_end if guidance else None,
+            guidance.period_type if guidance else None,
+            str(self.result.disclosure_timestamp)[:10], "DATE",
+            "LATEST_GUIDANCE_DISCLOSURE_AS_OF", "" if guidance else "GUIDANCE_NOT_PROVIDED",
+        )
+        return EDINETDBFinancialSnapshot(
+            actual_document, guidance_document, actual_selection, guidance_selection,
+            "OK" if actual else "DATA_UNAVAILABLE",
+            "OK" if guidance else "NOT_PROVIDED", "", "", {},
+        )
 
 
 class _LegacyProvider:
@@ -166,7 +200,7 @@ def test_jp_trade_date_flows_through_identity_service_and_bundle(monkeypatch, tm
     assert financial_service.calls == [("E01081", date(2026, 8, 15))]
     financial = bundle["provider_metadata"]["EDINET DB Financials"]
     assert financial["analysis_as_of"] == "2026-08-15"
-    assert financial["selection_basis"] == "LATEST_FISCAL_PERIOD_AS_OF"
+    assert financial["actual_selection"]["selection_basis"] == "LATEST_FISCAL_PERIOD_AS_OF"
     assert financial["financial_document"]["records"][0]["period_type"] == "Q1"
     assert any(item["source"] == "TDnet" for item in bundle["items"])
 
@@ -229,9 +263,9 @@ def test_full_mock_transport_resolver_selector_normalizer_bundle_chain(tmp_path)
     transport = EDINETDBProvider(api_key="test", http_get=http_get)
     adapter = EDINETDBFinancialBundleProvider(transport)
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
@@ -248,16 +282,16 @@ def test_full_mock_transport_resolver_selector_normalizer_bundle_chain(tmp_path)
 def test_fundamentals_renderer_preserves_ifrs_semantics_and_provenance(tmp_path):
     adapter, _, _ = _adapter()
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
 
     rendered = render_japan_financial_context(_state(bundle))
 
-    assert "EDINET DB structured financials" in rendered
+    assert "Japan financial authority assessment" in rendered
     assert "Q1" in rendered
     assert "2027-03-31" in rendered
     assert "Revenue: 260604 百万円" in rendered
@@ -271,23 +305,23 @@ def test_fundamentals_renderer_preserves_ifrs_semantics_and_provenance(tmp_path)
     assert "Source: EDINET DB" in rendered
     assert "Source type: STRUCTURED_SOURCE" in rendered
     assert "earnings-5016-q1" in rendered
-    assert "LATEST_FISCAL_PERIOD_AS_OF" in rendered
+    assert "CURRENT_STRUCTURED_CONFIRMED" in rendered
 
 
 def test_normalized_financial_metadata_survives_japan_provider_cache(tmp_path):
     adapter, identity_provider, financial_service = _adapter()
     data_service = JapanDataService(
-        (adapter,),
+        (_LegacyProvider(), adapter),
         cache=JapanDataCache(tmp_path),
         timeout_seconds=1,
     )
     context = resolve_market_context("5016.T")
 
     asyncio.run(
-        data_service.collect(context, start_date="2026-08-08", end_date="2026-08-15")
+        data_service.collect(context, start_date="2026-08-01", end_date="2026-08-15")
     )
     cached = asyncio.run(
-        data_service.collect(context, start_date="2026-08-08", end_date="2026-08-15")
+        data_service.collect(context, start_date="2026-08-01", end_date="2026-08-15")
     )
 
     assert identity_provider.calls == ["5016"]
@@ -300,9 +334,9 @@ def test_normalized_financial_metadata_survives_japan_provider_cache(tmp_path):
 def test_structured_financials_do_not_leak_into_shared_japan_context(tmp_path):
     adapter, _, _ = _adapter()
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
@@ -314,7 +348,7 @@ def test_structured_financials_do_not_leak_into_shared_japan_context(tmp_path):
     assert "EDINET DB structured financials" not in shared
     assert "260604" not in shared
     assert "earnings-5016-q1" not in shared
-    assert "EDINET DB structured financials" in financial
+    assert "Japan financial authority assessment" in financial
 
 
 def test_fundamentals_analyst_adds_financial_context_only_for_jp(monkeypatch, tmp_path):
@@ -322,9 +356,9 @@ def test_fundamentals_analyst_adds_financial_context_only_for_jp(monkeypatch, tm
 
     adapter, _, _ = _adapter()
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
@@ -357,9 +391,9 @@ def test_fundamentals_analyst_adds_financial_context_only_for_jp(monkeypatch, tm
     us_state = Propagator().create_initial_state("NVDA", "2026-08-15")
     analyst(us_state)
 
-    assert "EDINET DB structured financials" in str(captured[0])
+    assert "Japan financial authority assessment" in str(captured[0])
     assert "260604" in str(captured[0])
-    assert "EDINET DB structured financials" not in str(captured[1])
+    assert "Japan financial authority assessment" not in str(captured[1])
     assert "260604" not in str(captured[1])
 
 
@@ -368,9 +402,9 @@ def test_news_analyst_does_not_receive_structured_financial_context(monkeypatch,
 
     adapter, _, _ = _adapter()
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
@@ -400,7 +434,7 @@ def test_news_analyst_does_not_receive_structured_financial_context(monkeypatch,
 
     module.create_news_analyst(llm)(_state(bundle))
 
-    assert "EDINET DB structured financials" not in captured[0]
+    assert "Japan financial authority assessment" not in captured[0]
     assert "260604" not in captured[0]
     assert "earnings-5016-q1" not in captured[0]
 
@@ -468,9 +502,9 @@ def test_edinet_failure_isolated_from_existing_japan_sources(transport_status, t
 def test_raw_response_and_diagnostics_never_enter_financial_context(tmp_path):
     adapter, _, _ = _adapter()
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
@@ -482,7 +516,7 @@ def test_raw_response_and_diagnostics_never_enter_financial_context(tmp_path):
     assert "API key" not in rendered.lower()
 
 
-def test_missing_live_amount_unit_is_explicitly_unavailable(tmp_path):
+def test_documented_live_amount_unit_is_preserved(tmp_path):
     document = normalize_financial_document(
         {
             "record_id": "live-without-unit",
@@ -496,33 +530,37 @@ def test_missing_live_amount_unit_is_explicitly_unavailable(tmp_path):
     )
     adapter, _, _ = _adapter(result=document)
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-08-08",
+            start_date="2026-08-01",
             end_date="2026-08-15",
         )
     ).to_dict()
 
+    revenue = bundle["provider_metadata"]["EDINET DB Financials"]["actual_document"][
+        "records"
+    ][0]["metrics"]["revenue"]
     rendered = render_japan_financial_context(_state(bundle))
 
-    assert "Revenue: 260604 (unit: DATA_UNAVAILABLE)" in rendered
-    assert "Revenue: 260604 百万円" not in rendered
+    assert revenue["unit"] == "百万円"
+    assert "Normalized critical values: DATA_UNAVAILABLE" in rendered
+    assert "Revenue: 260604" not in rendered
 
 
 def test_q4_guidance_target_is_not_invented(tmp_path):
     adapter, _, _ = _adapter(result=_financial_document(quarter=4, fiscal_year_end="2026-03-31"))
     bundle = asyncio.run(
-        JapanDataService((adapter,), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
+        JapanDataService((_LegacyProvider(), adapter), cache=JapanDataCache(tmp_path), timeout_seconds=1).collect(
             resolve_market_context("5016.T"),
-            start_date="2026-05-01",
-            end_date="2026-05-31",
+            start_date="2026-08-01",
+            end_date="2026-08-15",
         )
     ).to_dict()
     rendered = render_japan_financial_context(_state(bundle))
 
-    guidance = bundle["provider_metadata"]["EDINET DB Financials"]["financial_document"][
+    guidance = bundle["provider_metadata"]["EDINET DB Financials"]["guidance_document"][
         "records"
-    ][1]
+    ][0]
     assert guidance["period_type"] == "FY"
     assert guidance["target_period_end"] is None
     assert "Current Company Guidance" in rendered

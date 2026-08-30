@@ -18,9 +18,7 @@ from .edinet_db import (
     EDINETDBStatus,
     IssuerIdentityStatus,
 )
-from .edinet_db_selector import SELECTION_BASIS
-from .edinet_db_service import EDINETDBFinancialService
-from .financial_disclosure import FinancialDocument
+from .edinet_db_service import EDINETDBFinancialService, EDINETDBFinancialSnapshot
 from .models import DataStatus, ProviderResponse, SourceStatus
 
 
@@ -29,7 +27,7 @@ class EDINETDBFinancialBundleProvider:
 
     name = "EDINET DB Financials"
     category = "fundamentals"
-    cache_version = "1"
+    cache_version = "2"
 
     def __init__(
         self,
@@ -58,21 +56,52 @@ class EDINETDBFinancialBundleProvider:
         if identity.status != IssuerIdentityStatus.OK or not identity.edinet_code:
             return self._unavailable(f"ISSUER_IDENTITY:{identity.detail or 'DATA_UNAVAILABLE'}")
 
-        result = await self.financial_service.fetch_financial_document(
+        result = await self.financial_service.fetch_financial_snapshot(
             identity.edinet_code,
             analysis_as_of=analysis_as_of,
         )
         if isinstance(result, EDINETDBResponse):
             return self._transport_failure(result)
-        if not isinstance(result, FinancialDocument) or result.status != "OK":
-            return self._unavailable("FINANCIAL_DOCUMENT_DATA_UNAVAILABLE")
+        if not isinstance(result, EDINETDBFinancialSnapshot):
+            return self._unavailable("FINANCIAL_SNAPSHOT_DATA_UNAVAILABLE")
+
+        actual = result.actual_document.to_dict() if result.actual_document else None
+        guidance = result.guidance_document.to_dict() if result.guidance_document else None
+        if actual is None and guidance is None and result.guidance_status != "NOT_PROVIDED":
+            return self._unavailable(
+                f"FINANCIAL_SNAPSHOT_DATA_UNAVAILABLE:{result.actual_detail or result.guidance_detail}"
+            )
 
         return ProviderResponse(
-            status=SourceStatus(self.name, DataStatus.OK, item_count=1),
+            status=SourceStatus(
+                self.name,
+                DataStatus.OK,
+                item_count=int(actual is not None) + int(guidance is not None),
+            ),
             metadata={
-                "financial_document": result.to_dict(),
+                # Compatibility alias: the old slot always means Actual only.
+                "financial_document": actual,
+                "actual_document": actual,
+                "guidance_document": guidance,
+                "actual_status": result.actual_status,
+                "guidance_status": result.guidance_status,
+                "actual_detail": result.actual_detail,
+                "guidance_detail": result.guidance_detail,
                 "analysis_as_of": analysis_as_of.isoformat(),
-                "selection_basis": SELECTION_BASIS,
+                "actual_selection": {
+                    "selection_basis": result.actual_selection.selection_basis,
+                    "disclosure_date": result.actual_selection.disclosure_date,
+                    "period_type": result.actual_selection.period_type,
+                    "target_period_end": result.actual_selection.fiscal_year_end,
+                    "detail": result.actual_selection.detail,
+                },
+                "guidance_selection": {
+                    "selection_basis": result.guidance_selection.selection_basis,
+                    "disclosure_date": result.guidance_selection.disclosure_date,
+                    "period_type": result.guidance_selection.period_type,
+                    "target_period_end": result.guidance_selection.target_period_end,
+                    "detail": result.guidance_selection.detail,
+                },
                 "issuer_identity": {
                     "security_code": identity.security_code,
                     "source_security_code": identity.source_security_code,

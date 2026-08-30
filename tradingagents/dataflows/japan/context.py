@@ -135,7 +135,7 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
 
 
 def render_japan_financial_context(state: Mapping[str, Any]) -> str:
-    """Render normalized EDINET DB facts for the Fundamentals Analyst only.
+    """Render authority-assessed financial facts for the Fundamentals Analyst only.
 
     The document is stored outside ``items``, so the shared Japan renderer used
     by downstream agents cannot expose it. Operational provider diagnostics and
@@ -146,59 +146,74 @@ def render_japan_financial_context(state: Mapping[str, Any]) -> str:
     if market != Market.JP or not bundle:
         return ""
     provider_metadata = bundle.get("provider_metadata") or {}
-    financial_metadata = provider_metadata.get("EDINET DB Financials") or {}
-    document = financial_metadata.get("financial_document")
-    if not isinstance(document, Mapping) or document.get("status") != "OK":
+    assessment = provider_metadata.get("Japan Financial Authority") or {}
+    if not isinstance(assessment, Mapping) or not assessment:
         return ""
-
-    records = document.get("records") or []
-    actual = next(
-        (
-            record
-            for record in records
-            if isinstance(record, Mapping) and record.get("record_type") == "ACTUAL"
-        ),
-        None,
-    )
-    guidance = next(
-        (
-            record
-            for record in records
-            if isinstance(record, Mapping) and record.get("record_type") == "GUIDANCE"
-        ),
-        None,
-    )
     lines = [
-        "## EDINET DB structured financials (Fundamentals Analyst only)",
-        "Treat this as a structured supplemental source. Preserve its period, scope, accounting basis, statuses, and provenance; do not arbitrate it against TDnet or Company IR here.",
+        "## Japan financial authority assessment (Fundamentals Analyst only)",
+        f"- Analysis as of: {assessment.get('analysis_as_of') or 'DATA_UNAVAILABLE'}",
         "### Latest Actual",
     ]
-    if isinstance(actual, Mapping):
-        lines.extend(_financial_record_lines(actual, guidance=False))
-    else:
-        lines.append("- Actual record: DATA_UNAVAILABLE")
+    lines.extend(_financial_assessment_lines(assessment.get("actual"), guidance=False))
 
     lines.append("### Current Company Guidance")
-    if isinstance(guidance, Mapping):
-        lines.extend(_financial_record_lines(guidance, guidance=True))
-    else:
-        lines.append("- Guidance record: NOT_PROVIDED")
+    lines.extend(_financial_assessment_lines(assessment.get("guidance"), guidance=True))
+    return "\n".join(lines)
 
+
+def _financial_assessment_lines(value: Any, *, guidance: bool) -> list[str]:
+    if not isinstance(value, Mapping):
+        return ["- Status: DATA_UNAVAILABLE", "- Freshness: FRESHNESS_UNVERIFIED"]
+    status = str(value.get("status") or "DATA_UNAVAILABLE")
+    lines = [
+        f"- Status: {status}",
+        f"- Freshness: {value.get('freshness') or 'FRESHNESS_UNVERIFIED'}",
+    ]
+    document = value.get("document")
+    if not isinstance(document, Mapping) or status != "OK":
+        update = value.get("official_latest_update")
+        if isinstance(update, Mapping):
+            lines.append(
+                f"- Latest official financial update: {update.get('disclosure_date') or 'DATA_UNAVAILABLE'}"
+            )
+            titles = update.get("titles") or []
+            if titles:
+                lines.append(f"- Official update title: {titles[0]}")
+        if status == "NOT_PROVIDED":
+            lines.append("- Company Guidance: NOT_PROVIDED")
+        else:
+            lines.append("- Normalized critical values: DATA_UNAVAILABLE")
+        lines.append(f"- Assessment: {value.get('detail') or 'DATA_UNAVAILABLE'}")
+        return lines
+
+    records = document.get("records") or []
+    expected = "GUIDANCE" if guidance else "ACTUAL"
+    record = next(
+        (
+            item
+            for item in records
+            if isinstance(item, Mapping) and item.get("record_type") == expected
+        ),
+        None,
+    )
+    if not isinstance(record, Mapping):
+        lines.append("- Normalized critical values: DATA_UNAVAILABLE")
+        return lines
+    lines.extend(_financial_record_lines(record, guidance=guidance))
     lines.extend(
         [
-            "### Source provenance",
-            f"- Source: {document.get('source') or 'EDINET DB'}",
-            f"- Source type: {document.get('source_type') or 'STRUCTURED_SOURCE'}",
-            f"- Selected disclosure date: {document.get('disclosure_timestamp') or 'DATA_UNAVAILABLE'}",
-            f"- Selection basis: {financial_metadata.get('selection_basis') or 'DATA_UNAVAILABLE'}",
+            f"- Source: {document.get('source') or 'DATA_UNAVAILABLE'}",
+            f"- Source type: {document.get('source_type') or 'UNKNOWN'}",
+            f"- Selected disclosure date: {value.get('selected_disclosure_date') or 'DATA_UNAVAILABLE'}",
             f"- Source record ID: {document.get('source_record_id') or 'DATA_UNAVAILABLE'}",
             f"- Source as-of: {document.get('source_as_of') or 'DATA_UNAVAILABLE'}",
-            f"- Fetched at: {document.get('fetched_at') or 'DATA_UNAVAILABLE'}",
         ]
     )
     if document.get("source_url"):
         lines.append(f"- Source URL: {document['source_url']}")
-    return "\n".join(lines)
+    if value.get("conflict"):
+        lines.append(f"- Source conflict: {value['conflict']}")
+    return lines
 
 
 def _financial_record_lines(record: Mapping[str, Any], *, guidance: bool) -> list[str]:
