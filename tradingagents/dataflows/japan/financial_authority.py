@@ -13,6 +13,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import date
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from .financial_disclosure import (
@@ -61,11 +62,11 @@ def assess_japan_financial_data(
         and _official_date(item) <= analysis_as_of
     ]
     statuses = {
-        str(entry.get("source")): str(entry.get("status"))
+        str(entry.get("source")): entry
         for entry in source_statuses
         if isinstance(entry, Mapping)
     }
-    tdnet_window_complete = statuses.get("TDnet") == STATUS_OK
+    tdnet_window_complete = _tdnet_coverage_complete(statuses.get("TDnet"))
 
     actual = _assess_kind(
         kind="ACTUAL",
@@ -490,6 +491,18 @@ def _coverage_confirmed(
     )
 
 
+def _tdnet_coverage_complete(status: Mapping[str, Any] | None) -> bool:
+    if not status or str(status.get("status")) != STATUS_OK:
+        return False
+    detail = str(status.get("detail") or "").lower()
+    incomplete_markers = (
+        "reached tdnet_max_pages_per_day",
+        "retrieval_failed=true",
+        "live_refresh_failed=true",
+    )
+    return not any(marker in detail for marker in incomplete_markers)
+
+
 def _record(document: Mapping[str, Any], kind: str) -> Mapping[str, Any] | None:
     return next(
         (
@@ -584,7 +597,15 @@ def _official_date(item: Mapping[str, Any]) -> date | None:
 def _document_date(document: Mapping[str, Any] | None) -> date | None:
     if not document:
         return None
-    return _strict_date(str(document.get("disclosure_timestamp") or "")[:10])
+    raw = str(document.get("disclosure_timestamp") or "").strip()
+    parsed = _strict_date(raw[:10])
+    if parsed is not None:
+        return parsed
+    try:
+        timestamp = parsedate_to_datetime(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return timestamp.date() if timestamp is not None else None
 
 
 def _event_type(item: Mapping[str, Any]) -> str:

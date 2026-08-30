@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import date
 
-from tradingagents.dataflows.japan.edinet_db_normalizer import normalize_financial_document
 from tradingagents.dataflows.japan.context import render_japan_financial_context
+from tradingagents.dataflows.japan.edinet_db_normalizer import normalize_financial_document
 from tradingagents.dataflows.japan.financial_authority import (
     FRESHNESS_CURRENT_OFFICIAL,
     FRESHNESS_CURRENT_STRUCTURED,
@@ -82,10 +82,19 @@ def _official_item(
     }
 
 
-def _assess(*, metadata=None, items=(), tdnet_status="OK", scan_start="2026-08-01"):
+def _assess(
+    *,
+    metadata=None,
+    items=(),
+    tdnet_status="OK",
+    tdnet_detail="",
+    scan_start="2026-08-01",
+):
     return assess_japan_financial_data(
         items=items,
-        source_statuses=[{"source": "TDnet", "status": tdnet_status}],
+        source_statuses=[
+            {"source": "TDnet", "status": tdnet_status, "detail": tdnet_detail}
+        ],
         provider_metadata=metadata or _metadata(),
         analysis_as_of=date(2026, 8, 15),
         official_scan_start=date.fromisoformat(scan_start),
@@ -254,6 +263,18 @@ def test_future_structured_document_is_never_renderable():
     assert result["actual"]["document"] is None
 
 
+def test_rfc1123_live_disclosure_date_is_preserved_as_calendar_date():
+    metadata = _metadata()
+    document = metadata["EDINET DB Financials"]["actual_document"]
+    document["disclosure_timestamp"] = "Fri, 07 Aug 2026 00:00:00 GMT"
+    metadata["EDINET DB Financials"]["actual_selection"]["disclosure_date"] = "2026-08-07"
+
+    result = _assess(metadata=metadata, scan_start="2026-08-01")
+
+    assert result["actual"]["status"] == STATUS_OK
+    assert result["actual"]["selected_disclosure_date"] == "2026-08-07"
+
+
 def test_official_parsed_actual_overrides_same_basis_structured_conflict():
     content = """
 2027年３月期 第１四半期決算短信〔ＩＦＲＳ〕(連結)
@@ -282,6 +303,13 @@ def test_official_parsed_actual_overrides_same_basis_structured_conflict():
 
 def test_scan_window_start_after_structured_disclosure_fails_closed():
     result = _assess(scan_start="2026-08-07")
+
+    assert result["actual"]["status"] == STATUS_INSUFFICIENT
+    assert result["actual"]["freshness"] == FRESHNESS_UNVERIFIED
+
+
+def test_tdnet_page_cap_means_official_window_is_not_complete():
+    result = _assess(tdnet_detail="2 day(s) reached tdnet_max_pages_per_day=10")
 
     assert result["actual"]["status"] == STATUS_INSUFFICIENT
     assert result["actual"]["freshness"] == FRESHNESS_UNVERIFIED

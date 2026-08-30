@@ -100,6 +100,31 @@ def test_q4_requires_explicit_next_fy_target():
     assert result.detail == "INVALID_GUIDANCE_TARGET"
 
 
+def test_older_q4_unknown_target_does_not_block_later_q1_current_guidance():
+    result = _select(
+        [
+            _record(
+                record_id="q4",
+                quarter=4,
+                fiscal_year_end="2026-03-31",
+                disclosure_date="2026-05-13",
+                forecast_revenue=68_000,
+            ),
+            _record(
+                record_id="q1",
+                quarter=1,
+                fiscal_year_end="2027-03-31",
+                disclosure_date="2026-08-07",
+                forecast_revenue=74_500,
+            ),
+        ]
+    )
+
+    assert result.status == STATUS_OK
+    assert result.source_record_id == "q1"
+    assert result.target_period_end == "2027-03-31"
+
+
 def test_q4_accepts_explicit_guidance_target_without_plus_one_derivation():
     result = _select(
         [

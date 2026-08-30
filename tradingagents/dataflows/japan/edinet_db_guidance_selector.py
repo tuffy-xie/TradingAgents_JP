@@ -136,7 +136,11 @@ def select_latest_guidance_record(
 
     best_target = max(candidate.target_period_end for candidate in eligible)
     assert best_target is not None
-    if invalid_target:
+    latest_eligible_day = max(_disclosure_day(candidate.disclosure) for candidate in eligible)
+    if any(
+        _disclosure_day(candidate.disclosure) >= latest_eligible_day
+        for candidate in invalid_target
+    ):
         return _failure(stable_issuer, "INVALID_GUIDANCE_TARGET")
     if same_day_unresolved:
         return _failure(stable_issuer, "DATE_ONLY_SAME_DAY_UNRESOLVED")
@@ -293,6 +297,11 @@ def _moment_key(disclosure: _DisclosureMoment | None) -> tuple[date, str]:
         else ""
     )
     return day, instant
+
+
+def _disclosure_day(disclosure: _DisclosureMoment | None) -> date:
+    assert disclosure is not None
+    return disclosure.value.date() if isinstance(disclosure.value, datetime) else disclosure.value
 
 
 def _deduplicate_guidance(candidates: list[_Candidate]) -> _Candidate | None:
