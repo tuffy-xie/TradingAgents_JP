@@ -8,6 +8,7 @@ from tradingagents.dataflows.japan import edinet_db_service as service_module
 from tradingagents.dataflows.japan.edinet_db import EDINETDBResponse, EDINETDBStatus
 from tradingagents.dataflows.japan.edinet_db_service import (
     EDINETDBFinancialService,
+    EDINETDBFinancialSnapshot,
     GuidanceRecordIdentifier,
 )
 from tradingagents.dataflows.japan.financial_disclosure import DATA_UNAVAILABLE, FinancialDocument
@@ -118,6 +119,83 @@ def test_fetch_financial_document_normalizes_provider_record():
     assert any(record.record_type == "ACTUAL" for record in document.records)
     assert document.records[0].metrics["revenue"]["value"] == 260604
     assert provider.limits == [30]
+
+
+def test_financial_snapshot_selects_actual_and_guidance_independently():
+    h1 = _actual_record(
+        record_id="h1-actual",
+        quarter=2,
+        disclosure_date="2026-08-07",
+        revenue=300000,
+    )
+    h1.update(
+        {
+            "forecast_revenue": 1_000_000,
+            "forecast_operating_income": 200_000,
+            "forecast_net_income": 120_000,
+            "forecast_eps": 130.0,
+        }
+    )
+    revision = _guidance_record("guidance-revision", "2026-08-15", 1_200_000)
+    revision.update({"quarter": 1, "fiscal_year_end": "2027-03-31", "is_correction": True})
+    provider = _ProviderStub({"E01081": _response(revision, h1)})
+
+    result = asyncio.run(
+        EDINETDBFinancialService(provider).fetch_financial_snapshot(
+            "E01081",
+            analysis_as_of=date(2026, 8, 31),
+        )
+    )
+
+    assert isinstance(result, EDINETDBFinancialSnapshot)
+    assert result.actual_status == "OK"
+    assert result.guidance_status == "OK"
+    assert result.actual_document is not None
+    assert result.actual_document.source_record_id == "h1-actual"
+    assert result.actual_document.records[0].period_type == "H1"
+    assert result.guidance_document is not None
+    assert result.guidance_document.source_record_id == "guidance-revision"
+    metric = result.guidance_document.records[0].metrics["revenue"]
+    assert metric["current_value"]["value"] == 1_200_000
+    assert provider.limits == [30]
+
+
+def test_financial_snapshot_keeps_not_provided_guidance_separate_from_actual():
+    actual = _actual_record()
+    actual["forecast_revenue"] = None
+    provider = _ProviderStub({"E01081": _response(actual)})
+
+    result = asyncio.run(
+        EDINETDBFinancialService(provider).fetch_financial_snapshot(
+            "E01081",
+            analysis_as_of=date(2026, 8, 31),
+        )
+    )
+
+    assert isinstance(result, EDINETDBFinancialSnapshot)
+    assert result.actual_status == "OK"
+    assert result.actual_document is not None
+    assert result.guidance_status == "NOT_PROVIDED"
+    assert result.guidance_document is None
+
+
+def test_financial_snapshot_future_guidance_does_not_replace_current():
+    current = _actual_record(record_id="q1")
+    current["forecast_revenue"] = 1_000_000
+    future = _guidance_record("future-guidance", "2026-09-01", 1_200_000)
+    future.update({"quarter": 1, "fiscal_year_end": "2027-03-31"})
+    provider = _ProviderStub({"E01081": _response(future, current)})
+
+    result = asyncio.run(
+        EDINETDBFinancialService(provider).fetch_financial_snapshot(
+            "E01081",
+            analysis_as_of=date(2026, 8, 31),
+        )
+    )
+
+    assert isinstance(result, EDINETDBFinancialSnapshot)
+    assert result.guidance_document is not None
+    assert result.guidance_document.source_record_id == "q1"
 
 
 def test_fetch_financial_document_returns_auth_required_transport_response():

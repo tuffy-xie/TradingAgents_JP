@@ -63,6 +63,8 @@ _PERIODS = {
     "FY": "FY",
 }
 _DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_EARNINGS_AMOUNT_UNIT = "百万円"
+_EARNINGS_CURRENCY = "JPY"
 
 
 def normalize_accounting_standard(value: Any) -> str:
@@ -89,7 +91,7 @@ def normalize_scope(value: Any) -> tuple[str, str]:
 def normalize_actual_metrics(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Normalize direct Actual values without deriving ratios or revisions."""
     standard = normalize_accounting_standard(raw.get("accounting_standard"))
-    amount_unit = _text_or_none(raw.get("unit"))
+    amount_unit = _text_or_none(raw.get("unit")) or _EARNINGS_AMOUNT_UNIT
     eps_unit = _text_or_none(raw.get("eps_unit")) or "円"
 
     metrics = {
@@ -133,8 +135,8 @@ def normalize_actual_record(raw: Mapping[str, Any]) -> FinancialRecord:
         period_basis=_period_basis(period_type),
         scope=scope,
         accounting_standard=standard,
-        currency=_normalize_currency(raw.get("currency")),
-        unit=_text_or_none(raw.get("unit")) or DATA_UNAVAILABLE,
+        currency=_normalize_currency(raw.get("currency") or _EARNINGS_CURRENCY),
+        unit=_text_or_none(raw.get("unit")) or _EARNINGS_AMOUNT_UNIT,
         metrics=normalize_actual_metrics(raw),
         revision_reason=NOT_APPLICABLE,
         section_text="",
@@ -189,8 +191,8 @@ def normalize_guidance_record(raw: Mapping[str, Any]) -> FinancialRecord:
         period_basis=_period_basis(period_type),
         scope=scope,
         accounting_standard=standard,
-        currency=_normalize_currency(raw.get("currency")),
-        unit=_text_or_none(raw.get("unit")) or DATA_UNAVAILABLE,
+        currency=_normalize_currency(raw.get("currency") or _EARNINGS_CURRENCY),
+        unit=_text_or_none(raw.get("unit")) or _EARNINGS_AMOUNT_UNIT,
         metrics=_normalize_guidance_metrics(raw, standard),
         revision_reason=NOT_PROVIDED,
         section_text="",
@@ -203,7 +205,7 @@ def normalize_guidance_record(raw: Mapping[str, Any]) -> FinancialRecord:
 def _normalize_guidance_metrics(
     raw: Mapping[str, Any], accounting_standard: str
 ) -> dict[str, dict[str, Any]]:
-    amount_unit = _text_or_none(raw.get("unit"))
+    amount_unit = _text_or_none(raw.get("unit")) or _EARNINGS_AMOUNT_UNIT
     eps_unit = _text_or_none(raw.get("eps_unit")) or "円"
     metrics = {
         "revenue": _current_guidance_metric(

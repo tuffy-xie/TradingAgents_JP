@@ -8,11 +8,17 @@ normalizer, and strict guidance matcher only.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from typing import Any
 
 from .edinet_db import EDINETDBProvider, EDINETDBResponse, EDINETDBStatus
+from .edinet_db_guidance_selector import (
+    STATUS_NOT_PROVIDED as GUIDANCE_NOT_PROVIDED,
+    STATUS_OK as GUIDANCE_OK,
+    LatestGuidanceSelection,
+    select_latest_guidance_record,
+)
 from .edinet_db_normalizer import normalize_financial_document
 from .edinet_db_selector import (
     SELECTION_BASIS,
@@ -35,6 +41,21 @@ class GuidanceRecordIdentifier:
 
     issuer_id: str
     source_record_id: str
+
+
+@dataclass(frozen=True)
+class EDINETDBFinancialSnapshot:
+    """Independently selected latest Actual and current Guidance documents."""
+
+    actual_document: FinancialDocument | None
+    guidance_document: FinancialDocument | None
+    actual_selection: LatestEarningsSelection
+    guidance_selection: LatestGuidanceSelection
+    actual_status: str
+    guidance_status: str
+    actual_detail: str
+    guidance_detail: str
+    metadata: Mapping[str, Any]
 
 
 class EDINETDBFinancialService:
@@ -75,6 +96,68 @@ class EDINETDBFinancialService:
                 detail=detail,
             )
         return _normalize_record(response, selection.record)
+
+    async def fetch_financial_snapshot(
+        self,
+        issuer_id: str,
+        *,
+        analysis_as_of: date | datetime,
+    ) -> EDINETDBFinancialSnapshot | EDINETDBResponse:
+        """Select Actual and Guidance independently from one provider window."""
+        response = await self.provider.fetch_earnings(issuer_id, limit=30)
+        if response.status != EDINETDBStatus.OK:
+            return response
+
+        actual_selection = select_latest_earnings_record(
+            response.records,
+            issuer_id=issuer_id,
+            analysis_as_of=analysis_as_of,
+        )
+        guidance_selection = select_latest_guidance_record(
+            response.records,
+            issuer_id=issuer_id,
+            analysis_as_of=analysis_as_of,
+        )
+        if _candidate_window_is_full(response):
+            if actual_selection.detail == "FUTURE_ONLY":
+                actual_selection = replace(
+                    actual_selection,
+                    detail="CANDIDATE_WINDOW_INCOMPLETE",
+                )
+            if guidance_selection.detail == "FUTURE_ONLY":
+                guidance_selection = replace(
+                    guidance_selection,
+                    detail="CANDIDATE_WINDOW_INCOMPLETE",
+                )
+
+        actual_document, actual_status, actual_detail = _normalize_selected_record(
+            response,
+            actual_selection.record if actual_selection.status == SELECTION_OK else None,
+            record_type="ACTUAL",
+            failure_detail=actual_selection.detail,
+        )
+        guidance_document, guidance_status, guidance_detail = _normalize_selected_record(
+            response,
+            guidance_selection.record if guidance_selection.status == GUIDANCE_OK else None,
+            record_type="GUIDANCE",
+            failure_detail=guidance_selection.detail,
+            missing_status=(
+                GUIDANCE_NOT_PROVIDED
+                if guidance_selection.status == GUIDANCE_NOT_PROVIDED
+                else DATA_UNAVAILABLE
+            ),
+        )
+        return EDINETDBFinancialSnapshot(
+            actual_document=actual_document,
+            guidance_document=guidance_document,
+            actual_selection=actual_selection,
+            guidance_selection=guidance_selection,
+            actual_status=actual_status,
+            guidance_status=guidance_status,
+            actual_detail=actual_detail,
+            guidance_detail=guidance_detail,
+            metadata=dict(response.metadata),
+        )
 
     async def fetch_guidance_revision(
         self,
@@ -145,6 +228,29 @@ def _normalize_record(
             raw_record=record,
             detail=f"normalization failed: {type(exc).__name__}",
         )
+
+
+def _normalize_selected_record(
+    response: EDINETDBResponse,
+    raw_record: Mapping[str, Any] | None,
+    *,
+    record_type: str,
+    failure_detail: str,
+    missing_status: str = DATA_UNAVAILABLE,
+) -> tuple[FinancialDocument | None, str, str]:
+    if raw_record is None:
+        return None, missing_status, failure_detail
+    document = _normalize_record(response, raw_record)
+    if document.status != "OK":
+        return None, DATA_UNAVAILABLE, "NORMALIZATION_FAILED"
+    record = next(
+        (item for item in document.records if item.record_type == record_type),
+        None,
+    )
+    if record is None:
+        status = GUIDANCE_NOT_PROVIDED if record_type == "GUIDANCE" else DATA_UNAVAILABLE
+        return None, status, f"{record_type}_RECORD_NOT_NORMALIZED"
+    return replace(document, records=(record,)), "OK", ""
 
 
 def _candidate_window_is_full(response: EDINETDBResponse) -> bool:

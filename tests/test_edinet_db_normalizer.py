@@ -262,6 +262,27 @@ def test_normalizes_5016_live_actual_and_current_guidance():
     assert guidance.metrics["revenue"]["source_field"] == "forecast_revenue"
 
 
+def test_live_earnings_contract_supplies_documented_million_yen_unit():
+    document = normalize_financial_document(
+        {
+            "quarter": 1,
+            "fiscal_year_end": "2027-03-31",
+            "accounting_standard": "IFRS",
+            "revenue": 260604,
+            "forecast_revenue": 1025000,
+        }
+    )
+    actual = next(record for record in document.records if record.record_type == "ACTUAL")
+    guidance = next(record for record in document.records if record.record_type == "GUIDANCE")
+
+    assert actual.currency == "JPY"
+    assert actual.unit == "百万円"
+    assert actual.metrics["revenue"]["unit"] == "百万円"
+    assert guidance.currency == "JPY"
+    assert guidance.unit == "百万円"
+    assert guidance.metrics["revenue"]["current_value"]["unit"] == "百万円"
+
+
 def test_normalizes_6324_live_jgaap_actual():
     record = normalize_actual_record(LIVE_6324_JGAAP)
 
