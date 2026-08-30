@@ -89,13 +89,24 @@ def _assess(
     tdnet_status="OK",
     tdnet_detail="",
     scan_start="2026-08-01",
+    tdnet_coverage=None,
+    company_ir_coverage=None,
 ):
+    provider_metadata = metadata or _metadata()
+    if tdnet_coverage is not None:
+        provider_metadata = {**provider_metadata, "TDnet": {"coverage": tdnet_coverage}}
+    if company_ir_coverage is not None:
+        provider_metadata = {
+            **provider_metadata,
+            "Company IR": {"coverage": company_ir_coverage},
+        }
     return assess_japan_financial_data(
         items=items,
         source_statuses=[
-            {"source": "TDnet", "status": tdnet_status, "detail": tdnet_detail}
+            {"source": "TDnet", "status": tdnet_status, "detail": tdnet_detail},
+            {"source": "Company IR", "status": "OK", "detail": ""},
         ],
-        provider_metadata=metadata or _metadata(),
+        provider_metadata=provider_metadata,
         analysis_as_of=date(2026, 8, 15),
         official_scan_start=date.fromisoformat(scan_start),
     )
@@ -313,6 +324,117 @@ def test_tdnet_page_cap_means_official_window_is_not_complete():
 
     assert result["actual"]["status"] == STATUS_INSUFFICIENT
     assert result["actual"]["freshness"] == FRESHNESS_UNVERIFIED
+
+
+def test_structured_tdnet_coverage_metadata_is_the_completeness_authority():
+    result = _assess(
+        tdnet_coverage={
+            "status": "COMPLETE",
+            "complete": True,
+            "requested_start_date": "2026-08-01",
+            "requested_end_date": "2026-08-15",
+        }
+    )
+
+    assert result["actual"]["status"] == STATUS_OK
+    assert result["official_coverage"] == {
+        "status": "COMPLETE",
+        "complete": True,
+        "sources": ["TDnet"],
+        "coverage_start": "2026-08-01",
+        "coverage_end": "2026-08-15",
+        "reason": "ALL_ADVERTISED_TDNET_PAGES_VALIDATED",
+    }
+
+
+def test_effective_scan_start_uses_actual_tdnet_public_window():
+    result = _assess(
+        scan_start="2026-07-01",
+        tdnet_coverage={
+            "status": "COMPLETE",
+            "complete": True,
+            "requested_start_date": "2026-07-16",
+            "requested_end_date": "2026-08-15",
+        },
+    )
+
+    assert result["official_scan_start"] == "2026-07-16"
+    assert result["actual"]["status"] == STATUS_OK
+
+
+def test_incomplete_tdnet_metadata_fails_even_without_legacy_detail_marker():
+    result = _assess(
+        tdnet_coverage={
+            "status": "INCOMPLETE",
+            "complete": False,
+            "requested_start_date": "2026-08-01",
+            "requested_end_date": "2026-08-15",
+        }
+    )
+
+    assert result["actual"]["status"] == STATUS_INSUFFICIENT
+    assert result["actual"]["freshness"] == FRESHNESS_UNVERIFIED
+    assert result["official_coverage"]["complete"] is False
+
+
+def test_complete_marker_ending_before_analysis_date_fails_closed():
+    result = _assess(
+        tdnet_coverage={
+            "status": "COMPLETE",
+            "complete": True,
+            "requested_start_date": "2026-08-01",
+            "requested_end_date": "2026-08-14",
+        }
+    )
+
+    assert result["actual"]["status"] == STATUS_INSUFFICIENT
+    assert result["official_coverage"]["complete"] is False
+
+
+def test_unknown_date_company_ir_cannot_complete_partial_tdnet_coverage():
+    item = _official_item(source="Company IR", title="Latest financial results")
+    result = _assess(
+        items=[item],
+        tdnet_status="DATA_UNAVAILABLE",
+        tdnet_coverage={"status": "INCOMPLETE", "complete": False},
+    )
+
+    assert result["actual"]["status"] == STATUS_INSUFFICIENT
+    assert result["official_coverage"]["reason"] == "NO_COMPLETE_OFFICIAL_AUTHORITY_PATH"
+
+
+def test_explicitly_dated_company_ir_update_supplements_freshness_detection():
+    result = _assess(
+        items=[
+            _official_item(
+                disclosure="2026-08-15",
+                source="Company IR",
+                title="2026-08-15 通期業績予想の修正に関するお知らせ",
+                event_type="guidance_revision",
+            )
+        ]
+    )
+
+    assert result["actual"]["status"] == STATUS_OK
+    assert result["guidance"]["status"] == STATUS_INSUFFICIENT
+    assert result["guidance"]["freshness"] == FRESHNESS_OFFICIAL_UPDATE_UNPARSED
+    assert result["guidance"]["official_latest_update"]["sources"] == ["Company IR"]
+
+
+def test_explicit_complete_company_ir_window_can_be_an_authority_path():
+    result = _assess(
+        tdnet_status="DATA_UNAVAILABLE",
+        tdnet_coverage={"status": "INCOMPLETE", "complete": False},
+        company_ir_coverage={
+            "status": "COMPLETE",
+            "complete": True,
+            "requested_start_date": "2026-08-01",
+            "requested_end_date": "2026-08-15",
+        },
+    )
+
+    assert result["actual"]["status"] == STATUS_OK
+    assert result["official_coverage"]["sources"] == ["Company IR"]
 
 
 def test_conflicting_official_values_fail_closed():

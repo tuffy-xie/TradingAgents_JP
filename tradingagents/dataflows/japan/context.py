@@ -152,8 +152,17 @@ def render_japan_financial_context(state: Mapping[str, Any]) -> str:
     lines = [
         "## Japan financial authority assessment (Fundamentals Analyst only)",
         f"- Analysis as of: {assessment.get('analysis_as_of') or 'DATA_UNAVAILABLE'}",
-        "### Latest Actual",
     ]
+    coverage = assessment.get("official_coverage")
+    if isinstance(coverage, Mapping):
+        lines.extend(
+            [
+                f"- Official freshness coverage: {coverage.get('status') or 'INCOMPLETE'}",
+                f"- Official coverage source: {', '.join(coverage.get('sources') or []) or 'DATA_UNAVAILABLE'}",
+                f"- Official coverage basis: {coverage.get('reason') or 'DATA_UNAVAILABLE'}",
+            ]
+        )
+    lines.append("### Latest Actual")
     lines.extend(_financial_assessment_lines(assessment.get("actual"), guidance=False))
 
     lines.append("### Current Company Guidance")

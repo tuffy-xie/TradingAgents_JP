@@ -66,7 +66,16 @@ def assess_japan_financial_data(
         for entry in source_statuses
         if isinstance(entry, Mapping)
     }
-    tdnet_window_complete = _tdnet_coverage_complete(statuses.get("TDnet"))
+    official_coverage = _official_coverage(
+        statuses=statuses,
+        provider_metadata=provider_metadata,
+        requested_scan_start=official_scan_start,
+        analysis_as_of=analysis_as_of,
+    )
+    official_window_complete = bool(official_coverage["complete"])
+    effective_scan_start = (
+        _strict_date(official_coverage.get("coverage_start")) or official_scan_start
+    )
 
     actual = _assess_kind(
         kind="ACTUAL",
@@ -78,8 +87,8 @@ def assess_japan_financial_data(
         ),
         official_items=[item for item in official_items if _event_type(item) in _ACTUAL_EVENT_TYPES],
         analysis_as_of=analysis_as_of,
-        official_scan_start=official_scan_start,
-        official_window_complete=tdnet_window_complete,
+        official_scan_start=effective_scan_start,
+        official_window_complete=official_window_complete,
     )
     guidance = _assess_kind(
         kind="GUIDANCE",
@@ -91,13 +100,14 @@ def assess_japan_financial_data(
         ),
         official_items=[item for item in official_items if _event_type(item) in _GUIDANCE_EVENT_TYPES],
         analysis_as_of=analysis_as_of,
-        official_scan_start=official_scan_start,
-        official_window_complete=tdnet_window_complete,
+        official_scan_start=effective_scan_start,
+        official_window_complete=official_window_complete,
     )
     return {
         "status": STATUS_OK if actual["status"] == STATUS_OK else STATUS_INSUFFICIENT,
         "analysis_as_of": analysis_as_of.isoformat(),
-        "official_scan_start": official_scan_start.isoformat(),
+        "official_scan_start": effective_scan_start.isoformat(),
+        "official_coverage": official_coverage,
         "actual": actual,
         "guidance": guidance,
     }
@@ -491,9 +501,88 @@ def _coverage_confirmed(
     )
 
 
-def _tdnet_coverage_complete(status: Mapping[str, Any] | None) -> bool:
+def _official_coverage(
+    *,
+    statuses: Mapping[str, Mapping[str, Any]],
+    provider_metadata: Mapping[str, Mapping[str, Any]],
+    requested_scan_start: date,
+    analysis_as_of: date,
+) -> dict[str, Any]:
+    """Describe which official path can prove the requested freshness window.
+
+    TDnet exposes a date-indexed complete market list and therefore can prove a
+    negative (no newer issuer disclosure) once every advertised page was read.
+    Company IR remains positive update evidence unless its provider explicitly
+    supplies a complete bounded-window contract; a reachable or dated page by
+    itself cannot prove that no other disclosure exists.
+    """
+    tdnet_metadata = _mapping(provider_metadata.get("TDnet"))
+    tdnet_complete = _tdnet_coverage_complete(statuses.get("TDnet"), tdnet_metadata)
+    if tdnet_complete:
+        coverage = _mapping((tdnet_metadata or {}).get("coverage")) or {}
+        if not coverage:
+            return {
+                "status": "COMPLETE",
+                "complete": True,
+                "sources": ["TDnet"],
+                "coverage_start": requested_scan_start.isoformat(),
+                "coverage_end": analysis_as_of.isoformat(),
+                "reason": "TDNET_PROVIDER_STATUS_OK",
+            }
+        coverage_start = _strict_date(coverage.get("requested_start_date"))
+        coverage_end = _strict_date(coverage.get("requested_end_date"))
+        if coverage_start is not None and coverage_end is not None and (
+            coverage_start <= coverage_end and coverage_end >= analysis_as_of
+        ):
+            return {
+                "status": "COMPLETE",
+                "complete": True,
+                "sources": ["TDnet"],
+                "coverage_start": coverage_start.isoformat(),
+                "coverage_end": coverage_end.isoformat(),
+                "reason": "ALL_ADVERTISED_TDNET_PAGES_VALIDATED",
+            }
+
+    ir_metadata = _mapping(provider_metadata.get("Company IR"))
+    ir_coverage = _mapping((ir_metadata or {}).get("coverage"))
+    ir_complete = bool(
+        ir_coverage
+        and ir_coverage.get("complete") is True
+        and str((statuses.get("Company IR") or {}).get("status")) == STATUS_OK
+    )
+    if ir_complete:
+        coverage_start = _strict_date(ir_coverage.get("requested_start_date"))
+        coverage_end = _strict_date(ir_coverage.get("requested_end_date"))
+        if coverage_start is not None and coverage_end is not None and (
+            coverage_start <= coverage_end and coverage_end >= analysis_as_of
+        ):
+            return {
+                "status": "COMPLETE",
+                "complete": True,
+                "sources": ["Company IR"],
+                "coverage_start": coverage_start.isoformat(),
+                "coverage_end": coverage_end.isoformat(),
+                "reason": "COMPANY_IR_EXPLICIT_COMPLETE_WINDOW",
+            }
+    return {
+        "status": "INCOMPLETE",
+        "complete": False,
+        "sources": [],
+        "coverage_start": requested_scan_start.isoformat(),
+        "coverage_end": None,
+        "reason": "NO_COMPLETE_OFFICIAL_AUTHORITY_PATH",
+    }
+
+
+def _tdnet_coverage_complete(
+    status: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None = None,
+) -> bool:
     if not status or str(status.get("status")) != STATUS_OK:
         return False
+    coverage = _mapping((metadata or {}).get("coverage"))
+    if coverage is not None:
+        return coverage.get("complete") is True and coverage.get("status") == "COMPLETE"
     detail = str(status.get("detail") or "").lower()
     incomplete_markers = (
         "reached tdnet_max_pages_per_day",
