@@ -45,6 +45,7 @@ __all__ = [
     "get_trade_constraints_from_state",
     "get_language_instruction",
     "get_japan_data_context_from_state",
+    "get_japan_financial_context_from_state",
     "get_japan_decision_context_from_state",
     "get_verified_market_snapshot_from_state",
     "create_msg_delete",
@@ -238,6 +239,13 @@ def get_japan_data_context_from_state(state: Mapping[str, Any]) -> str:
     from tradingagents.dataflows.japan.context import render_japan_agent_context
 
     return render_japan_agent_context(state)
+
+
+def get_japan_financial_context_from_state(state: Mapping[str, Any]) -> str:
+    """Render pre-fetched JP financial facts without performing data access."""
+    from tradingagents.dataflows.japan.context import render_japan_financial_context
+
+    return render_japan_financial_context(state)
 
 
 def get_japan_decision_context_from_state(state: Mapping[str, Any]) -> str:

@@ -7,6 +7,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_instrument_context_from_state,
     get_japan_data_context_from_state,
+    get_japan_financial_context_from_state,
     get_language_instruction,
 )
 
@@ -16,6 +17,7 @@ def create_fundamentals_analyst(llm):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_data_context_from_state(state)
+        japan_financial_context = get_japan_financial_context_from_state(state)
         is_etf = (state.get("market_context") or {}).get("instrument_type") == "ETF"
 
         tools = [get_fundamentals] if is_etf else [
@@ -34,6 +36,7 @@ def create_fundamentals_analyst(llm):
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements."
             + " " + framework
             + ("\n\n" + japan_data_context if japan_data_context else "")
+            + ("\n\n" + japan_financial_context if japan_financial_context else "")
             + get_language_instruction(),
         )
 

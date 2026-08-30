@@ -89,11 +89,17 @@ class JapanDataService:
         statuses = tuple(response.status for response in responses)
         raw_items = tuple(item for response in responses for item in response.items)
         items = tuple(self._deduplicate(raw_items))
+        provider_metadata = {
+            response.status.source: dict(response.metadata)
+            for response in responses
+            if response.metadata
+        }
         governance = build_governance_item(items, context.symbol, date.fromisoformat(end_date))
         return JapanResearchBundle(
             ticker=context.symbol,
             items=(*items, governance),
             source_statuses=statuses,
+            provider_metadata=provider_metadata,
         )
 
     async def _collect_one(
@@ -117,7 +123,11 @@ class JapanDataService:
                 from_cache=True,
             )
             logger.info("[JapanData] %s %s (cache)", provider.name, cached_status.status)
-            return ProviderResponse(status=cached_status, items=response.items)
+            return ProviderResponse(
+                status=cached_status,
+                items=response.items,
+                metadata=response.metadata,
+            )
 
         try:
             response = await asyncio.wait_for(
@@ -159,7 +169,11 @@ class JapanDataService:
                     item_count=len(cached_response.items),
                     from_cache=True,
                 )
-                return ProviderResponse(status=status, items=cached_response.items)
+                return ProviderResponse(
+                    status=status,
+                    items=cached_response.items,
+                    metadata=cached_response.metadata,
+                )
 
         logger.info("[JapanData] %s %s", provider.name, response.status.status)
         ttl = int(self.source_ttls.get(provider.category, self.source_ttls.get(provider.name, 900)))

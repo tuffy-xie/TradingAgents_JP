@@ -135,15 +135,21 @@ class ProviderResponse:
 
     status: SourceStatus
     items: tuple[MarketInformation, ...] = ()
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"status": self.status.to_dict(), "items": [item.to_dict() for item in self.items]}
+        return {
+            "status": self.status.to_dict(),
+            "items": [item.to_dict() for item in self.items],
+            "metadata": self.metadata,
+        }
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> ProviderResponse:
         return cls(
             status=SourceStatus.from_dict(raw["status"]),
             items=tuple(MarketInformation.from_dict(item) for item in raw.get("items", [])),
+            metadata=dict(raw.get("metadata") or {}),
         )
 
 
@@ -155,6 +161,7 @@ class JapanResearchBundle:
     items: tuple[MarketInformation, ...]
     source_statuses: tuple[SourceStatus, ...]
     collected_at: datetime = field(default_factory=_utc_now)
+    provider_metadata: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def by_layer(self, layer: InformationLayer) -> tuple[MarketInformation, ...]:
         return tuple(item for item in self.items if item.layer == layer)
@@ -165,4 +172,5 @@ class JapanResearchBundle:
             "items": [item.to_dict() for item in self.items],
             "source_statuses": [status.to_dict() for status in self.source_statuses],
             "collected_at": self.collected_at.isoformat(),
+            "provider_metadata": self.provider_metadata,
         }

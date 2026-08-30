@@ -134,6 +134,112 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
     )
 
 
+def render_japan_financial_context(state: Mapping[str, Any]) -> str:
+    """Render normalized EDINET DB facts for the Fundamentals Analyst only.
+
+    The document is stored outside ``items``, so the shared Japan renderer used
+    by downstream agents cannot expose it. Operational provider diagnostics and
+    raw EDINET DB payloads are intentionally excluded.
+    """
+    market = (state.get("market_context") or {}).get("market")
+    bundle = state.get("japan_data_bundle") or {}
+    if market != Market.JP or not bundle:
+        return ""
+    provider_metadata = bundle.get("provider_metadata") or {}
+    financial_metadata = provider_metadata.get("EDINET DB Financials") or {}
+    document = financial_metadata.get("financial_document")
+    if not isinstance(document, Mapping) or document.get("status") != "OK":
+        return ""
+
+    records = document.get("records") or []
+    actual = next(
+        (
+            record
+            for record in records
+            if isinstance(record, Mapping) and record.get("record_type") == "ACTUAL"
+        ),
+        None,
+    )
+    guidance = next(
+        (
+            record
+            for record in records
+            if isinstance(record, Mapping) and record.get("record_type") == "GUIDANCE"
+        ),
+        None,
+    )
+    lines = [
+        "## EDINET DB structured financials (Fundamentals Analyst only)",
+        "Treat this as a structured supplemental source. Preserve its period, scope, accounting basis, statuses, and provenance; do not arbitrate it against TDnet or Company IR here.",
+        "### Latest Actual",
+    ]
+    if isinstance(actual, Mapping):
+        lines.extend(_financial_record_lines(actual, guidance=False))
+    else:
+        lines.append("- Actual record: DATA_UNAVAILABLE")
+
+    lines.append("### Current Company Guidance")
+    if isinstance(guidance, Mapping):
+        lines.extend(_financial_record_lines(guidance, guidance=True))
+    else:
+        lines.append("- Guidance record: NOT_PROVIDED")
+
+    lines.extend(
+        [
+            "### Source provenance",
+            f"- Source: {document.get('source') or 'EDINET DB'}",
+            f"- Source type: {document.get('source_type') or 'STRUCTURED_SOURCE'}",
+            f"- Selected disclosure date: {document.get('disclosure_timestamp') or 'DATA_UNAVAILABLE'}",
+            f"- Selection basis: {financial_metadata.get('selection_basis') or 'DATA_UNAVAILABLE'}",
+            f"- Source record ID: {document.get('source_record_id') or 'DATA_UNAVAILABLE'}",
+            f"- Source as-of: {document.get('source_as_of') or 'DATA_UNAVAILABLE'}",
+            f"- Fetched at: {document.get('fetched_at') or 'DATA_UNAVAILABLE'}",
+        ]
+    )
+    if document.get("source_url"):
+        lines.append(f"- Source URL: {document['source_url']}")
+    return "\n".join(lines)
+
+
+def _financial_record_lines(record: Mapping[str, Any], *, guidance: bool) -> list[str]:
+    lines = [
+        f"- Fiscal period: {record.get('period_type') or 'DATA_UNAVAILABLE'}",
+        f"- Target period end: {record.get('target_period_end') or 'DATA_UNAVAILABLE'}",
+        f"- Accounting standard: {record.get('accounting_standard') or 'UNKNOWN'}",
+        f"- Scope: {record.get('scope') or 'UNKNOWN'}",
+    ]
+    labels = (
+        ("revenue", "Revenue"),
+        ("operating_profit", "Operating profit"),
+        ("ordinary_profit", "Ordinary profit"),
+        ("net_income", "Net income (parent attributable)"),
+        ("profit_total", "Total period profit"),
+        ("eps", "EPS"),
+    )
+    metrics = record.get("metrics") or {}
+    for key, label in labels:
+        metric = metrics.get(key)
+        lines.append(f"- {label}: {_render_financial_metric(metric, guidance=guidance)}")
+    return lines
+
+
+def _render_financial_metric(value: Any, *, guidance: bool) -> str:
+    if not isinstance(value, Mapping):
+        return "NOT_PROVIDED"
+    metric = value.get("current_value") if guidance else value
+    if not isinstance(metric, Mapping):
+        status = value.get("status")
+        return str(status or "NOT_PROVIDED")
+    status = str(metric.get("status") or value.get("status") or "DATA_UNAVAILABLE")
+    if status != "OK":
+        return status
+    amount = metric.get("value")
+    if amount is None:
+        return "DATA_UNAVAILABLE"
+    unit = metric.get("unit") or value.get("unit")
+    return f"{amount} {unit}" if unit else f"{amount} (unit: DATA_UNAVAILABLE)"
+
+
 def render_japan_provider_diagnostics(state: Mapping[str, Any]) -> str:
     """Render provider and snapshot diagnostics for internal logs, not prompts."""
     market = (state.get("market_context") or {}).get("market")
