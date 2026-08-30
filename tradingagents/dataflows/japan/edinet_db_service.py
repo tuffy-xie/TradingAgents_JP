@@ -9,10 +9,17 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date, datetime
 from typing import Any
 
 from .edinet_db import EDINETDBProvider, EDINETDBResponse, EDINETDBStatus
 from .edinet_db_normalizer import normalize_financial_document
+from .edinet_db_selector import (
+    SELECTION_BASIS,
+    STATUS_OK as SELECTION_OK,
+    LatestEarningsSelection,
+    select_latest_earnings_record,
+)
 from .financial_disclosure import DATA_UNAVAILABLE, FinancialDocument, FinancialRecord
 from .guidance_matcher import GuidanceRecordContext, match_guidance_revision
 
@@ -37,23 +44,37 @@ class EDINETDBFinancialService:
         self.provider = provider
 
     async def fetch_financial_document(
-        self, issuer_id: str
+        self,
+        issuer_id: str,
+        *,
+        analysis_as_of: date | datetime,
     ) -> FinancialDocument | EDINETDBResponse:
-        """Return the first provider-returned earnings document after normalization.
+        """Return the latest valid earnings document as of an explicit cutoff.
 
         Transport failures are returned unchanged so callers retain their exact
         ``AUTH_REQUIRED``, ``TIMEOUT``, ``RATE_LIMITED``, or ``API_ERROR``
-        semantics.  The API response is not sorted or re-ranked here.
+        semantics. Only the pure latest-earnings selector may choose a record;
+        provider order and financial completeness never influence selection.
         """
-        response = await self.provider.fetch_earnings(issuer_id)
+        response = await self.provider.fetch_earnings(issuer_id, limit=30)
         if response.status != EDINETDBStatus.OK:
             return response
-        if not response.records:
-            return _unavailable_document(
+
+        selection = select_latest_earnings_record(
+            response.records,
+            issuer_id=issuer_id,
+            analysis_as_of=analysis_as_of,
+        )
+        if selection.status != SELECTION_OK or selection.record is None:
+            detail = selection.detail
+            if _candidate_window_is_full(response) and detail == "FUTURE_ONLY":
+                detail = "CANDIDATE_WINDOW_INCOMPLETE"
+            return _selection_failure(
                 response,
-                detail="earnings response contains no records",
+                selection=selection,
+                detail=detail,
             )
-        return _normalize_record(response, response.records[0])
+        return _normalize_record(response, selection.record)
 
     async def fetch_guidance_revision(
         self,
@@ -126,6 +147,41 @@ def _normalize_record(
         )
 
 
+def _candidate_window_is_full(response: EDINETDBResponse) -> bool:
+    """Return whether the provider's maximum requested window was filled."""
+    return (
+        response.metadata.get("requested_limit") == 30
+        and response.metadata.get("returned_count") == 30
+    )
+
+
+def _selection_failure(
+    response: EDINETDBResponse,
+    *,
+    selection: LatestEarningsSelection,
+    detail: str,
+) -> EDINETDBResponse:
+    """Preserve fail-closed selector diagnostics without changing document schema."""
+    metadata = dict(response.metadata)
+    metadata.update(
+        {
+            "service_stage": "LATEST_EARNINGS_SELECTION",
+            "selection_basis": selection.selection_basis or SELECTION_BASIS,
+            "selected_fiscal_year_end": selection.fiscal_year_end,
+            "selected_period_type": selection.period_type,
+            "selected_disclosure_date": selection.disclosure_date,
+            "selection_detail": detail,
+        }
+    )
+    return EDINETDBResponse(
+        status=EDINETDBStatus.DATA_UNAVAILABLE,
+        records=(),
+        raw_response=response.raw_response,
+        metadata=metadata,
+        detail=detail,
+    )
+
+
 def _with_source_metadata(
     raw_record: Mapping[str, Any],
     response: EDINETDBResponse,
@@ -139,6 +195,8 @@ def _with_source_metadata(
         "source_url"
     ):
         record["source_url"] = source_metadata["source_url"]
+    if "source_as_of" not in record and response.metadata.get("data_as_of"):
+        record["source_as_of"] = response.metadata["data_as_of"]
     return record
 
 
