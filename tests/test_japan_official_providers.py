@@ -209,6 +209,37 @@ def test_tdnet_parser_classifies_verified_disclosure():
 
 
 @pytest.mark.unit
+def test_tdnet_authorised_feed_invalid_timestamp_fails_closed(monkeypatch):
+    async def fake_get_json(*_args, **_kwargs):
+        return JsonResponse(
+            DataStatus.OK,
+            {
+                "items": [
+                    {
+                        "ticker": "5016",
+                        "date": "not-a-date",
+                        "title": "決算短信",
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_json", fake_get_json)
+    result = __import__("asyncio").run(
+        TDnetProvider(feed_url="https://example.test/feed").fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-08-01",
+            end_date="2026-08-15",
+        )
+    )
+
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert result.items == ()
+    assert result.metadata["coverage"]["complete"] is False
+    assert "timestamp" in result.status.detail
+
+
+@pytest.mark.unit
 def test_tdnet_public_index_parser_keeps_only_matching_code_and_pdf_link():
     html = """
     <tr><td class="kjTime">15:00</td><td class="kjCode">69810</td><td class="kjName">Murata</td>
@@ -255,7 +286,7 @@ def test_tdnet_timeout_is_not_reported_as_empty(monkeypatch):
 @pytest.mark.unit
 def test_tdnet_successful_empty_is_not_a_fetch_failure(monkeypatch):
     async def empty_get_text(*_args, **_kwargs):
-        return DataStatus.OK, "<html><body>no disclosures</body></html>", ""
+        return DataStatus.OK, "<html><body>に開示された情報はありません。</body></html>", ""
 
     monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", empty_get_text)
     result = __import__("asyncio").run(
@@ -264,6 +295,107 @@ def test_tdnet_successful_empty_is_not_a_fetch_failure(monkeypatch):
     assert result.status.status == DataStatus.OK
     assert result.items == ()
     assert "empty_result=true" in result.status.detail
+    assert result.metadata["coverage"]["complete"] is True
+
+
+def _tdnet_index_page(*, page: int, total: int, target: bool = False) -> str:
+    page_size = 100
+    start = (page - 1) * page_size + 1
+    end = min(page * page_size, total)
+    row = ""
+    if target:
+        row = """
+        <tr><td class="kjTime">15:00</td><td class="kjCode">50160</td>
+        <td class="kjName">JX Advanced Metals</td><td class="kjTitle">
+        <a href="notice.pdf">2027年3月期 第1四半期決算短信</a></td></tr>
+        """
+    return (
+        f'<div class="kaijiSum">{start}～{end}件&nbsp;/&nbsp;全{total}件</div>'
+        f"<table>{row}</table>"
+    )
+
+
+@pytest.mark.unit
+def test_tdnet_fetches_target_beyond_legacy_ten_page_cap(monkeypatch):
+    requested_pages = []
+
+    async def fake_get_text(url, **_kwargs):
+        page = int(url.rsplit("I_list_", 1)[1][:3])
+        requested_pages.append(page)
+        return DataStatus.OK, _tdnet_index_page(
+            page=page, total=1201, target=page == 12
+        ), ""
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", fake_get_text)
+    provider = TDnetProvider()
+    provider.max_pages_per_day = 20
+    provider.extract_pdf_text = False
+    result = __import__("asyncio").run(
+        provider.fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-08-06",
+            end_date="2026-08-06",
+        )
+    )
+
+    assert result.status.status == DataStatus.OK
+    assert len(result.items) == 1
+    assert result.items[0].metadata["index_page"] == 12
+    assert set(requested_pages) == set(range(1, 14))
+    assert result.metadata["coverage"]["complete"] is True
+    assert result.metadata["coverage"]["days"][0]["advertised_page_count"] == 13
+
+
+@pytest.mark.unit
+def test_tdnet_safety_ceiling_remains_fail_closed(monkeypatch):
+    requested_pages = []
+
+    async def fake_get_text(url, **_kwargs):
+        page = int(url.rsplit("I_list_", 1)[1][:3])
+        requested_pages.append(page)
+        return DataStatus.OK, _tdnet_index_page(page=page, total=1201), ""
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", fake_get_text)
+    provider = TDnetProvider()
+    provider.max_pages_per_day = 10
+    provider.extract_pdf_text = False
+    result = __import__("asyncio").run(
+        provider.fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-08-06",
+            end_date="2026-08-06",
+        )
+    )
+
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert set(requested_pages) == set(range(1, 11))
+    assert result.metadata["coverage"]["complete"] is False
+    assert result.metadata["coverage"]["days"][0]["advertised_page_count"] == 13
+    assert "reached tdnet_max_pages_per_day=10" in result.status.detail
+
+
+@pytest.mark.unit
+def test_tdnet_inconsistent_page_summary_is_not_complete(monkeypatch):
+    async def fake_get_text(url, **_kwargs):
+        page = int(url.rsplit("I_list_", 1)[1][:3])
+        total = 201 if page != 2 else 202
+        return DataStatus.OK, _tdnet_index_page(page=page, total=total), ""
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", fake_get_text)
+    provider = TDnetProvider()
+    provider.extract_pdf_text = False
+    result = __import__("asyncio").run(
+        provider.fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-08-06",
+            end_date="2026-08-06",
+        )
+    )
+
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert result.items == ()
+    assert result.metadata["coverage"]["complete"] is False
+    assert "inconsistent TDnet pagination summary" in result.status.detail
 
 
 @pytest.mark.unit

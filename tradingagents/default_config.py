@@ -164,9 +164,13 @@ DEFAULT_CONFIG = _apply_env_overrides({
             # outstanding-short-position workbook are used.
             "jpx_feed_url": None,
             "tdnet_feed_url": None,
-            # TDnet publishes a maximum of 31 recent calendar days.  Cap pages
-            # per day to be polite to the public viewer during earnings season.
-            "tdnet_max_pages_per_day": 10,
+            # TDnet publishes a maximum of 31 recent calendar days.  The
+            # public viewer exposes an exact daily disclosure count; fetch all
+            # advertised pages up to this bounded safety ceiling.  A day above
+            # the ceiling remains explicitly incomplete rather than being
+            # treated as an empty/complete issuer search.
+            "tdnet_max_pages_per_day": 50,
+            "tdnet_page_concurrency": 8,
             "tdnet_extract_pdf_text": True,
             "tdnet_max_pdf_bytes": 8_000_000,
             "tdnet_max_pdf_chars": 12_000,

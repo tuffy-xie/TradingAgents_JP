@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 from collections.abc import Iterable
 from datetime import UTC, date, datetime, timedelta
@@ -27,6 +28,13 @@ _ROW = re.compile(r"<tr>\s*(?P<body>.*?)</tr>", re.IGNORECASE | re.DOTALL)
 _CELL = re.compile(r"<td[^>]*class=[\"'][^\"']*kj(?P<field>Time|Code|Name|Title)[^\"']*[\"'][^>]*>(?P<value>.*?)</td>", re.IGNORECASE | re.DOTALL)
 _PDF = re.compile(r"href=[\"'](?P<href>[^\"']+\.pdf)[\"']", re.IGNORECASE)
 _PAGE = re.compile(r"I_list_(?P<page>\d{3})_\d{8}\.html")
+_SUMMARY = re.compile(
+    r'<div[^>]*class=["\'][^"\']*kaijiSum[^"\']*["\'][^>]*>'
+    r"\s*(?P<start>\d+)\s*[～-]\s*(?P<end>\d+)\s*件\s*(?:&nbsp;|\s)*"
+    r"/\s*(?:&nbsp;|\s)*全\s*(?P<total>\d+)\s*件\s*</div>",
+    re.IGNORECASE,
+)
+_NO_DISCLOSURES = re.compile(r"開示された情報はありません")
 _TAG = re.compile(r"<[^>]+>")
 
 
@@ -41,13 +49,14 @@ class TDnetProvider:
 
     name = "TDnet"
     category = "tdnet"
-    cache_version = "public-index-pdf-v2"
+    cache_version = "public-index-pdf-v3"
 
     def __init__(self, feed_url: str | None = None):
         config = get_config().get("markets", {}).get("jp", {})
         self.feed_url = feed_url or config.get("tdnet_feed_url")
         self.timeout = float(config.get("request_timeout_seconds", 10))
-        self.max_pages_per_day = int(config.get("tdnet_max_pages_per_day", 10))
+        self.max_pages_per_day = int(config.get("tdnet_max_pages_per_day", 50))
+        self.page_concurrency = int(config.get("tdnet_page_concurrency", 8))
         self.extract_pdf_text = bool(config.get("tdnet_extract_pdf_text", True))
         self.max_pdf_bytes = int(config.get("tdnet_max_pdf_bytes", 8_000_000))
         self.max_pdf_chars = int(config.get("tdnet_max_pdf_chars", 12_000))
@@ -62,12 +71,19 @@ class TDnetProvider:
         days = _date_range(start_date, end_date, maximum_days=31)
         if not days:
             return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
-        results = await asyncio.gather(*(self._fetch_day_detailed(context, day) for day in days))
-        items = tuple(item for day_items, _, _ in results for item in day_items)
+        page_semaphore = asyncio.Semaphore(max(1, self.page_concurrency))
+        results = await asyncio.gather(
+            *(
+                self._fetch_day_detailed(context, day, page_semaphore=page_semaphore)
+                for day in days
+            )
+        )
+        items = tuple(item for day_items, _, _, _ in results for item in day_items)
         if self.extract_pdf_text:
             items = await self._enrich_pdf_text(items)
-        capped_days = sum(capped for _, capped, _ in results)
-        failures = [failure for _, _, failure in results if failure]
+        capped_days = sum(capped for _, capped, _, _ in results)
+        failures = [failure for _, _, failure, _ in results if failure]
+        day_coverage = [coverage for _, _, _, coverage in results]
         detail_parts = []
         status = DataStatus.OK
         if failures:
@@ -77,9 +93,25 @@ class TDnetProvider:
         elif not items:
             detail_parts.append("empty_result=true")
         if capped_days:
+            status = DataStatus.DATA_UNAVAILABLE
             detail_parts.append(f"{capped_days} day(s) reached tdnet_max_pages_per_day={self.max_pages_per_day}")
+        coverage_complete = not failures and not capped_days and all(
+            entry["complete"] for entry in day_coverage
+        )
+        coverage = {
+            "status": "COMPLETE" if coverage_complete else "INCOMPLETE",
+            "complete": coverage_complete,
+            "requested_start_date": days[0].isoformat(),
+            "requested_end_date": days[-1].isoformat(),
+            "requested_day_count": len(days),
+            "complete_day_count": sum(bool(entry["complete"]) for entry in day_coverage),
+            "max_pages_per_day": self.max_pages_per_day,
+            "days": day_coverage,
+        }
         return ProviderResponse(
-            SourceStatus(self.name, status, detail="; ".join(detail_parts), item_count=len(items)), items
+            SourceStatus(self.name, status, detail="; ".join(detail_parts), item_count=len(items)),
+            items,
+            metadata={"coverage": coverage},
         )
 
     async def _enrich_pdf_text(
@@ -130,30 +162,90 @@ class TDnetProvider:
         )
         if response.status != DataStatus.OK:
             return ProviderResponse(SourceStatus(self.name, response.status, detail=response.detail))
+        matching_records = tuple(_matching_authorised_records(response.payload, context))
+        if any(
+            _parse_timestamp(record.get("date") or record.get("timestamp")) is None
+            for record in matching_records
+        ):
+            return ProviderResponse(
+                SourceStatus(
+                    self.name,
+                    DataStatus.DATA_UNAVAILABLE,
+                    detail="invalid authorised-feed disclosure timestamp",
+                ),
+                metadata={
+                    "coverage": {
+                        "status": "INCOMPLETE",
+                        "complete": False,
+                        "requested_start_date": start_date,
+                        "requested_end_date": end_date,
+                    }
+                },
+            )
         items = tuple(normalise_tdnet_records(response.payload, context))
-        return ProviderResponse(SourceStatus(self.name, DataStatus.OK, item_count=len(items)), items)
+        return ProviderResponse(
+            SourceStatus(self.name, DataStatus.OK, item_count=len(items)),
+            items,
+            metadata={
+                "coverage": {
+                    "status": "COMPLETE",
+                    "complete": True,
+                    "requested_start_date": start_date,
+                    "requested_end_date": end_date,
+                    "requested_day_count": None,
+                    "complete_day_count": None,
+                    "max_pages_per_day": None,
+                    "days": [],
+                }
+            },
+        )
 
     async def _fetch_day(self, context: MarketContext, day: date) -> tuple[tuple[MarketInformation, ...], bool]:
-        items, capped, _ = await self._fetch_day_detailed(context, day)
+        items, capped, _, _ = await self._fetch_day_detailed(context, day)
         return items, capped
 
     async def _fetch_day_detailed(
-        self, context: MarketContext, day: date
-    ) -> tuple[tuple[MarketInformation, ...], bool, dict[str, str] | None]:
+        self,
+        context: MarketContext,
+        day: date,
+        *,
+        page_semaphore: asyncio.Semaphore | None = None,
+    ) -> tuple[
+        tuple[MarketInformation, ...],
+        bool,
+        dict[str, str] | None,
+        dict[str, Any],
+    ]:
         first_url = _PUBLIC_INDEX_URL.format(page=1, day=day)
-        status, html, error_detail = await get_text(first_url, timeout=self.timeout)
+        status, html, error_detail = await self._get_index_page(
+            first_url, page_semaphore
+        )
         if status != DataStatus.OK:
-            return (), False, {
+            failure = {
                 "requested_date": day.isoformat(),
                 "requested_url": first_url,
                 "failure_type": status.value,
                 "error": error_detail or status.value,
             }
-        page_count = min(_page_count(html), self.max_pages_per_day)
+            return (), False, failure, _coverage_entry(day, complete=False, failure=failure)
+        pagination = _pagination_summary(html)
+        if pagination is None:
+            failure = {
+                "requested_date": day.isoformat(),
+                "requested_url": first_url,
+                "failure_type": DataStatus.PARSE_FAILED.value,
+                "error": "invalid TDnet pagination summary",
+            }
+            return (), False, failure, _coverage_entry(day, complete=False, failure=failure)
+        total_items, advertised_pages, page_size = pagination
+        capped = advertised_pages > self.max_pages_per_day
+        page_count = min(advertised_pages, self.max_pages_per_day)
         pages = [html]
         if page_count > 1:
             remaining = await asyncio.gather(*(
-                get_text(_PUBLIC_INDEX_URL.format(page=number, day=day), timeout=self.timeout)
+                self._get_index_page(
+                    _PUBLIC_INDEX_URL.format(page=number, day=day), page_semaphore
+                )
                 for number in range(2, page_count + 1)
             ))
             page_failures = []
@@ -168,13 +260,55 @@ class TDnetProvider:
                         "error": page_error or page_status.value,
                     })
             if page_failures:
-                return (), _page_count(html) > self.max_pages_per_day, page_failures[0]
+                failure = page_failures[0]
+                return (), capped, failure, _coverage_entry(
+                    day,
+                    complete=False,
+                    total_items=total_items,
+                    advertised_pages=advertised_pages,
+                    fetched_pages=len(pages),
+                    failure=failure,
+                )
+        pagination_failure = _validate_page_summaries(
+            pages, total_items=total_items, page_size=page_size
+        )
+        if pagination_failure is not None:
+            failure = {
+                "requested_date": day.isoformat(),
+                "requested_url": _PUBLIC_INDEX_URL.format(
+                    page=pagination_failure, day=day
+                ),
+                "failure_type": DataStatus.PARSE_FAILED.value,
+                "error": "inconsistent TDnet pagination summary",
+            }
+            return (), capped, failure, _coverage_entry(
+                day,
+                complete=False,
+                total_items=total_items,
+                advertised_pages=advertised_pages,
+                fetched_pages=len(pages),
+                failure=failure,
+            )
         items = tuple(
             item
             for page_number, page_html in enumerate(pages, start=1)
             for item in _parse_public_list(page_html, context, day, page_number)
         )
-        return items, _page_count(html) > self.max_pages_per_day, None
+        return items, capped, None, _coverage_entry(
+            day,
+            complete=not capped,
+            total_items=total_items,
+            advertised_pages=advertised_pages,
+            fetched_pages=len(pages),
+        )
+
+    async def _get_index_page(
+        self, url: str, semaphore: asyncio.Semaphore | None
+    ) -> tuple[DataStatus, str, str]:
+        if semaphore is None:
+            return await get_text(url, timeout=self.timeout)
+        async with semaphore:
+            return await get_text(url, timeout=self.timeout)
 
 
 def _date_range(start_date: str, end_date: str, *, maximum_days: int) -> tuple[date, ...]:
@@ -190,8 +324,69 @@ def _date_range(start_date: str, end_date: str, *, maximum_days: int) -> tuple[d
 
 
 def _page_count(html: str) -> int:
+    summary = _pagination_summary(html)
+    if summary is not None:
+        return summary[1]
     pages = [int(match.group("page")) for match in _PAGE.finditer(html)]
     return max(pages, default=1)
+
+
+def _pagination_summary(html: str) -> tuple[int, int, int] | None:
+    """Return (total items, total pages, page size) from TDnet's own summary."""
+    match = _SUMMARY.search(html)
+    if match:
+        start = int(match.group("start"))
+        end = int(match.group("end"))
+        total = int(match.group("total"))
+        if start != 1 or end < start or total < end:
+            return None
+        page_size = end - start + 1
+        return total, math.ceil(total / page_size), page_size
+    if _NO_DISCLOSURES.search(html):
+        return 0, 1, 0
+    return None
+
+
+def _validate_page_summaries(
+    pages: list[str], *, total_items: int, page_size: int
+) -> int | None:
+    if total_items == 0:
+        return None if len(pages) == 1 and _NO_DISCLOSURES.search(pages[0]) else 1
+    for page_number, html in enumerate(pages, start=1):
+        match = _SUMMARY.search(html)
+        if match is None:
+            return page_number
+        expected_start = (page_number - 1) * page_size + 1
+        expected_end = min(page_number * page_size, total_items)
+        if (
+            int(match.group("start")) != expected_start
+            or int(match.group("end")) != expected_end
+            or int(match.group("total")) != total_items
+        ):
+            return page_number
+    return None
+
+
+def _coverage_entry(
+    day: date,
+    *,
+    complete: bool,
+    total_items: int | None = None,
+    advertised_pages: int | None = None,
+    fetched_pages: int = 0,
+    failure: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {
+        "date": day.isoformat(),
+        "complete": complete,
+        "advertised_item_count": total_items,
+        "advertised_page_count": advertised_pages,
+        "fetched_page_count": fetched_pages,
+    }
+    if failure:
+        entry["failure_type"] = failure.get("failure_type")
+        entry["failure_detail"] = failure.get("error")
+    return entry
 
 
 def _parse_public_list(
@@ -236,16 +431,16 @@ def _parse_public_list(
 
 def normalise_tdnet_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
     """Normalize an optional authorised JSON feed using the same fact schema."""
-    records = payload if isinstance(payload, list) else (payload.get("items", []) if isinstance(payload, dict) else [])
-    for record in records:
-        if not isinstance(record, dict) or _normalise_code(str(record.get("ticker") or record.get("code") or "")) != context.native_symbol:
-            continue
+    for record in _matching_authorised_records(payload, context):
         title = str(record.get("title") or "")
+        timestamp = _parse_timestamp(record.get("date") or record.get("timestamp"))
+        if timestamp is None:
+            continue
         yield MarketInformation(
             source="TDnet",
             source_type=classify_tdnet_title(title),
             ticker=context.symbol,
-            timestamp=_parse_timestamp(record.get("date") or record.get("timestamp")),
+            timestamp=timestamp,
             title=title,
             content=str(record.get("summary") or ""),
             url=record.get("url"),
@@ -265,6 +460,22 @@ def normalise_tdnet_records(payload: Any, context: MarketContext) -> Iterable[Ma
                 ),
             },
         )
+
+
+def _matching_authorised_records(
+    payload: Any, context: MarketContext
+) -> Iterable[dict[str, Any]]:
+    records = (
+        payload
+        if isinstance(payload, list)
+        else (payload.get("items", []) if isinstance(payload, dict) else [])
+    )
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        code = _normalise_code(str(record.get("ticker") or record.get("code") or ""))
+        if code == context.native_symbol:
+            yield record
 
 
 def classify_tdnet_title(title: str) -> str:
@@ -407,12 +618,12 @@ def _parse_time(value: str):
         return datetime.min.time()
 
 
-def _parse_timestamp(value: Any) -> datetime:
+def _parse_timestamp(value: Any) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-    except ValueError:
-        return datetime.now(UTC)
+    except (TypeError, ValueError):
+        return None
 
 
 def extract_pdf_text(payload: bytes, max_chars: int) -> str:
