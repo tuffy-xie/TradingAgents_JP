@@ -116,6 +116,25 @@ def test_forecast_only_correction_keeps_original_actual_baseline():
     assert result.source_record_id == "original"
 
 
+def test_forecast_only_h1_record_does_not_displace_q1_actual():
+    q1_actual = _record(quarter=1, revenue=365_221, record_id="q1-actual")
+    h1_forecast_only = _record(
+        quarter=2,
+        revenue=None,
+        operating_income=None,
+        ordinary_income=None,
+        net_income=None,
+        eps=None,
+        forecast_revenue=720_000,
+        record_id="h1-guidance",
+    )
+
+    result = _select([h1_forecast_only, q1_actual])
+
+    _assert_selected(result, "Q1")
+    assert result.source_record_id == "q1-actual"
+
+
 def test_actual_changing_correction_requires_resolution():
     result = _select(
         [

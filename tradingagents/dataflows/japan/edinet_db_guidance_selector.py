@@ -85,7 +85,7 @@ def select_latest_guidance_record(
         raw_records = tuple(records)
     except TypeError:
         return _failure(stable_issuer, "NO_GUIDANCE_RECORD")
-    forecast_records = [raw for raw in raw_records if _has_forecast_contract(raw)]
+    forecast_records = [raw for raw in raw_records if _has_fy_guidance_contract(raw)]
     if not forecast_records:
         return _failure(stable_issuer, "GUIDANCE_NOT_PROVIDED", STATUS_NOT_PROVIDED)
 
@@ -180,8 +180,44 @@ def select_latest_guidance_record(
     )
 
 
-def _has_forecast_contract(raw: Any) -> bool:
-    return isinstance(raw, Mapping) and any(field in raw for field in _FORECAST_FIELDS)
+def _has_fy_guidance_contract(raw: Any) -> bool:
+    """Return whether a raw record can safely represent annual Guidance.
+
+    A Q1-Q3 earnings record with Actual values carries annual forecast fields.
+    A forecast-only Q1-Q3 record instead describes that quarter/H1 target and
+    must not compete with annual Guidance.  An explicit guidance target remains
+    authoritative for forecast-only records.
+    """
+    if not isinstance(raw, Mapping) or not any(
+        field in raw and raw.get(field) is not None for field in _FORECAST_FIELDS
+    ):
+        return False
+    if _resolve_explicit_target(raw) is not None:
+        return True
+    quarter = raw.get("quarter")
+    if isinstance(quarter, str):
+        quarter = quarter.strip().upper()
+    if quarter in _FY:
+        # Keep the record so the explicit-target validator can fail closed;
+        # Q4 next-FY targets must never be guessed.
+        return True
+    return quarter in _Q1_Q3 and _has_actual_value(raw)
+
+
+def _has_actual_value(record: Mapping[str, Any]) -> bool:
+    fields = (
+        "revenue",
+        "operating_income",
+        "ordinary_income",
+        "net_income",
+        "net_income_attributable_to_parent",
+        "profit_attributable_to_owners_of_parent",
+        "eps",
+        "profit_ifrs",
+        "total_period_profit",
+        "profit_total",
+    )
+    return any(record.get(field) is not None for field in fields)
 
 
 def _guidance_target_period_end(record: Mapping[str, Any]) -> date | None:

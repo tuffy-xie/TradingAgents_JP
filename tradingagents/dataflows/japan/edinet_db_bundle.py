@@ -27,7 +27,9 @@ class EDINETDBFinancialBundleProvider:
 
     name = "EDINET DB Financials"
     category = "fundamentals"
-    cache_version = "2"
+    # v3 invalidates snapshots produced before forecast-only disclosures were
+    # excluded from Actual/FY-Guidance selection (Stage 10 evidence contract).
+    cache_version = "3"
 
     def __init__(
         self,

@@ -145,6 +145,13 @@ def _assess_kind(
         if _official_date(item) == official_latest_date
     ]
     latest_items = [item for item, _document in latest_pairs]
+    if structured_document is not None and structured_date is not None:
+        structured_document = _supplement_units_from_same_day_official(
+            structured_document,
+            latest_items,
+            kind,
+            structured_date,
+        )
     official_document, official_conflict = _resolve_official_documents(
         [document for _item, document in latest_pairs if document is not None], kind
     )
@@ -375,7 +382,9 @@ def _gate_document(document: Mapping[str, Any], kind: str) -> dict[str, Any]:
             reasons.append("period unavailable")
         if not _strict_date(record.get("target_period_end")):
             reasons.append("target period unavailable")
-        if kind == "ACTUAL" and record.get("accounting_standard") not in {
+        if kind == "ACTUAL" and _canonical_accounting_standard(
+            record.get("accounting_standard")
+        ) not in {
             "IFRS",
             "J_GAAP",
             "US_GAAP",
@@ -392,6 +401,90 @@ def _gate_document(document: Mapping[str, Any], kind: str) -> dict[str, Any]:
         "required_count": 2,
         "detail": "; ".join(reasons),
     }
+
+
+def _supplement_units_from_same_day_official(
+    document: Mapping[str, Any],
+    official_items: Sequence[Mapping[str, Any]],
+    kind: str,
+    structured_date: date,
+) -> Mapping[str, Any]:
+    """Use only explicit same-day official table units for structured values.
+
+    EDINET DB earnings amounts do not carry a reliable unit field.  A matching
+    TDnet/IR financial section explicitly labelled ``百万円`` can safely supply
+    unit provenance without using the PDF to guess or overwrite the values.
+    """
+    structured_record = _record(document, kind)
+    if structured_record is None:
+        return document
+    for item in official_items:
+        if _official_date(item) != structured_date:
+            continue
+        content = str(item.get("content") or "")
+        if not content:
+            continue
+        parsed = parse_financial_document(
+            content,
+            title=str(item.get("title") or ""),
+            source=str(item.get("source") or ""),
+            disclosure_timestamp=str(item.get("timestamp") or ""),
+            source_url=item.get("url"),
+        )
+        matches = [
+            record
+            for record in parsed.records
+            if record.record_type == kind
+            and record.period_type == structured_record.get("period_type")
+            and record.unit not in {None, "", DATA_UNAVAILABLE, "UNKNOWN"}
+            and (
+                record.scope in {"DATA_UNAVAILABLE", "UNKNOWN"}
+                or structured_record.get("scope") in {"DATA_UNAVAILABLE", "UNKNOWN"}
+                or record.scope == structured_record.get("scope")
+            )
+        ]
+        units = {record.unit for record in matches}
+        if len(units) != 1:
+            continue
+        unit = units.pop()
+        copied = dict(document)
+        records = []
+        for candidate in document.get("records") or []:
+            row = dict(candidate)
+            if candidate is structured_record or (
+                candidate.get("record_type") == kind
+                and candidate.get("period_type") == structured_record.get("period_type")
+            ):
+                row["unit"] = unit
+                metrics = {}
+                for name, metric in (candidate.get("metrics") or {}).items():
+                    value = dict(metric) if isinstance(metric, Mapping) else metric
+                    if isinstance(value, dict):
+                        source_unit = "円" if name == "eps" else unit
+                        value["unit"] = source_unit
+                        value["unit_origin"] = "SAME_DAY_OFFICIAL_SECTION"
+                        if kind == "GUIDANCE" and isinstance(value.get("current_value"), Mapping):
+                            current = dict(value["current_value"])
+                            current["unit"] = source_unit
+                            current["unit_origin"] = "SAME_DAY_OFFICIAL_SECTION"
+                            value["current_value"] = current
+                    metrics[name] = value
+                row["metrics"] = metrics
+            records.append(row)
+        copied["records"] = records
+        return copied
+    return document
+
+
+def _canonical_accounting_standard(value: Any) -> str:
+    normalized = str(value or "").strip().upper().replace("-", "_").replace(" ", "_")
+    if normalized == "IFRS":
+        return "IFRS"
+    if normalized in {"JP", "JP_GAAP", "J_GAAP", "JAPANESE_GAAP"}:
+        return "J_GAAP"
+    if normalized in {"US_GAAP", "USGAAP"}:
+        return "US_GAAP"
+    return "UNKNOWN"
 
 
 def _metric_ok(metric: Any, kind: str) -> bool:

@@ -28,10 +28,31 @@ def _record(
         "fiscal_year_end": fiscal_year_end,
         "disclosure_date": disclosure_date,
         "forecast_revenue": forecast_revenue,
+        "revenue": extra.pop("revenue", 100),
         "accounting_standard": "IFRS",
         "is_consolidated": True,
         **extra,
     }
+
+
+def test_forecast_only_h1_record_does_not_compete_with_annual_guidance():
+    annual = _record(
+        record_id="q1-annual-guidance",
+        quarter=1,
+        forecast_revenue=1_530_000,
+    )
+    h1 = _record(
+        record_id="h1-guidance",
+        quarter=2,
+        revenue=None,
+        forecast_revenue=720_000,
+    )
+
+    result = _select([h1, annual])
+
+    assert result.status == STATUS_OK
+    assert result.source_record_id == "q1-annual-guidance"
+    assert result.record["forecast_revenue"] == 1_530_000
 
 
 def _select(records, *, analysis_as_of=date(2026, 8, 31)):

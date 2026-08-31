@@ -128,6 +128,13 @@ def select_latest_earnings_record(
         if not isinstance(raw, Mapping):
             return _failure(stable_issuer, "INVALID_FISCAL_PERIOD")
         copied = dict(raw)
+        # EDINET DB also returns forecast-only disclosures in the earnings
+        # collection.  Their ``quarter`` describes the forecast target, not an
+        # Actual reporting period.  Requiring at least one explicit Actual
+        # value keeps those records out of the Actual-period ordering without
+        # imposing a completeness gate (one observed Actual value is enough).
+        if _is_forecast_only(copied):
+            continue
         candidates.append(
             _Candidate(
                 record=copied,
@@ -135,6 +142,9 @@ def select_latest_earnings_record(
                 disclosure=_parse_disclosure(copied),
             )
         )
+
+    if not candidates:
+        return _failure(stable_issuer, "NO_ELIGIBLE_RECORD")
 
     eligible: list[_Candidate] = []
     invalid_fiscal: list[_Candidate] = []
@@ -232,6 +242,15 @@ def _parse_period(value: Any) -> tuple[str, int] | None:
     if isinstance(value, str):
         value = value.strip().upper()
     return _PERIODS.get(value)
+
+
+def _is_forecast_only(record: Mapping[str, Any]) -> bool:
+    has_actual = any(record.get(field) is not None for field in _ACTUAL_FIELDS)
+    has_forecast = any(
+        key.startswith("forecast_") and value is not None
+        for key, value in record.items()
+    )
+    return has_forecast and not has_actual
 
 
 def _strict_date(value: Any) -> date | None:
