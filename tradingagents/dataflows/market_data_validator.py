@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tradingagents.dataflows.stockstats_utils import load_ohlcv
+from tradingagents.dataflows.stockstats_utils import _assert_ohlcv_not_stale, load_ohlcv
 
 # A fixed, common indicator set so the snapshot is the same shape every run.
 DEFAULT_SNAPSHOT_INDICATORS: tuple[str, ...] = (
@@ -63,6 +63,7 @@ def _verified_rows(symbol: str, curr_date: str) -> pd.DataFrame:
     df = df[df["Date"] <= pd.to_datetime(curr_date)].sort_values("Date")
     if df.empty:
         raise ValueError(f"No OHLCV rows on or before {curr_date} for {symbol}.")
+    _assert_ohlcv_not_stale(df, curr_date, symbol)
     stale_days = (pd.to_datetime(curr_date).normalize() - df["Date"].iloc[-1].normalize()).days
     if stale_days > 10:
         raise ValueError(

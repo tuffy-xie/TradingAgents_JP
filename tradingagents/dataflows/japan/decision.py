@@ -29,6 +29,12 @@ def build_japan_decision_context(bundle: Mapping[str, Any] | None, snapshot: str
     bundle = bundle or {}
     items = [item for item in bundle.get("items", []) if isinstance(item, Mapping)]
     analysis_date = _analysis_date(bundle)
+    if analysis_date is None:
+        # Without the shared analysis date, no event can be assigned a safe
+        # age/freshness classification.  Empty the evidence rather than using
+        # the host clock as an implicit authority.
+        items = []
+        analysis_date = date.min
     official_horizon_days = int((bundle.get("window_policy") or {}).get("official_catalyst_days", 14))
     freshness = _freshness_index(items)
     official = _fresh_items(
@@ -273,12 +279,12 @@ def _dedupe_official_events(items: list[Mapping[str, Any]]) -> list[Mapping[str,
     return result
 
 
-def _analysis_date(bundle: Mapping[str, Any]) -> date:
+def _analysis_date(bundle: Mapping[str, Any]) -> date | None:
     value = str(bundle.get("analysis_date") or "")
     try:
         return date.fromisoformat(value)
     except ValueError:
-        return date.today()
+        return None
 
 
 def _event_date(item: Mapping[str, Any]) -> date:
@@ -286,7 +292,7 @@ def _event_date(item: Mapping[str, Any]) -> date:
     try:
         return date.fromisoformat(value)
     except ValueError:
-        return date.today()
+        return date.min
 
 
 def _event_detail(item: Mapping[str, Any], analysis_date: date) -> dict[str, Any]:

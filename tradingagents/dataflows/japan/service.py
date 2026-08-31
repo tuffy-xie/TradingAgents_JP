@@ -8,8 +8,10 @@ import logging
 import re
 import time
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
 from datetime import date
 from typing import Protocol
+from zoneinfo import ZoneInfo
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import Market, MarketContext
@@ -25,6 +27,7 @@ from .models import (
 from .truth import build_governance_item
 
 logger = logging.getLogger(__name__)
+_JST = ZoneInfo("Asia/Tokyo")
 
 
 class JapanDataProvider(Protocol):
@@ -126,6 +129,18 @@ class JapanDataService:
         cached = self.cache.get(provider.category, cache_key)
         if cached:
             response = ProviderResponse.from_dict(cached)
+            # A same-analysis-day snapshot from a continuously/daily updated
+            # source may have been collected before that source published its
+            # final nightly data.  Such providers opt in to bypassing reuse.
+            # This uses the cache's own fetched_at only; it does not invent a
+            # source data date or use machine time as freshness authority.
+            if getattr(provider, "cache_requires_completed_window", False) and (
+                date.fromisoformat(end_date)
+                >= response.status.fetched_at.astimezone(_JST).date()
+            ):
+                cached = None
+        if cached:
+            response = ProviderResponse.from_dict(cached)
             cached_status = SourceStatus(
                 source=response.status.source,
                 status=response.status.status,
@@ -160,6 +175,8 @@ class JapanDataService:
                 ),
             )
 
+        response = self._exclude_future_items(response, end_date)
+
         if (
             provider.name == "TDnet"
             and response.status.status == DataStatus.DATA_UNAVAILABLE
@@ -191,6 +208,25 @@ class JapanDataService:
         ttl = int(self.source_ttls.get(provider.category, self.source_ttls.get(provider.name, 900)))
         self.cache.set(provider.category, cache_key, response.to_dict(), ttl)
         return response
+
+    @staticmethod
+    def _exclude_future_items(response: ProviderResponse, end_date: str) -> ProviderResponse:
+        """Never allow a provider item after the shared analysis date."""
+        cutoff = date.fromisoformat(end_date)
+        kept = tuple(item for item in response.items if item.timestamp.date() <= cutoff)
+        removed = len(response.items) - len(kept)
+        if not removed:
+            return response
+        detail = response.status.detail
+        detail = f"{detail}; " if detail else ""
+        detail += f"future_items_excluded={removed}"
+        status = replace(
+            response.status,
+            status=DataStatus.DATA_UNAVAILABLE if not kept else response.status.status,
+            detail=detail,
+            item_count=len(kept),
+        )
+        return ProviderResponse(status=status, items=kept, metadata=response.metadata)
 
     def _last_good_tdnet(
         self, cache_key: str, category: str

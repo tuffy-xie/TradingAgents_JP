@@ -65,6 +65,9 @@ def freshness_for_item(item: MarketInformation, as_of: date) -> str:
     """Return frequency-specific freshness without applying one global TTL."""
     if item.status != DataStatus.OK:
         return "DATA_UNAVAILABLE"
+    explicit = item.metadata.get("freshness_status")
+    if explicit:
+        return str(explicit)
     current_days, recent_days = _FRESHNESS.get(item.source_type, (30, 90))
     age = (as_of - item.timestamp.astimezone(UTC).date()).days
     if age <= current_days:
@@ -197,6 +200,11 @@ def build_governance_item(
             "source": item.source,
             "source_type": item.source_type,
             "timestamp": item.timestamp.isoformat(),
+            "data_date": item.metadata.get("data_date")
+            or item.timestamp.astimezone(UTC).date().isoformat(),
+            "published_at": item.metadata.get("published_at"),
+            "native_cadence": item.metadata.get("native_cadence"),
+            "freshness_basis": item.metadata.get("freshness_basis"),
             "status": freshness_for_item(item, as_of),
         }
         for item in source_items

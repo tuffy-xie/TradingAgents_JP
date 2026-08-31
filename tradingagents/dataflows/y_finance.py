@@ -163,6 +163,7 @@ def get_stock_stats_indicators_window(
     # Optimized: Get stock data once and calculate indicators for all dates
     try:
         indicator_data = _get_stock_stats_bulk(symbol, indicator, curr_date)
+        indicator_data_date = max(indicator_data) if indicator_data else None
 
         # Generate the date range we need
         current_dt = curr_date_dt
@@ -191,6 +192,7 @@ def get_stock_stats_indicators_window(
         print(f"Error getting bulk stockstats data: {e}")
         # Fallback to original implementation if bulk method fails
         ind_string = ""
+        indicator_data_date = None
         curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
         while curr_date_dt >= before:
             indicator_value = get_stockstats_indicator(
@@ -201,6 +203,7 @@ def get_stock_stats_indicators_window(
 
     result_str = (
         f"## {indicator} values from {before.strftime('%Y-%m-%d')} to {end_date}:\n\n"
+        + f"Underlying OHLCV latest completed bar: {indicator_data_date or 'DATA_UNAVAILABLE'}\n\n"
         + ind_string
         + "\n\n"
         + best_ind_params.get(indicator, "No description available.")

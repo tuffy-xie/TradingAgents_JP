@@ -61,6 +61,7 @@ class JapanSentimentProvider:
     """Public Yahoo Finance Japan board provider, without US-platform fallback."""
 
     name, category, cache_version = "Japan Investor Sentiment", "sentiment", "yahoo-board-v1"
+    cache_requires_completed_window = True
 
     def __init__(self):
         config = get_config().get("markets", {}).get("jp", {})
@@ -245,6 +246,10 @@ def _aggregate(posts, end_date):
     current = windows["7D"]
     return {
         **current,
+        "latest_post_date": max(
+            (post.timestamp.astimezone(_JST).date().isoformat() for post in posts),
+            default=None,
+        ),
         "time_window": windows,
         "source_breakdown": {
             "Yahoo Finance Japan Board": current["sample_count"],
@@ -275,7 +280,16 @@ def _summary_item(context, aggregate, end_date):
         status=status,
         layer=InformationLayer.MARKET_SENTIMENT,
         content_level="aggregate",
-        metadata=aggregate,
+        metadata={
+            **aggregate,
+            "data_date": aggregate.get("latest_post_date"),
+            "published_at": None,
+            "freshness_status": "LATEST_AVAILABLE"
+            if aggregate["sample_count"]
+            else "DATA_UNAVAILABLE",
+            "freshness_basis": "explicitly timestamped posts inside requested window",
+            "native_cadence": "CONTINUOUS_EVENT_STREAM",
+        },
     )
 
 

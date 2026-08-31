@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import re
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
 from typing import Any
@@ -14,6 +15,7 @@ import requests
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
+from .freshness import assess_japan_session_data
 from .http import USER_AGENT, get_bytes
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 
@@ -30,7 +32,8 @@ class JSFProvider:
 
     name = "JSF"
     category = "supply_demand"
-    cache_version = "public-history-trend-v2"
+    cache_version = "public-history-trend-freshness-v5"
+    cache_requires_completed_window = True
 
     def __init__(self):
         config = get_config().get("markets", {}).get("jp", {})
@@ -48,28 +51,113 @@ class JSFProvider:
         )
         details: list[str] = []
         items: list[MarketInformation] = []
+        metadata: dict[str, Any] = {}
+        analysis_as_of = date.fromisoformat(end_date)
         if history.status == DataStatus.OK:
-            balance_items = normalise_balances(history.payload, context, historical=True, url=_HISTORY_CSV_URL.format(code=context.native_symbol))
-            items.extend(balance_items)
-            if balance_items:
-                items.append(build_supply_demand_trend(balance_items, context, history_start, end_date))
+            balance_items = normalise_balances(
+                history.payload,
+                context,
+                historical=True,
+                url=_HISTORY_CSV_URL.format(code=context.native_symbol),
+            )
+            balance_items = [
+                item for item in balance_items if item.timestamp.date() <= analysis_as_of
+            ]
+            freshness = _balance_freshness(balance_items, analysis_as_of)
+            metadata["balances_freshness"] = freshness.to_dict()
+            if balance_items and freshness.usable:
+                latest_balance_date = max(item.timestamp.date() for item in balance_items)
+                balance_items = [
+                    _with_freshness(
+                        item,
+                        freshness,
+                        is_latest=item.timestamp.date() == latest_balance_date,
+                    )
+                    for item in balance_items
+                ]
+                items.extend(balance_items)
+                items.append(
+                    _with_freshness(
+                        build_supply_demand_trend(
+                            balance_items, context, history_start, end_date
+                        ),
+                        freshness,
+                    )
+                )
             else:
-                details.append("history=NO_MATCHING_SECURITY")
+                details.append(
+                    f"history={freshness.status if balance_items else 'NO_MATCHING_SECURITY'}"
+                )
         else:
             # Current daily CSV remains a safe, official fallback; it is marked
             # as a single-day observation and never produces a trend.
             fallback = await get_bytes(_BALANCES_URL, timeout=self.timeout)
             if fallback.status == DataStatus.OK:
-                items.extend(normalise_balances(fallback.payload, context, historical=False, url=_BALANCES_URL))
-                details.append(f"history={history.status}; using current daily fallback")
+                balance_items = [
+                    item
+                    for item in normalise_balances(
+                        fallback.payload, context, historical=False, url=_BALANCES_URL
+                    )
+                    if item.timestamp.date() <= analysis_as_of
+                ]
+                freshness = _balance_freshness(balance_items, analysis_as_of)
+                metadata["balances_freshness"] = freshness.to_dict()
+                if freshness.usable:
+                    items.extend(_with_freshness(item, freshness) for item in balance_items)
+                    details.append(f"history={history.status}; using current daily fallback")
+                else:
+                    details.append(
+                        f"history={history.status}; current_balances={freshness.status}"
+                    )
             else:
                 details.append(f"history={history.status}; current_balances={fallback.status}")
         if charges.status == DataStatus.OK:
-            items.extend(normalise_premium_charges(charges.payload, context))
+            items.extend(
+                item
+                for item in normalise_premium_charges(charges.payload, context)
+                if item.timestamp.date() <= analysis_as_of
+            )
         else:
             details.append(f"premium_charges={charges.status}")
         status = DataStatus.OK if items else DataStatus.DATA_UNAVAILABLE
-        return ProviderResponse(SourceStatus(self.name, status, detail=", ".join(details), item_count=len(items)), tuple(items))
+        return ProviderResponse(
+            SourceStatus(
+                self.name,
+                status,
+                detail=", ".join(details),
+                item_count=len(items),
+            ),
+            tuple(items),
+            metadata=metadata,
+        )
+
+
+def _balance_freshness(items: list[MarketInformation], analysis_as_of: date):
+    return assess_japan_session_data(
+        max((item.timestamp.date() for item in items), default=None),
+        analysis_as_of,
+        native_cadence="JSF_CONFIRMED_BALANCE_EACH_BUSINESS_DAY_11:30",
+    )
+
+
+def _with_freshness(item: MarketInformation, freshness, *, is_latest: bool = True):
+    return replace(
+        item,
+        metadata={
+            **item.metadata,
+            "data_date": item.timestamp.date().isoformat(),
+            "published_at": None,
+            "freshness_status": (
+                freshness.status if is_latest else "HISTORICAL_OBSERVATION"
+            ),
+            "freshness_basis": (
+                freshness.basis
+                if is_latest
+                else f"historical observation preceding latest source date {freshness.data_date}"
+            ),
+            "native_cadence": freshness.native_cadence,
+        },
+    )
 
 
 async def _fetch_history_csv(code: str, start_date: str, end_date: str, timeout: float):
@@ -166,7 +254,12 @@ def build_supply_demand_trend(
     latest = observations[-1] if observations else None
     return MarketInformation(
         source="JSF", source_type="securities_finance_trend", ticker=context.symbol,
-        timestamp=latest.timestamp if latest else datetime.now(UTC), title="JSF financing and stock-loan history trend",
+        timestamp=(
+            latest.timestamp
+            if latest
+            else datetime.fromisoformat(end_date).replace(tzinfo=UTC)
+        ),
+        title="JSF financing and stock-loan history trend",
         content="Trend metrics require comparable official daily observations; a single day is not classified as a trend.",
         url=_HISTORY_CSV_URL.format(code=context.native_symbol), confidence=0.92, verified=True,
         layer=InformationLayer.VERIFIED_FACT,

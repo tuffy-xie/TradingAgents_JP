@@ -12,7 +12,7 @@ import asyncio
 import os
 import re
 from collections.abc import Iterable, Mapping
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from tradingagents.dataflows.config import get_config
@@ -152,9 +152,12 @@ def _normalise_documents(payload: Any, context: MarketContext) -> Iterable[Marke
             continue
         doc_id = str(document.get("docID") or "")
         submitted = str(document.get("submitDateTime") or "")
+        timestamp = _parse_timestamp(submitted)
+        if timestamp is None:
+            continue
         yield MarketInformation(
             source="EDINET", source_type=category, ticker=context.symbol,
-            timestamp=_parse_timestamp(submitted), title=title,
+            timestamp=timestamp, title=title,
             content="EDINET 5%-rule filing metadata; PDF verification pending.",
             url=f"https://api.edinet-fsa.go.jp/api/v2/documents/{doc_id}" if doc_id else None,
             confidence=0.98, verified=True, layer=InformationLayer.VERIFIED_FACT,
@@ -183,11 +186,11 @@ def _normalise_documents(payload: Any, context: MarketContext) -> Iterable[Marke
         )
 
 
-def _parse_timestamp(value: str) -> datetime:
+def _parse_timestamp(value: str) -> datetime | None:
     try:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
-        return datetime.now(UTC)
+        return None
 
 
 def classify_edinet_document(title: str, doc_type_code: str, form_code: str = "") -> str:

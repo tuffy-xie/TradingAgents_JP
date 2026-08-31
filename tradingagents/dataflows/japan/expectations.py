@@ -34,6 +34,7 @@ class JapanAnalystExpectationsProvider:
         "analyst_expectations",
         "minkabu-consensus-v1",
     )
+    cache_requires_completed_window = True
 
     def __init__(self):
         config = get_config().get("markets", {}).get("jp", {})
@@ -60,6 +61,15 @@ class JapanAnalystExpectationsProvider:
                 ),
             )
         timestamp = _date_to_timestamp(expectations["as_of"])
+        analysis_as_of = datetime.strptime(end_date, "%Y-%m-%d").date()
+        if timestamp.date() > analysis_as_of:
+            return ProviderResponse(
+                SourceStatus(
+                    self.name,
+                    DataStatus.DATA_UNAVAILABLE,
+                    detail="Minkabu=FUTURE_DATA excluded",
+                )
+            )
         expectation_status = (
             DataStatus.OK if expectations["status"] == "OK" else DataStatus.DATA_UNAVAILABLE
         )
@@ -76,7 +86,14 @@ class JapanAnalystExpectationsProvider:
             status=expectation_status,
             layer=InformationLayer.NEWS_ANALYST_VIEW,
             content_level="structured_data",
-            metadata={"analyst_expectations": expectations},
+            metadata={
+                "analyst_expectations": expectations,
+                "data_date": timestamp.date().isoformat(),
+                "published_at": timestamp.date().isoformat(),
+                "freshness_status": "LATEST_AVAILABLE",
+                "freshness_basis": "latest explicitly dated consensus on current source page",
+                "native_cadence": "SOURCE_UPDATE_DRIVEN",
+            },
         )
         return ProviderResponse(
             SourceStatus(

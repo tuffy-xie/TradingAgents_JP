@@ -11,12 +11,14 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import Iterable, Mapping
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, date, datetime
 from typing import Any
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
 
+from .freshness import assess_japan_session_data
 from .http import JsonResponse, get_json
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 
@@ -32,7 +34,8 @@ class JQuantsProvider:
 
     name = "J-Quants"
     category = "market_data"
-    cache_version = "v2-security-bars-financial-summary"
+    cache_version = "v5-freshness-gated-security-bars-financial-summary"
+    cache_requires_completed_window = True
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         config = get_config().get("markets", {}).get("jp", {})
@@ -49,9 +52,10 @@ class JQuantsProvider:
 
         code = f"{context.native_symbol}0"
         headers = {"x-api-key": self.api_key}
+        daily_url = f"{self.base_url}/equities/bars/daily"
         daily, master, financials = await asyncio.gather(
             get_json(
-                f"{self.base_url}/equities/bars/daily",
+                daily_url,
                 params={"code": code, "from": _compact_date(start_date), "to": _compact_date(end_date)},
                 headers=headers,
                 timeout=self.timeout,
@@ -59,18 +63,80 @@ class JQuantsProvider:
             get_json(f"{self.base_url}/equities/master", params={"code": code}, headers=headers, timeout=self.timeout),
             get_json(f"{self.base_url}/fins/summary", params={"code": code}, headers=headers, timeout=self.timeout),
         )
-        items = tuple(
-            item
-            for response, normalizer in (
-                (daily, _normalise_records),
-                (master, _normalise_master_records),
-                (financials, _normalise_financial_records),
+        # A delayed subscription rejects a date range newer than its entitled
+        # window with HTTP 400.  Query the same security without dates so the
+        # provider can expose the latest source-visible bar and classify it as
+        # STALE_SOURCE instead of confusing plan delay with an empty dataset.
+        if daily.status == DataStatus.DATA_UNAVAILABLE and daily.detail == "HTTP 400":
+            daily = await get_json(
+                daily_url,
+                params={"code": code},
+                headers=headers,
+                timeout=self.timeout,
             )
-            if response.status == DataStatus.OK
-            for item in normalizer(response.payload, context)
+        cutoff = date.fromisoformat(end_date)
+        daily_items = (
+            tuple(_normalise_records(daily.payload, context))
+            if daily.status == DataStatus.OK
+            else ()
         )
+        daily_items = tuple(item for item in daily_items if item.timestamp.date() <= cutoff)
+        daily_freshness = assess_japan_session_data(
+            max((item.timestamp.date() for item in daily_items), default=None), cutoff
+        )
+        if daily_items and daily_freshness.usable:
+            latest_daily_date = max(item.timestamp.date() for item in daily_items)
+            daily_items = tuple(
+                replace(
+                    item,
+                    metadata={
+                        **item.metadata,
+                        "data_date": item.timestamp.date().isoformat(),
+                        "published_at": None,
+                        "freshness_status": (
+                            daily_freshness.status
+                            if item.timestamp.date() == latest_daily_date
+                            else "HISTORICAL_OBSERVATION"
+                        ),
+                        "freshness_basis": (
+                            daily_freshness.basis
+                            if item.timestamp.date() == latest_daily_date
+                            else f"historical bar preceding latest source date {latest_daily_date}"
+                        ),
+                        "native_cadence": daily_freshness.native_cadence,
+                    },
+                )
+                for item in daily_items
+            )
+        else:
+            daily_items = ()
+        master_items = (
+            tuple(_normalise_master_records(master.payload, context))
+            if master.status == DataStatus.OK
+            else ()
+        )
+        financial_items = (
+            tuple(_normalise_financial_records(financials.payload, context))
+            if financials.status == DataStatus.OK
+            else ()
+        )
+        # Master and disclosure endpoints can return records newer than a
+        # historical analysis date.  They are source-dated, so future rows are
+        # excluded rather than relabelled with the requested date.
+        master_items = tuple(item for item in master_items if item.timestamp.date() <= cutoff)
+        if master_items:
+            latest_master_date = max(item.timestamp for item in master_items)
+            master_items = tuple(
+                item for item in master_items if item.timestamp == latest_master_date
+            )
+        financial_items = tuple(
+            item for item in financial_items if item.timestamp.date() <= cutoff
+        )
+        items = (*daily_items, *master_items, *financial_items)
         endpoint_statuses = {
-            "daily_bars": _endpoint_detail(daily),
+            "daily_bars": _endpoint_detail(daily)
+            if daily.status != DataStatus.OK
+            else daily_freshness.status,
             "security_master": _endpoint_detail(master),
             "financial_summary": _endpoint_detail(financials),
         }
@@ -86,7 +152,8 @@ class JQuantsProvider:
                 detail="; ".join(f"{name}={value}" for name, value in endpoint_statuses.items()),
                 item_count=len(items),
             ),
-            items,
+            tuple(items),
+            metadata={"daily_bars_freshness": daily_freshness.to_dict()},
         )
 
     async def probe_capabilities(self, context: MarketContext) -> dict[str, str]:
@@ -134,19 +201,22 @@ def _records(payload: Any) -> Iterable[dict[str, Any]]:
     return ()
 
 
-def _timestamp(value: Any) -> datetime:
+def _timestamp(value: Any) -> datetime | None:
     raw = str(value or "")
     for candidate in (raw[:10], f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}" if len(raw) >= 8 else ""):
         try:
             return datetime.fromisoformat(candidate).replace(tzinfo=UTC)
         except ValueError:
             pass
-    return datetime.now(UTC)
+    return None
 
 
 def _normalise_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
     """Normalize official V2 daily bars without renaming its raw fields."""
     for record in _records(payload):
+        timestamp = _timestamp(record.get("Date") or record.get("date"))
+        if timestamp is None:
+            continue
         # V2 returns compact field names (O/H/L/C/Vo/Va and Adj*) while a few
         # documented examples still show their expanded spellings.  Preserve
         # the official raw names and also expose stable normalized aliases.
@@ -168,7 +238,7 @@ def _normalise_records(payload: Any, context: MarketContext) -> Iterable[MarketI
         values = {key: value for key, value in aliases.items() if value is not None}
         yield MarketInformation(
             source="J-Quants", source_type="official_ohlcv", ticker=context.symbol,
-            timestamp=_timestamp(record.get("Date") or record.get("date")),
+            timestamp=timestamp,
             title="J-Quants V2 official daily OHLCV", content="Official JPX-derived daily market data.",
             confidence=0.98, verified=True, layer=InformationLayer.VERIFIED_FACT,
             content_level="structured_data",
@@ -178,26 +248,51 @@ def _normalise_records(payload: Any, context: MarketContext) -> Iterable[MarketI
 
 def _normalise_master_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
     for record in _records(payload):
+        timestamp = _timestamp(record.get("Date"))
+        if timestamp is None:
+            continue
         yield MarketInformation(
             source="J-Quants", source_type="official_security_master", ticker=context.symbol,
-            timestamp=_timestamp(record.get("Date")), title="J-Quants V2 listed security master",
+            timestamp=timestamp, title="J-Quants V2 listed security master",
             content="Official listed-security reference data.", confidence=0.98, verified=True,
             layer=InformationLayer.VERIFIED_FACT, content_level="structured_data",
-            metadata={"security_master": dict(record), "raw_code": record.get("Code"), "api_version": "v2"},
+            metadata={
+                "security_master": dict(record),
+                "raw_code": record.get("Code"),
+                "api_version": "v2",
+                "data_date": timestamp.date().isoformat(),
+                "published_at": None,
+                "freshness_status": "LATEST_AVAILABLE",
+                "freshness_basis": "latest source master record not after analysis_as_of",
+                "native_cadence": "SOURCE_UPDATE_DRIVEN",
+            },
         )
 
 
 def _normalise_financial_records(payload: Any, context: MarketContext) -> Iterable[MarketInformation]:
     for record in _records(payload):
+        timestamp = _timestamp(record.get("DiscDate"))
+        if timestamp is None:
+            continue
         period_type = str(record.get("CurPerType") or "")
         yield MarketInformation(
             source="J-Quants", source_type="official_financial_summary", ticker=context.symbol,
-            timestamp=_timestamp(record.get("DiscDate")),
+            timestamp=timestamp,
             title=f"J-Quants V2 financial summary ({period_type or 'period unavailable'})",
             content="Official disclosed financial-summary record; periods must be compared like-for-like.",
             confidence=0.98, verified=True, layer=InformationLayer.VERIFIED_FACT,
             content_level="structured_data",
-            metadata={"financial_summary": dict(record), "period_type": period_type, "raw_code": record.get("Code"), "api_version": "v2"},
+            metadata={
+                "financial_summary": dict(record),
+                "period_type": period_type,
+                "raw_code": record.get("Code"),
+                "api_version": "v2",
+                "data_date": timestamp.date().isoformat(),
+                "published_at": timestamp.date().isoformat(),
+                "freshness_status": "FRESHNESS_UNVERIFIED",
+                "freshness_basis": "raw summaries require fiscal-period selector before latest use",
+                "native_cadence": "EVENT_DRIVEN",
+            },
         )
 
 

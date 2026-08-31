@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from html import unescape
 from urllib.parse import urljoin, urlparse
@@ -56,6 +56,7 @@ def _empty_stats() -> dict[str, int]:
 
 class JapanNewsProvider:
     name, category, cache_version = "Japan News", "news", "public-jp-news-v2"
+    cache_requires_completed_window = True
 
     def __init__(self):
         self.enabled = bool(
@@ -117,7 +118,18 @@ class JapanNewsProvider:
             if item.timestamp.date() < start or item.timestamp.date() > end:
                 stats["filtered_time_window"] += 1
                 continue
-            items.append(item)
+            items.append(
+                replace(
+                    item,
+                    metadata={
+                        **item.metadata,
+                        "data_date": item.timestamp.date().isoformat(),
+                        "freshness_status": "LATEST_AVAILABLE",
+                        "freshness_basis": "explicit published_at inside requested news window",
+                        "native_cadence": "CONTINUOUS_EVENT_STREAM",
+                    },
+                )
+            )
         out = _dedup(items)
         details.append(
             "Reuters Japan=DATA_UNAVAILABLE:no licensed/public structured feed configured"

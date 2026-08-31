@@ -166,10 +166,18 @@ def _document_item(
     context: MarketContext, title: str, url: str, timestamp: datetime, text: str, extraction_status: str,
     *, status: DataStatus = DataStatus.OK, detail: str = "",
 ) -> MarketInformation:
+    explicit_date = bool(_DATE.search(f"{title} {url}") or _COMPACT_DATE.search(f"{title} {url}"))
     metadata = {
         "official_document": True,
         "document_downloaded": extraction_status not in {"PARSE_FAILED", "NOT_REQUESTED"},
         "extraction_detail": detail,
+        "data_date": timestamp.date().isoformat() if explicit_date else None,
+        "published_at": timestamp.date().isoformat() if explicit_date else None,
+        "freshness_status": "LATEST_AVAILABLE" if explicit_date else "FRESHNESS_UNVERIFIED",
+        "freshness_basis": "explicit date in official document title or URL"
+        if explicit_date
+        else "official document has no reliable publication date",
+        "native_cadence": "EVENT_DRIVEN",
         **structure_official_disclosure(
             title=title,
             text=text,
@@ -261,7 +269,7 @@ def _document_date(title: str, url: str, *, fallback: str) -> datetime:
     try:
         return datetime.fromisoformat(fallback).replace(tzinfo=UTC)
     except ValueError:
-        return datetime.now(UTC)
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def _date_score(value: str) -> int:

@@ -124,6 +124,23 @@ def test_edinet_only_keeps_matching_security_and_labels_large_holding():
     assert fields["position_change"] == "UNDETERMINED"
 
 
+@pytest.mark.unit
+def test_edinet_invalid_submit_timestamp_is_not_replaced_by_current_time():
+    payload = {
+        "results": [
+            {
+                "secCode": "69810",
+                "docID": "S100X",
+                "docDescription": "大量保有報告書",
+                "docTypeCode": "350",
+                "formCode": "010000",
+                "submitDateTime": "not-a-timestamp",
+            }
+        ]
+    }
+    assert list(_normalise_documents(payload, resolve_market_context("6981.T"))) == []
+
+
 def test_edinet_large_holding_pdf_fields_only_compare_explicit_ratios():
     text = """
     【提出者（大量保有者）】 氏名又は名称 ブラックロック・ジャパン株式会社 住所又は本店所在地 東京都
@@ -151,7 +168,7 @@ def test_edinet_position_change_is_undetermined_without_explicit_previous_ratio(
 
 @pytest.mark.unit
 def test_edinet_non_pdf_document_response_is_retained_as_parse_failed(monkeypatch):
-    payload = {"results": [{"secCode": "69810", "docID": "S100X", "docDescription": "大量保有報告書", "docTypeCode": "350", "formCode": "010000"}]}
+    payload = {"results": [{"secCode": "69810", "docID": "S100X", "docDescription": "大量保有報告書", "docTypeCode": "350", "formCode": "010000", "submitDateTime": "2026-08-12T10:00:00+09:00"}]}
     item = list(_normalise_documents(payload, resolve_market_context("6981.T")))[0]
 
     async def fake_get_bytes(*_args, **_kwargs):

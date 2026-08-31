@@ -28,7 +28,7 @@ def test_cross_market_never_claims_when_a_required_input_is_unavailable():
 
 
 def test_japan_macro_provider_emits_structured_context(monkeypatch):
-    async def markets():
+    async def markets(_):
         return {
             key: _value(100, "2026-08-13", "Yahoo Finance", "daily", [99, 100])
             for key in (
@@ -52,6 +52,12 @@ def test_japan_macro_provider_emits_structured_context(monkeypatch):
 
     monkeypatch.setattr("tradingagents.dataflows.japan.macro._market_snapshot", markets)
     monkeypatch.setattr("tradingagents.dataflows.japan.macro._fred_snapshot", series)
+    monkeypatch.setattr(
+        "tradingagents.dataflows.japan.macro._official_japan_snapshot",
+        lambda _end_date: __import__("asyncio").sleep(
+            0, result={"boj_policy": {"status": "DATA_UNAVAILABLE"}}
+        ),
+    )
     result = asyncio.run(
         JapanMacroProvider().fetch(
             resolve_market_context("6981.T"), start_date="2026-08-01", end_date="2026-08-13"

@@ -46,7 +46,8 @@ def collect_japan_data_bundle(
         }
     try:
         official_days = _official_event_days(trading_horizon)
-        official_start_date = end_date - timedelta(days=official_days)
+        financial_official_scan_days = max(31, official_days)
+        official_start_date = end_date - timedelta(days=financial_official_scan_days - 1)
         bundle = asyncio.run(
             JapanDataService(build_official_japan_providers()).collect(
                 context,
@@ -73,6 +74,7 @@ def collect_japan_data_bundle(
             "trading_horizon": trading_horizon,
             "window_policy": {
                 "official_catalyst_days": official_days,
+                "financial_official_scan_days": financial_official_scan_days,
                 "news_days": 7,
                 "sentiment_days": 7,
                 "supply_demand_days": 20,
@@ -103,7 +105,17 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
     official = [
         item
         for item in items
-        if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}
+        if item.get("source") in {"TDnet", "EDINET"}
+        or (
+            item.get("source") == "Company IR"
+            and (item.get("metadata") or {}).get("freshness_status")
+            != "FRESHNESS_UNVERIFIED"
+        )
+        or (
+            item.get("source") == "J-Quants"
+            and item.get("source_type")
+            in {"official_ohlcv", "official_security_master"}
+        )
     ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
@@ -290,7 +302,17 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     official = [
         item
         for item in items
-        if item.get("source") in {"TDnet", "Company IR", "EDINET", "J-Quants"}
+        if item.get("source") in {"TDnet", "EDINET"}
+        or (
+            item.get("source") == "Company IR"
+            and (item.get("metadata") or {}).get("freshness_status")
+            != "FRESHNESS_UNVERIFIED"
+        )
+        or (
+            item.get("source") == "J-Quants"
+            and item.get("source_type")
+            in {"official_ohlcv", "official_security_master"}
+        )
     ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
@@ -326,6 +348,8 @@ def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> li
     lines = []
     for item in items[:20]:
         prefix = f"- [{item.get('source', 'Unknown')}] {item.get('timestamp', '')}: {item.get('title', '')}"
+        if item.get("status") and item.get("status") != "OK":
+            prefix += f" [status={item['status']}]"
         if item.get("url"):
             prefix += f" ({item['url']})"
         if include_metadata and item.get("metadata"):

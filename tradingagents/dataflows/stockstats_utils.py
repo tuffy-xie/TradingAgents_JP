@@ -117,6 +117,22 @@ def _assert_ohlcv_not_stale(
     if dates.empty:
         return
     latest = dates.max().normalize()
+    resolved = canonical or normalize_symbol(symbol)
+    if resolved.upper().endswith(".T"):
+        from tradingagents.dataflows.japan.trading_calendar import (
+            latest_japan_trading_day,
+        )
+
+        expected = pd.Timestamp(latest_japan_trading_day(requested.date()))
+        if latest != expected:
+            relation = "future" if latest > expected else "stale"
+            raise NoMarketDataError(
+                symbol,
+                resolved,
+                f"latest row is {latest.date()}, expected the latest completed "
+                f"TSE session {expected.date()} ({relation}) — refusing to use it",
+            )
+        return
     stale_days = (requested - latest).days
     if stale_days > max_stale_days:
         raise NoMarketDataError(
