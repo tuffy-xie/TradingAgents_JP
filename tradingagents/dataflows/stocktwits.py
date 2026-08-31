@@ -17,6 +17,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+from datetime import UTC, datetime, timedelta
 from urllib.request import Request, urlopen
 
 from .symbol_utils import crypto_base
@@ -38,7 +39,14 @@ def _stocktwits_symbol(ticker: str) -> str:
     return f"{base}.X" if base else ticker.strip().upper()
 
 
-def fetch_stocktwits_messages(ticker: str, limit: int = 30, timeout: float = 10.0) -> str:
+def fetch_stocktwits_messages(
+    ticker: str,
+    limit: int = 30,
+    timeout: float = 10.0,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> str:
     """Fetch recent StockTwits messages for ``ticker`` and return them as a
     formatted plaintext block ready for prompt injection.
 
@@ -65,6 +73,10 @@ def fetch_stocktwits_messages(ticker: str, limit: int = 30, timeout: float = 10.
     bullish = bearish = unlabeled = 0
     for m in messages[:limit]:
         created = m.get("created_at", "")
+        if (start_date is not None or end_date is not None) and not _inside_explicit_window(
+            created, start_date, end_date
+        ):
+            continue
         user = (m.get("user") or {}).get("username", "?")
         entities = m.get("entities") or {}
         sentiment_obj = entities.get("sentiment") or {}
@@ -85,6 +97,11 @@ def fetch_stocktwits_messages(ticker: str, limit: int = 30, timeout: float = 10.
         lines.append(f"[{created} · @{user} · {tag}] {body}")
 
     total = bullish + bearish + unlabeled
+    if total == 0:
+        return (
+            f"<no timestamped StockTwits messages for ${ticker.upper()} "
+            "inside the requested analysis window>"
+        )
     bull_pct = round(100 * bullish / total) if total else 0
     bear_pct = round(100 * bearish / total) if total else 0
     summary = (
@@ -94,3 +111,25 @@ def fetch_stocktwits_messages(ticker: str, limit: int = 30, timeout: float = 10.
         f"Total: {total} most-recent messages"
     )
     return summary + "\n\n" + "\n".join(lines)
+
+
+def _inside_explicit_window(
+    value: str, start_date: str | None, end_date: str | None
+) -> bool:
+    """Require a real timestamp when an as-of window is requested."""
+    try:
+        observed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        observed = observed if observed.tzinfo else observed.replace(tzinfo=UTC)
+        start = (
+            datetime.fromisoformat(start_date).replace(tzinfo=UTC)
+            if start_date
+            else datetime.min.replace(tzinfo=UTC)
+        )
+        end = (
+            datetime.fromisoformat(end_date).replace(tzinfo=UTC) + timedelta(days=1)
+            if end_date
+            else datetime.max.replace(tzinfo=UTC)
+        )
+    except (TypeError, ValueError):
+        return False
+    return start <= observed.astimezone(UTC) < end

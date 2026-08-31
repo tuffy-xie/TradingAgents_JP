@@ -70,8 +70,18 @@ def create_sentiment_analyst(llm):
         # sentiment is supplemental context, not a replacement for the
         # existing Yahoo/StockTwits/Reddit path.
         news_block = get_news.func(ticker, start_date, end_date)
-        stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-        reddit_block = fetch_reddit_posts(ticker)
+        is_japan = (state.get("market_context") or {}).get("market") == "JP"
+        if is_japan:
+            stocktwits_block = fetch_stocktwits_messages(
+                ticker, limit=30, start_date=start_date, end_date=end_date
+            )
+            reddit_block = fetch_reddit_posts(
+                ticker, start_date=start_date, end_date=end_date
+            )
+        else:
+            # Preserve the original US path byte-for-byte.
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+            reddit_block = fetch_reddit_posts(ticker)
         system_message = _build_system_message(
             ticker=ticker,
             start_date=start_date,
@@ -80,7 +90,7 @@ def create_sentiment_analyst(llm):
             stocktwits_block=stocktwits_block,
             reddit_block=reddit_block,
         )
-        if (state.get("market_context") or {}).get("market") == "JP":
+        if is_japan:
             system_message += "\n\n" + _build_japan_system_message(
                 ticker, start_date, end_date, japan_data_context
             )

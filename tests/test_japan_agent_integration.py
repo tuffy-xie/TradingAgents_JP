@@ -5,7 +5,12 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from tradingagents.agents.utils.agent_utils import get_japan_data_context_from_state
-from tradingagents.dataflows.japan.context import render_japan_report_sections
+from tradingagents.dataflows.japan.context import (
+    collect_japan_data_bundle,
+    render_japan_report_sections,
+)
+from tradingagents.dataflows.japan.models import JapanResearchBundle
+from tradingagents.dataflows.market import resolve_market_context
 from tradingagents.graph.propagation import Propagator
 from tradingagents.reporting import write_report_tree
 
@@ -60,8 +65,18 @@ def test_japan_sentiment_prompt_appends_to_original_community_sources(monkeypatc
     from tradingagents.agents.analysts import sentiment_analyst as module
     from tradingagents.agents.schemas import SentimentBand, SentimentReport
 
-    monkeypatch.setattr(module, "fetch_stocktwits_messages", lambda *_args, **_kwargs: "StockTwits sample")
-    monkeypatch.setattr(module, "fetch_reddit_posts", lambda *_args, **_kwargs: "Reddit sample")
+    social_calls = {}
+
+    def stocktwits(*args, **kwargs):
+        social_calls["stocktwits"] = (args, kwargs)
+        return "StockTwits sample"
+
+    def reddit(*args, **kwargs):
+        social_calls["reddit"] = (args, kwargs)
+        return "Reddit sample"
+
+    monkeypatch.setattr(module, "fetch_stocktwits_messages", stocktwits)
+    monkeypatch.setattr(module, "fetch_reddit_posts", reddit)
     monkeypatch.setattr(module.get_news, "func", lambda *_args, **_kwargs: "Yahoo news sample")
     captured = {}
     structured = MagicMock()
@@ -83,3 +98,76 @@ def test_japan_sentiment_prompt_appends_to_original_community_sources(monkeypatc
     assert "StockTwits messages" in prompt_text
     assert "Reddit posts" in prompt_text
     assert "Yahoo news sample" in prompt_text
+    assert social_calls["stocktwits"] == (
+        ("6981.T",),
+        {"limit": 30, "start_date": "2026-08-06", "end_date": "2026-08-13"},
+    )
+    assert social_calls["reddit"] == (
+        ("6981.T",),
+        {"start_date": "2026-08-06", "end_date": "2026-08-13"},
+    )
+
+
+def test_us_sentiment_preload_call_contract_is_unchanged(monkeypatch):
+    from tradingagents.agents.analysts import sentiment_analyst as module
+    from tradingagents.agents.schemas import SentimentBand, SentimentReport
+
+    social_calls = {}
+
+    def stocktwits(*args, **kwargs):
+        social_calls["stocktwits"] = (args, kwargs)
+        return "StockTwits sample"
+
+    def reddit(*args, **kwargs):
+        social_calls["reddit"] = (args, kwargs)
+        return "Reddit sample"
+
+    monkeypatch.setattr(module, "fetch_stocktwits_messages", stocktwits)
+    monkeypatch.setattr(module, "fetch_reddit_posts", reddit)
+    monkeypatch.setattr(module.get_news, "func", lambda *_args, **_kwargs: "Yahoo news sample")
+    structured = MagicMock()
+    structured.invoke.return_value = SentimentReport(
+        overall_band=SentimentBand.NEUTRAL,
+        overall_score=5,
+        confidence="low",
+        narrative="No verified evidence",
+    )
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+
+    state = Propagator().create_initial_state("NVDA", "2026-08-13")
+    module.create_sentiment_analyst(llm)(state)
+
+    assert social_calls["stocktwits"] == (("NVDA",), {"limit": 30})
+    assert social_calls["reddit"] == (("NVDA",), {})
+
+
+def test_financial_official_scan_is_not_shortened_by_trading_horizon(monkeypatch):
+    captured = {}
+
+    async def collect(_self, _context, *, start_date, end_date, provider_start_dates):
+        captured.update(
+            start_date=start_date,
+            end_date=end_date,
+            provider_start_dates=provider_start_dates,
+        )
+        return JapanResearchBundle("5016.T", (), ())
+
+    monkeypatch.setattr(
+        "tradingagents.dataflows.japan.context.JapanDataService.collect", collect
+    )
+    monkeypatch.setattr(
+        "tradingagents.dataflows.japan.context.build_official_japan_providers", tuple
+    )
+
+    bundle = collect_japan_data_bundle(
+        resolve_market_context("5016.T"), "2026-08-30", "multi_day"
+    )
+
+    assert captured["start_date"] == "2026-08-23"
+    assert captured["provider_start_dates"] == {
+        "TDnet": "2026-07-31",
+        "Company IR": "2026-07-31",
+    }
+    assert bundle["window_policy"]["official_catalyst_days"] == 14
+    assert bundle["window_policy"]["financial_official_scan_days"] == 31

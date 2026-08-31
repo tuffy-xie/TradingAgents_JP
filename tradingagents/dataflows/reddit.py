@@ -26,7 +26,7 @@ import time
 import xml.etree.ElementTree as ET
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -264,6 +264,9 @@ def fetch_reddit_posts(
     limit_per_sub: int = 5,
     timeout: float = 10.0,
     inter_request_delay: float = 1.0,
+    *,
+    start_date: str | None = None,
+    end_date: str | None = None,
 ) -> str:
     """Fetch recent Reddit posts mentioning ``ticker`` across finance
     subreddits and return them as a formatted plaintext block.
@@ -288,10 +291,15 @@ def fetch_reddit_posts(
             "community attention, or sentiment direction from this source."
         )
 
+    posts_in_window = [
+        post
+        for post in result.posts
+        if _reddit_post_in_window(post, start_date, end_date)
+    ]
     blocks = []
-    total_posts = result.sample_count or 0
+    total_posts = len(posts_in_window)
     by_subreddit = {sub: [] for sub in subreddits}
-    for post in result.posts:
+    for post in posts_in_window:
         # RSS entries do not carry the subreddit; display all successful data
         # as a single verified sample block rather than fabricating allocation.
         by_subreddit.setdefault("successful search", []).append(post)
@@ -331,3 +339,28 @@ def fetch_reddit_posts(
             f"{', '.join(f'r/{s}' for s in subreddits)} in the past 7 days>"
         )
     return "\n\n".join(blocks)
+
+
+def _reddit_post_in_window(
+    post: dict, start_date: str | None, end_date: str | None
+) -> bool:
+    if start_date is None and end_date is None:
+        return True
+    created = post.get("created_utc")
+    if created is None:
+        return False
+    try:
+        observed = datetime.fromtimestamp(float(created), tz=UTC)
+        start = (
+            datetime.fromisoformat(start_date).replace(tzinfo=UTC)
+            if start_date
+            else datetime.min.replace(tzinfo=UTC)
+        )
+        end = (
+            datetime.fromisoformat(end_date).replace(tzinfo=UTC) + timedelta(days=1)
+            if end_date
+            else datetime.max.replace(tzinfo=UTC)
+        )
+    except (OSError, TypeError, ValueError):
+        return False
+    return start <= observed < end

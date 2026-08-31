@@ -69,7 +69,7 @@ def _extract_article_data(article: dict) -> dict:
         }
 
 
-def _in_news_window(pub_date, start_dt, end_dt) -> bool:
+def _in_news_window(pub_date, start_dt, end_dt, *, allow_undated_live: bool = True) -> bool:
     """Whether an article belongs in the half-open window ``[start, end + 1 day)``.
 
     Every operand is normalized to UTC, and the upper bound is exclusive so an
@@ -81,7 +81,7 @@ def _in_news_window(pub_date, start_dt, end_dt) -> bool:
     end = _as_utc(end_dt)
     if pub_date is not None:
         return _as_utc(start_dt) <= _as_utc(pub_date) < end + timedelta(days=1)
-    return end >= datetime.now(timezone.utc) - timedelta(days=1)
+    return allow_undated_live and end >= datetime.now(timezone.utc) - timedelta(days=1)
 
 
 def get_news_yfinance(
@@ -124,7 +124,12 @@ def get_news_yfinance(
             data = _extract_article_data(article)
 
             # Keep only articles within the requested window (look-ahead safe).
-            if not _in_news_window(data["pub_date"], start_dt, end_dt):
+            if not _in_news_window(
+                data["pub_date"],
+                start_dt,
+                end_dt,
+                allow_undated_live=not canonical.upper().endswith(".T"),
+            ):
                 continue
 
             news_str += f"### {data['title']} (source: {data['publisher']})\n"
