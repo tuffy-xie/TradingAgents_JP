@@ -33,6 +33,14 @@ class TestParseRating:
     def test_explicit_label_with_markdown_bold_label(self):
         assert parse_rating("**Rating**: Underweight\nTrim exposure.") == "Underweight"
 
+    def test_chinese_rating_label_wins_over_later_negative_example(self):
+        text = (
+            "## 最终交易决策——评级：Hold（持有/观望）\n"
+            "**不 Sell / 不做空的原因：** 基本面改善。"
+        )
+
+        assert parse_rating(text) == "Hold"
+
     def test_rendered_pm_markdown_shape(self):
         # The exact shape produced by render_pm_decision must always parse.
         text = (

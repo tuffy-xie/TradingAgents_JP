@@ -36,7 +36,8 @@ _UNAVAILABLE_REDDIT = re.compile(
     re.I,
 )
 _UNVERIFIED_MARKET = re.compile(
-    r"(?:price|行情|价格|technical|indicator|技术指标)[^\n。！？;]*(?:unverified|not independently verified|无法验证|没有独立工具验证)",
+    r"(?:price|行情|价格|价位|technical|indicator|技术指标|ATR)[^\n。！？;]*"
+    r"(?:unverified|not independently verified|无法验证|没有独立工具验证|缺少上游(?:数据|证据)?(?:支持|验证))",
     re.I,
 )
 _UNVERIFIED_NEWS = re.compile(
@@ -44,7 +45,8 @@ _UNVERIFIED_NEWS = re.compile(
     re.I,
 )
 _SHORT_ABSENCE_OVERCLAIM = re.compile(
-    r"(?:no\s+(?:reportable\s+)?short(?:s| interest)?|没有(?:机构)?做空|无空头|空头(?:全部)?(?:死光|出清)|没有做空压力)",
+    r"(?:no\s+(?:reportable\s+)?short(?:s| interest)?|没有(?:机构)?做空|无空头|"
+    r"空头(?:全部)?(?:死光|出清)|(?:没有|未见)(?:融券[/／])?做空压力(?:累积)?)",
     re.I,
 )
 _HISTORY_AS_SIGNAL = re.compile(
@@ -58,6 +60,11 @@ _CURRENT_QUARTER_CONVICTION = re.compile(
 _OKU_VALUE = re.compile(r"([\d,]+(?:\.\d+)?)\s*(?:億円|亿元|亿)")
 _EXECUTION_INPUT = re.compile(
     r"(?:\*\*Entry Price\*\*|\*\*Stop Loss\*\*|\*\*Position Sizing\*\*|entry|stop(?:[ -]?loss)?|position sizing|入场|止损|仓位)",
+    re.I,
+)
+_COLLAPSED_PROVENANCE = re.compile(
+    r"(?:以下(?:数据|事实|证据).*均来自.*VERIFIED_TOOL_OUTPUT|"
+    r"all\s+(?:data|facts|evidence).*VERIFIED_TOOL_OUTPUT)",
     re.I,
 )
 
@@ -94,6 +101,12 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     warnings: list[str] = []
 
     def clean_clause(clause: str) -> str:
+        if _COLLAPSED_PROVENANCE.search(clause):
+            warnings.append("collapsed_provenance_types")
+            return (
+                "【来源约束：各事实保留 Evidence Registry 中各自的来源类型；行情/新闻工具事实为 "
+                "VERIFIED_TOOL_OUTPUT，财务事实为 VERIFIED_FINANCIAL_AUTHORITY，不得合并改写。】"
+            )
         if _UNVERIFIED_MARKET.search(clause) and _has_verified_domain(state, "MARKET"):
             warnings.append("verified_market_fact_downgraded")
             return "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】"
@@ -377,6 +390,7 @@ def _audit_category(warning: str) -> str:
         "short_absence_overclaim",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
+        "collapsed_provenance_types",
     }:
         return "SEMANTIC_MISMATCH"
     if warning in {"verified_market_fact_downgraded", "verified_news_fact_downgraded"}:
@@ -406,7 +420,8 @@ def _normalise_number(token: str) -> str:
 
 def _replace_unsupported(clause: str, permitted: frozenset[str] | set[str]) -> str:
     """Downgrade the complete unsupported claim so prose remains readable."""
-    del permitted
+    if "|" in clause:
+        return _redact_unsupported_table_values(clause, permitted)
     if _CURRENT_PRICE.search(clause):
         return "当前价格仅以已验证行情快照为准；本句未获支持的精确价格不纳入判断。"
     if _GUIDANCE.search(clause):
@@ -416,3 +431,21 @@ def _replace_unsupported(clause: str, permitted: frozenset[str] | set[str]) -> s
     if _CURRENT_WORD.search(clause):
         return "该项数据并非当前口径，已不作为当前判断依据。"
     return "该精确数值缺少上游证据支持，已不纳入本项判断。"
+
+
+def _redact_unsupported_table_values(
+    clause: str, permitted: frozenset[str] | set[str]
+) -> str:
+    """Keep supported cells visible while fail-closing unsupported table cells.
+
+    Replacing an entire Markdown row because one comparison value was absent
+    previously hid verified current-quarter Actual and Guidance values.  This
+    keeps only exact source-backed numbers and marks every other numeric token
+    unavailable; it does not infer or recalculate a replacement value.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        token = _normalise_number(match.group(0))
+        return match.group(0) if token in permitted else "DATA_UNAVAILABLE"
+
+    return _NUMBER.sub(replace, clause)

@@ -80,6 +80,7 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
             result = capture_agent_evidence(state, result, name)
             combined_state = {**state, **result} if isinstance(state, dict) else result
             result = enforce_agent_result(combined_state, result, name)
+            result = _append_authoritative_financial_context(state, result, name)
             result = _apply_execution_authority(state, result, name)
         logger.info(
             "[Agent] complete name=%s ticker=%s elapsed_seconds=%.2f",
@@ -87,6 +88,33 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
         )
         return result
     return observed
+
+
+def _append_authoritative_financial_context(
+    state: dict[str, Any], result: dict[str, Any], agent_name: str
+) -> dict[str, Any]:
+    """Keep normalized JP financial facts exact in the Fundamentals handoff.
+
+    The LLM report may summarize or round values.  Appending the existing
+    deterministic renderer after evidence enforcement guarantees downstream
+    agents also receive the exact gated values, statuses, units, and
+    provenance.  No other analyst or US path receives this section.
+    """
+    if agent_name != "Fundamentals Analyst":
+        return result
+    if (state.get("market_context") or {}).get("market") != "JP":
+        return result
+    report = result.get("fundamentals_report")
+    if not isinstance(report, str) or not report.strip():
+        return result
+    from tradingagents.dataflows.japan.context import render_japan_financial_context
+
+    authority = render_japan_financial_context(state)
+    if not authority or authority in report:
+        return result
+    updated = dict(result)
+    updated["fundamentals_report"] = report.rstrip() + "\n\n---\n\n" + authority
+    return updated
 
 
 def _apply_execution_authority(

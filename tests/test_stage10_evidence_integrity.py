@@ -12,6 +12,7 @@ from tradingagents.agents.analysts import sentiment_analyst as sentiment_module
 from tradingagents.agents.schemas import SentimentBand, SentimentReport
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
 from tradingagents.agents.utils.evidence_registry import (
+    build_run_manifest,
     capture_agent_evidence,
     initialize_evidence_registry,
     render_downstream_evidence_context,
@@ -96,6 +97,29 @@ def test_market_tool_fact_keeps_verified_identity_downstream():
     assert "verified_market_fact_downgraded" in guarded.warnings
 
 
+def test_market_tool_fact_cannot_be_relabelled_as_missing_upstream_support():
+    state = _jp_state(
+        evidence_registry=[
+            {
+                "domain": "MARKET",
+                "verification_status": "VERIFIED_TOOL_OUTPUT",
+                "allowed_for_current_decision": True,
+                "claim_type": "FACT",
+                "value": "Close 4020 ATR 319.3",
+            }
+        ]
+    )
+
+    guarded = enforce_agent_output(
+        state,
+        "这些技术价位缺少上游数据验证，因此只能来自辩论。",
+        "Portfolio Manager",
+    )
+
+    assert "verified_market_fact_downgraded" in guarded.warnings
+    assert "Market 工具验证" in guarded.text
+
+
 def test_news_tool_fact_keeps_provenance_and_unsupported_claim_is_audited():
     tool = ToolMessage(
         content="FRED series observation dated 2026-08-28",
@@ -139,6 +163,18 @@ def test_evidence_audit_is_nonempty_from_run_initialization():
     assert registry
     assert audit[0]["category"] == "SUPPORTED_FACT"
     assert audit[0]["supported_count"] == 1
+
+
+def test_run_manifest_discloses_worktree_state_without_secrets():
+    manifest = build_run_manifest(
+        analysis_as_of="2026-08-31",
+        market_context={"market": "JP", "symbol": "5801.T"},
+        config={"max_debate_rounds": 1},
+    )
+
+    assert manifest["git_head"]
+    assert manifest["git_dirty"] in {True, False}
+    assert "api_key" not in str(manifest).lower()
 
 
 def test_stale_jsf_is_historical_only_not_current_directional_evidence():
@@ -246,6 +282,17 @@ def test_guidance_consensus_vendor_forward_are_semantically_distinct():
     assert "不同语义" in mixed.text
 
 
+def test_financial_authority_cannot_be_collapsed_into_generic_tool_provenance():
+    result = enforce_agent_output(
+        _jp_state(),
+        "以下数据均来自 VERIFIED_TOOL_OUTPUT，可直接作为决策依据。",
+        "Portfolio Manager",
+    )
+
+    assert "collapsed_provenance_types" in result.warnings
+    assert "VERIFIED_FINANCIAL_AUTHORITY" in result.text
+
+
 def test_million_yen_unit_conversion_is_deterministic():
     assert million_jpy_to_oku(52_126) == Decimal("521.26")
     assert million_jpy_to_oku(31_066) == Decimal("310.66")
@@ -289,6 +336,38 @@ def test_no_reportable_short_row_does_not_mean_no_shorts():
     )
     assert "short_absence_overclaim" in result.warnings
     assert "无申报记录不代表不存在空头" in result.text
+
+
+def test_low_lending_balance_cannot_become_no_short_pressure_claim():
+    result = enforce_agent_output(
+        _jp_state(), "贷株余额很低，因此未见融券/做空压力累积。", "Market Analyst"
+    )
+
+    assert "short_absence_overclaim" in result.warnings
+    assert "无申报记录不代表不存在空头" in result.text
+
+
+def test_unsupported_comparison_does_not_hide_verified_actual_table_value():
+    state = _jp_state(
+        evidence_registry=[
+            {
+                "claim_type": "FACT",
+                "value": 365221,
+                "allowed_for_current_decision": True,
+            }
+        ]
+    )
+
+    result = enforce_agent_output(
+        state,
+        "| Revenue | 365,221 | 293,700 | +24% |",
+        "Fundamentals Analyst",
+    )
+
+    assert "365,221" in result.text
+    assert "293,700" not in result.text
+    assert "+24%" not in result.text
+    assert "DATA_UNAVAILABLE" in result.text
 
 
 def test_sentiment_unavailable_does_not_become_neutral_or_score(monkeypatch):
@@ -393,6 +472,81 @@ def test_financial_document_is_only_in_fundamentals_audience():
     assert "Latest Actual" not in sentiment
     assert "Latest Actual" not in downstream
     assert "Q1 results" not in sentiment
+
+
+def test_fundamentals_handoff_appends_exact_authority_values_after_llm_text():
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [],
+            "provider_metadata": {
+                "Japan Financial Authority": {
+                    "analysis_as_of": "2026-08-31",
+                    "actual": {
+                        "status": "OK",
+                        "freshness": "CURRENT_OFFICIAL",
+                        "selected_disclosure_date": "2026-08-06",
+                        "critical_gate": {"status": "OK"},
+                        "document": {
+                            "source": "TDnet",
+                            "source_type": "OFFICIAL",
+                            "records": [
+                                {
+                                    "record_type": "ACTUAL",
+                                    "period_type": "Q1",
+                                    "target_period_end": "2027-03-31",
+                                    "accounting_standard": "J_GAAP",
+                                    "scope": "CONSOLIDATED",
+                                    "metrics": {
+                                        "revenue": {
+                                            "status": "OK",
+                                            "value": 365221,
+                                            "unit": "百万円",
+                                        }
+                                    },
+                                }
+                            ],
+                        },
+                    },
+                    "guidance": {"status": "NOT_PROVIDED"},
+                }
+            },
+        }
+    )
+    observed = _observe_agent_node(
+        "Fundamentals Analyst",
+        lambda _state: {"fundamentals_report": "LLM summary rounded revenue."},
+        provider="test",
+        timeout=1,
+        retries=0,
+    )
+
+    report = observed(state)["fundamentals_report"]
+    assert "LLM summary rounded revenue." in report
+    assert "Japan financial authority assessment" in report
+    assert "Revenue: 365221 百万円" in report
+
+
+def test_non_fundamentals_handoff_never_appends_financial_authority_section():
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [],
+            "provider_metadata": {
+                "Japan Financial Authority": {
+                    "actual": {"status": "INSUFFICIENT_DATA"},
+                    "guidance": {"status": "NOT_PROVIDED"},
+                }
+            },
+        }
+    )
+    observed = _observe_agent_node(
+        "News Analyst",
+        lambda _state: {"news_report": "News report."},
+        provider="test",
+        timeout=1,
+        retries=0,
+    )
+
+    assert "Japan financial authority assessment" not in observed(state)["news_report"]
 
 
 def test_us_observer_behavior_remains_byte_for_byte():

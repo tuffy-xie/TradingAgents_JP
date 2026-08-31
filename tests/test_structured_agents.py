@@ -395,7 +395,20 @@ class TestSentimentAnalystAgent:
         create_sentiment_analyst(_structured_sentiment_llm(captured))(_make_sentiment_state())
         assert any("NVDA" in str(m) for m in captured["prompt"])
 
-    def test_falls_back_to_freetext_when_structured_unavailable(self):
+    def test_falls_back_to_freetext_when_structured_unavailable(self, monkeypatch):
+        monkeypatch.setattr(
+            sentiment_module,
+            "fetch_stocktwits_messages",
+            lambda *a, **k: "<stocktwits unavailable>",
+        )
+        monkeypatch.setattr(
+            sentiment_module,
+            "fetch_reddit_posts",
+            lambda *a, **k: "<reddit status=FETCH_FAILED; sample_count=UNKNOWN>",
+        )
+        monkeypatch.setattr(
+            sentiment_module.get_news, "func", lambda *a, **k: "<news unavailable>"
+        )
         plain = "**Overall Sentiment:** **Bearish** (Score: 3.0/10)\n**Confidence:** Low\n\nLimited data."
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")

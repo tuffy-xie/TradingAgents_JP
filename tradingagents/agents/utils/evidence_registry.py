@@ -73,6 +73,7 @@ def build_run_manifest(
         "run_id": str(uuid.uuid4()),
         "git_head": head,
         "git_branch": branch,
+        "git_dirty": _git_dirty(repo),
         "analysis_as_of": str(analysis_as_of),
         "runtime_timestamp_jst": datetime.now(_JST).isoformat(),
         "cache_contract_versions": {
@@ -220,11 +221,17 @@ def render_downstream_evidence_context(state: Mapping[str, Any]) -> str:
         item
         for item in entries
         if isinstance(item, Mapping)
-        and item.get("source_type") in {"TOOL_OUTPUT", "ANALYST_REPORT"}
+        and (
+            item.get("source_type") in {"TOOL_OUTPUT", "ANALYST_REPORT"}
+            or item.get("verification_status") == "VERIFIED_FINANCIAL_AUTHORITY"
+        )
     ][-30:]
     lines = [
         "## Internal evidence continuity (JP; analyst handoff metadata)",
         "Verified tool facts remain verified downstream. Do not call them unverified merely because they are quoted through an Analyst report.",
+        "Market Analyst numbers sourced from get_stock_data/get_indicators remain VERIFIED_TOOL_OUTPUT; cite that ownership instead of calling them debate-only or unverified.",
+        "News Analyst facts sourced from named tools retain those tool sources; unsupported prose remains inference and is not hard evidence.",
+        "Financial metrics retain VERIFIED_FINANCIAL_AUTHORITY with their TDnet/Company IR/EDINET DB source; they are not generic tool output.",
         "COMPANY_GUIDANCE, ANALYST_CONSENSUS, and VENDOR_FORWARD_ESTIMATE are distinct semantic types.",
         "STALE/HISTORICAL_ONLY evidence may be dated background but is prohibited as current directional evidence.",
     ]
@@ -436,3 +443,19 @@ def _git_value(repo: Path, *args: str) -> str | None:
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() or None
+
+
+def _git_dirty(repo: Path) -> bool | None:
+    """Record uncommitted state so a manifest never overstates its HEAD."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return bool(result.stdout.strip())

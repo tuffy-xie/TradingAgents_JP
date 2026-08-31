@@ -22,7 +22,10 @@ _RATING_SET = {r.lower() for r in RATINGS_5_TIER}
 
 # Matches "Rating: X" / "rating - X" / "Rating: **X**" — tolerates markdown
 # bold wrappers and either a colon or hyphen separator.
-_RATING_LABEL_RE = re.compile(r"rating.*?[:\-][\s*]*(\w+)", re.IGNORECASE)
+_RATING_LABEL_RE = re.compile(
+    r"(?:rating|评级).*?[:：\-—][\s*]*(buy|overweight|hold|underweight|sell)",
+    re.IGNORECASE,
+)
 
 
 def parse_rating(text: str, default: str = "Hold") -> str:
