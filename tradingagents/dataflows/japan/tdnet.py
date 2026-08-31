@@ -68,7 +68,11 @@ class TDnetProvider:
         if self.feed_url:
             return await self._fetch_authorised_feed(context, start_date, end_date)
 
-        days = _date_range(start_date, end_date, maximum_days=31)
+        # The financial-authority scan uses a 32-day inclusive window so a
+        # prior month-end structured disclosure remains inside official
+        # coverage on a month-end analysis date.  This is still tightly
+        # bounded and each day retains the independent page safety cap.
+        days = _date_range(start_date, end_date, maximum_days=32)
         if not days:
             return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
         page_semaphore = asyncio.Semaphore(max(1, self.page_concurrency))

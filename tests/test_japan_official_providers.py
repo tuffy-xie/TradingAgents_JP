@@ -26,12 +26,22 @@ from tradingagents.dataflows.japan.jsf import (
 from tradingagents.dataflows.japan.models import DataStatus
 from tradingagents.dataflows.japan.tdnet import (
     TDnetProvider,
+    _date_range,
     _parse_public_list,
     classify_tdnet_title,
     normalise_tdnet_records,
     structure_official_disclosure,
 )
 from tradingagents.dataflows.market import resolve_market_context
+
+
+@pytest.mark.unit
+def test_tdnet_financial_window_retains_prior_month_end_disclosure_date():
+    days = _date_range("2026-07-31", "2026-08-31", maximum_days=32)
+
+    assert len(days) == 32
+    assert days[0].isoformat() == "2026-07-31"
+    assert days[-1].isoformat() == "2026-08-31"
 
 
 @pytest.mark.unit

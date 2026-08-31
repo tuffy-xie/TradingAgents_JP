@@ -46,7 +46,11 @@ def collect_japan_data_bundle(
         }
     try:
         official_days = _official_event_days(trading_horizon)
-        financial_official_scan_days = max(31, official_days)
+        # Keep the latest month-end disclosure itself inside the verified
+        # official window for every 31-day analysis interval.  A 31-day
+        # inclusive window can begin one day after a July 31 disclosure on an
+        # August 31 run, leaving same-day official updates unverified.
+        financial_official_scan_days = max(32, official_days)
         official_start_date = end_date - timedelta(days=financial_official_scan_days - 1)
         bundle = asyncio.run(
             JapanDataService(build_official_japan_providers()).collect(

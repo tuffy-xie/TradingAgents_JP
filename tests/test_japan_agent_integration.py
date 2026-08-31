@@ -167,8 +167,8 @@ def test_financial_official_scan_is_not_shortened_by_trading_horizon(monkeypatch
 
     assert captured["start_date"] == "2026-08-23"
     assert captured["provider_start_dates"] == {
-        "TDnet": "2026-07-31",
-        "Company IR": "2026-07-31",
+        "TDnet": "2026-07-30",
+        "Company IR": "2026-07-30",
     }
     assert bundle["window_policy"]["official_catalyst_days"] == 14
-    assert bundle["window_policy"]["financial_official_scan_days"] == 31
+    assert bundle["window_policy"]["financial_official_scan_days"] == 32
