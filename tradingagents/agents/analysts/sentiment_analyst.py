@@ -24,6 +24,7 @@ See: https://github.com/TauricResearch/TradingAgents/issues/557
 See: https://github.com/TauricResearch/TradingAgents/issues/796
 """
 
+import re
 from datetime import datetime, timedelta
 
 from langchain_core.messages import AIMessage
@@ -32,7 +33,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_sentiment_context_from_state,
     get_language_instruction,
     get_news,
 )
@@ -64,7 +65,7 @@ def create_sentiment_analyst(llm):
         end_date = state["trade_date"]
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_sentiment_context_from_state(state)
 
         # Keep the original sentiment preload for every market. Japan
         # sentiment is supplemental context, not a replacement for the
@@ -122,17 +123,30 @@ def create_sentiment_analyst(llm):
         # data is already in the prompt.
         formatted_messages = prompt.format_messages(messages=state["messages"])
 
-        report_text = invoke_structured_or_freetext(
-            structured_llm,
-            llm,
-            formatted_messages,
-            render_sentiment_report,
-            "Sentiment Analyst",
-        )
+        if is_japan and not _has_real_social_sample(stocktwits_block, reddit_block, japan_data_context):
+            report_text = (
+                "**Overall Sentiment:** **DATA_UNAVAILABLE**\n"
+                "**Score:** DATA_UNAVAILABLE\n"
+                "**Confidence:** Low\n\n"
+                "暂无可用日本情绪数据。社区/投资者样本不可用或为空，"
+                "因此不得用新闻、财务、分析师预期、JSF 或宏观数据补成 Neutral、5.0 或方向性分数。"
+            )
+        else:
+            report_text = invoke_structured_or_freetext(
+                structured_llm,
+                llm,
+                formatted_messages,
+                render_sentiment_report,
+                "Sentiment Analyst",
+            )
         report_text = _apply_source_status_integrity(
             report_text,
             reddit_block,
         )
+        if is_japan:
+            report_text = _apply_low_sample_integrity(
+                report_text, stocktwits_block, reddit_block, japan_data_context
+            )
 
         return {
             "messages": [AIMessage(content=report_text)],
@@ -158,6 +172,49 @@ def _apply_source_status_integrity(report_text: str, reddit_block: str) -> str:
                 + report_text
             )
     return report_text
+
+
+def _has_real_social_sample(
+    stocktwits_block: str, reddit_block: str, japan_data_context: str
+) -> bool:
+    stocktwits = stocktwits_block.strip().lower()
+    reddit = reddit_block.strip().lower()
+    stocktwits_available = bool(stocktwits) and not stocktwits.startswith("<")
+    reddit_available = bool(reddit) and not reddit.startswith("<")
+    japan_sample = "data unavailable" not in japan_data_context.lower() and any(
+        token in japan_data_context.lower()
+        for token in ("sample_count", "message_count", "bullish", "bearish", "投稿")
+    )
+    return stocktwits_available or reddit_available or japan_sample
+
+
+def _apply_low_sample_integrity(
+    report_text: str,
+    stocktwits_block: str,
+    reddit_block: str,
+    japan_data_context: str,
+) -> str:
+    counts = []
+    for block in (stocktwits_block, reddit_block, japan_data_context):
+        for pattern in (
+            r"Total:\s*(\d+)",
+            r"sample_count[=:]\s*(\d+)",
+            r"message_count[=:]\s*(\d+)",
+        ):
+            counts.extend(int(value) for value in re.findall(pattern, block, re.I))
+    if not counts or sum(counts) >= 5:
+        return report_text
+    bounded = re.sub(
+        r"\*\*Confidence:\*\*\s*(?:Medium|High)",
+        "**Confidence:** Low",
+        report_text,
+        flags=re.I,
+    )
+    return (
+        "## Sample quality\nLOW_SAMPLE: fewer than five verified sentiment samples; "
+        "confidence is deterministically capped at Low.\n\n"
+        + bounded
+    )
 
 
 def _build_system_message(
@@ -242,8 +299,8 @@ The original Yahoo Finance, StockTwits, and Reddit blocks above remain active fo
 Use official disclosures only as facts, distinguish them from AI inference, and explain whether the available financing/short-position data creates a risk or merely a limitation. Do not use a single supply-demand observation as a price prediction.
 
 ## Output fields
-- **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Neutral when community evidence is unavailable.
-- **overall_score**: 0 to 10. Do not override the primary sentiment sources with a default score merely because Japanese community data is unavailable.
+- **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish only when real sentiment samples exist. If no real sample exists, the caller emits DATA_UNAVAILABLE without invoking this schema.
+- **overall_score**: 0 to 10 only when real samples support a score. Never synthesize 5.0 or another neutral score from source unavailability.
 - **confidence**: low / medium / high. It must be low without direct Japanese community data.
 - **narrative**: Separate VERIFIED FACT, MARKET SENTIMENT, and AI INFERENCE. Include a markdown table of data availability and constraints. When no direct Japanese sample exists, include exactly “暂无可用日本情绪数据”。
 

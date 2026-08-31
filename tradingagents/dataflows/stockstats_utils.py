@@ -120,10 +120,10 @@ def _assert_ohlcv_not_stale(
     resolved = canonical or normalize_symbol(symbol)
     if resolved.upper().endswith(".T"):
         from tradingagents.dataflows.japan.trading_calendar import (
-            latest_japan_trading_day,
+            latest_completed_japan_session,
         )
 
-        expected = pd.Timestamp(latest_japan_trading_day(requested.date()))
+        expected = pd.Timestamp(latest_completed_japan_session(requested.date()))
         if latest != expected:
             relation = "future" if latest > expected else "stale"
             raise NoMarketDataError(
@@ -141,6 +141,35 @@ def _assert_ohlcv_not_stale(
             f"latest row is {latest.date()}, {stale_days} days before the "
             f"requested {requested.date()} (stale) — refusing to use it",
         )
+
+
+def _filter_japan_completed_sessions(
+    data: pd.DataFrame,
+    curr_date: str,
+    symbol: str,
+    canonical: str | None = None,
+    *,
+    now=None,
+) -> pd.DataFrame:
+    """Drop a current-JST partial daily candle before agent consumption."""
+    resolved = canonical or normalize_symbol(symbol)
+    if data is None or data.empty or not resolved.upper().endswith(".T"):
+        return data
+    requested = pd.to_datetime(curr_date, errors="coerce")
+    if pd.isna(requested):
+        return data
+    from tradingagents.dataflows.japan.trading_calendar import (
+        latest_completed_japan_session,
+    )
+
+    cutoff = pd.Timestamp(latest_completed_japan_session(requested.date(), now=now))
+    if isinstance(data.index, pd.DatetimeIndex):
+        index_dates = pd.to_datetime(data.index, errors="coerce").tz_localize(None).normalize()
+        return data.loc[index_dates <= cutoff]
+    if "Date" in data.columns:
+        dates = pd.to_datetime(data["Date"], errors="coerce").dt.tz_localize(None).dt.normalize()
+        return data.loc[dates <= cutoff]
+    return data
 
 
 def _needs_same_day_refresh(data_file, curr_date_dt, today_date) -> bool:
@@ -228,6 +257,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
 
     # Filter to curr_date to prevent look-ahead bias in backtesting
     data = data[data["Date"] <= curr_date_dt]
+    data = _filter_japan_completed_sessions(data, curr_date, symbol, canonical)
 
     # Reject a stale frame (latest row far older than curr_date) rather than
     # feeding year-old prices into indicators (#1021).

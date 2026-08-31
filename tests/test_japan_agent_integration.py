@@ -94,7 +94,8 @@ def test_japan_sentiment_prompt_appends_to_original_community_sources(monkeypatc
     result = module.create_sentiment_analyst(llm)(state)
     assert "DATA UNAVAILABLE" in result["sentiment_report"]
     prompt_text = str(captured["prompt"])
-    assert "自己株式の取得" in prompt_text
+    assert "自己株式の取得" not in prompt_text
+    assert "Official filings, analyst consensus" in prompt_text
     assert "StockTwits messages" in prompt_text
     assert "Reddit posts" in prompt_text
     assert "Yahoo news sample" in prompt_text

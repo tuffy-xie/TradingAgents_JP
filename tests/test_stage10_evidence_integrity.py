@@ -1,0 +1,404 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
+
+import pandas as pd
+from langchain_core.messages import ToolMessage
+
+from tradingagents.agents.analysts import sentiment_analyst as sentiment_module
+from tradingagents.agents.schemas import SentimentBand, SentimentReport
+from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.utils.evidence_registry import (
+    capture_agent_evidence,
+    initialize_evidence_registry,
+    render_downstream_evidence_context,
+)
+from tradingagents.agents.utils.execution_validation import (
+    enforce_execution_math,
+    million_jpy_to_oku,
+    validate_execution_plan,
+)
+from tradingagents.dataflows.japan.context import (
+    render_japan_audience_context,
+    render_japan_financial_context,
+)
+from tradingagents.dataflows.japan.edinet_db_guidance_selector import (
+    select_latest_guidance_record,
+)
+from tradingagents.dataflows.japan.edinet_db_selector import (
+    select_latest_earnings_record,
+)
+from tradingagents.dataflows.japan.trading_calendar import (
+    latest_completed_japan_session,
+)
+from tradingagents.dataflows.stockstats_utils import _filter_japan_completed_sessions
+from tradingagents.graph.setup import _observe_agent_node
+
+
+def _jp_state(**extra):
+    state = {
+        "market_context": {"market": "JP", "symbol": "5801.T"},
+        "company_of_interest": "5801.T",
+        "trade_date": "2026-08-31",
+        "japan_data_bundle": {"items": [], "provider_metadata": {}},
+        "evidence_registry": [],
+        "evidence_audit": [],
+        "messages": [],
+        "validated_execution": {},
+    }
+    state.update(extra)
+    return state
+
+
+def _actual_record(**extra):
+    return {
+        "fiscal_year_end": "2027-03-31",
+        "quarter": 1,
+        "disclosure_date": "2026-08-06",
+        "revenue": 365_221,
+        "operating_income": 25_457,
+        "ordinary_income": 30_953,
+        "net_income": 22_229,
+        "eps": 31.60,
+        "forecast_revenue": 1_530_000,
+        "forecast_operating_income": 123_000,
+        "forecast_ordinary_income": 143_000,
+        "forecast_net_income": 105_000,
+        "forecast_eps": 149.25,
+        **extra,
+    }
+
+
+def test_market_tool_fact_keeps_verified_identity_downstream():
+    tool = ToolMessage(
+        content="2026-08-31 Close 3926; SMA50 3900; ATR 180",
+        name="get_stock_data",
+        tool_call_id="market-1",
+    )
+    state = _jp_state(messages=[tool])
+    captured = capture_agent_evidence(
+        state, {"market_report": "Close 3926 from get_stock_data."}, "Market Analyst"
+    )
+    combined = {**state, **captured}
+
+    context = render_downstream_evidence_context(combined)
+    guarded = enforce_agent_output(
+        combined,
+        "这些行情和技术指标没有独立工具验证。",
+        "Research Manager",
+    )
+
+    assert "VERIFIED_TOOL_OUTPUT" in context
+    assert "不得降级" in guarded.text
+    assert "verified_market_fact_downgraded" in guarded.warnings
+
+
+def test_news_tool_fact_keeps_provenance_and_unsupported_claim_is_audited():
+    tool = ToolMessage(
+        content="FRED series observation dated 2026-08-28",
+        name="get_macro_indicators",
+        tool_call_id="news-1",
+    )
+    state = _jp_state(messages=[tool])
+    captured = capture_agent_evidence(
+        state, {"news_report": "FRED observation is dated 2026-08-28."}, "News Analyst"
+    )
+    combined = {**state, **captured}
+    guarded = enforce_agent_output(
+        combined, "FRED宏观数据没有独立验证。", "Research Manager"
+    )
+    unsupported = enforce_agent_output(combined, "目标价9999。", "Trader")
+
+    assert "verified_news_fact_downgraded" in guarded.warnings
+    assert "unsupported_precise_number" in unsupported.warnings
+
+
+def test_evidence_audit_is_nonempty_from_run_initialization():
+    registry, audit = initialize_evidence_registry(
+        market_context={"market": "JP", "symbol": "5801.T"},
+        japan_data_bundle={
+            "items": [
+                {
+                    "source": "JSF",
+                    "source_type": "securities_finance_balance",
+                    "timestamp": "2026-08-31",
+                    "title": "JSF balance",
+                    "verified": True,
+                    "status": "OK",
+                    "metadata": {"freshness_status": "LATEST_AVAILABLE", "unit": "株"},
+                }
+            ]
+        },
+        verified_market_snapshot="",
+        analysis_as_of="2026-08-31",
+    )
+
+    assert registry
+    assert audit[0]["category"] == "SUPPORTED_FACT"
+    assert audit[0]["supported_count"] == 1
+
+
+def test_stale_jsf_is_historical_only_not_current_directional_evidence():
+    state = _jp_state(
+        evidence_registry=[
+            {
+                "domain": "MARKET",
+                "value": "JSF finance balance 1234 on 2026-08-17",
+                "semantic_basis": "OBSERVABLE_LENDING_BALANCE",
+                "allowed_for_current_decision": False,
+            }
+        ]
+    )
+    current = enforce_agent_output(
+        state, "当前JSF融资余额1234说明空头已经出清。", "Risk Analyst"
+    )
+
+    assert current.warnings
+    assert "不作为当前判断依据" in current.text
+    context = render_downstream_evidence_context(state)
+    assert "current_eligible=False" not in context  # raw provider rows are not duplicated downstream
+
+
+def test_5801_forecast_only_h1_does_not_hide_q1_actual_or_fy_guidance():
+    q1 = _actual_record(record_id="q1")
+    h1_forecast = _actual_record(
+        record_id="h1-guidance",
+        quarter=2,
+        revenue=None,
+        operating_income=None,
+        ordinary_income=None,
+        net_income=None,
+        eps=None,
+        forecast_revenue=720_000,
+        forecast_operating_income=49_500,
+        forecast_ordinary_income=60_500,
+        forecast_net_income=42_500,
+        forecast_eps=60.41,
+    )
+    actual = select_latest_earnings_record(
+        [h1_forecast, q1], issuer_id="E01332", analysis_as_of=date(2026, 8, 31)
+    )
+    guidance = select_latest_guidance_record(
+        [h1_forecast, q1], issuer_id="E01332", analysis_as_of=date(2026, 8, 31)
+    )
+
+    assert actual.status == "OK"
+    assert actual.period_type == "Q1"
+    assert actual.record["revenue"] == 365_221
+    assert guidance.status == "OK"
+    assert guidance.record["forecast_revenue"] == 1_530_000
+    assert guidance.period_type == "FY"
+
+
+def test_critical_gate_failure_is_visible_and_blocks_current_quarter_conviction():
+    assessment = {
+        "actual": {
+            "status": "INSUFFICIENT_DATA",
+            "freshness": "FRESHNESS_UNVERIFIED",
+            "critical_gate": {"status": "INSUFFICIENT_DATA", "available_count": 1},
+            "detail": "fewer than two critical metrics available",
+        },
+        "guidance": {"status": "NOT_PROVIDED", "freshness": "CURRENT_OFFICIAL"},
+    }
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [],
+            "provider_metadata": {"Japan Financial Authority": assessment},
+        }
+    )
+    context = render_japan_financial_context(state)
+    guarded = enforce_agent_output(
+        state, "最新季度已经全面明确确认强劲盈利爆发。", "Fundamentals Analyst"
+    )
+
+    assert "Critical Gate: INSUFFICIENT_DATA" in context
+    assert "critical_gate_bypassed" in guarded.warnings
+
+
+def test_guidance_consensus_vendor_forward_are_semantically_distinct():
+    state = _jp_state(
+        evidence_registry=[
+            {
+                "value": 150.58,
+                "semantic_basis": "ANALYST_CONSENSUS",
+                "allowed_for_current_decision": True,
+            },
+            {
+                "value": 296.56,
+                "semantic_basis": "VENDOR_FORWARD_ESTIMATE",
+                "allowed_for_current_decision": True,
+            },
+            {
+                "value": 149.25,
+                "semantic_basis": "COMPANY_GUIDANCE",
+                "allowed_for_current_decision": True,
+            },
+        ]
+    )
+    mixed = enforce_agent_output(
+        state, "公司Guidance采用vendor forward EPS 296.56。", "Risk Analyst"
+    )
+
+    assert "guidance_vendor_forward_mixed" in mixed.warnings
+    assert "不同语义" in mixed.text
+
+
+def test_million_yen_unit_conversion_is_deterministic():
+    assert million_jpy_to_oku(52_126) == Decimal("521.26")
+    assert million_jpy_to_oku(31_066) == Decimal("310.66")
+
+
+def test_wrong_capex_oku_conversion_is_removed():
+    state = _jp_state(
+        evidence_registry=[
+            {
+                "value": "Capital Expenditure 52,126 百万円",
+                "allowed_for_current_decision": True,
+            }
+        ]
+    )
+    result = enforce_agent_output(state, "Capex约52亿。", "Risk Analyst")
+    assert "unit_mismatch" in result.warnings
+
+
+def test_execution_math_and_portfolio_risk_are_authoritative():
+    plan = (
+        "**Entry Price**: 4120\n\n**Stop Loss**: 3585\n\n"
+        "**Position Sizing**: 5% of portfolio"
+    )
+    validation = validate_execution_plan(plan)
+    assert validation["distance"] == 535
+    assert validation["risk_pct"] == 12.99
+    assert validation["portfolio_stop_risk_pct"] == 0.65
+
+    wrong = "止损距离风险约8.8%；组合止损损失约0.44%。"
+    corrected, warnings = enforce_execution_math(wrong, validation)
+    assert "8.8%" not in corrected
+    assert "0.44%" not in corrected
+    assert "12.99%" in corrected
+    assert "0.65%" in corrected
+    assert warnings == ("ARITHMETIC_MISMATCH",)
+
+
+def test_no_reportable_short_row_does_not_mean_no_shorts():
+    result = enforce_agent_output(
+        _jp_state(), "JPX没有可申报空头，因此没有机构做空。", "Risk Analyst"
+    )
+    assert "short_absence_overclaim" in result.warnings
+    assert "无申报记录不代表不存在空头" in result.text
+
+
+def test_sentiment_unavailable_does_not_become_neutral_or_score(monkeypatch):
+    monkeypatch.setattr(
+        sentiment_module, "fetch_stocktwits_messages", lambda *a, **k: "<stocktwits unavailable>"
+    )
+    monkeypatch.setattr(
+        sentiment_module, "fetch_reddit_posts", lambda *a, **k: "<reddit status=TIMEOUT; sample_count=UNKNOWN>"
+    )
+    monkeypatch.setattr(sentiment_module.get_news, "func", lambda *a, **k: "Yahoo news")
+    llm = MagicMock()
+    state = _jp_state(messages=[])
+
+    result = sentiment_module.create_sentiment_analyst(llm)(state)
+
+    assert "DATA_UNAVAILABLE" in result["sentiment_report"]
+    assert "Score:** DATA_UNAVAILABLE" in result["sentiment_report"]
+    assert "**Overall Sentiment:** **Neutral**" not in result["sentiment_report"]
+    llm.invoke.assert_not_called()
+
+
+def test_low_sample_caps_sentiment_confidence(monkeypatch):
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_stocktwits_messages",
+        lambda *a, **k: "Bullish: 2 (100%) · Total: 2 most-recent messages",
+    )
+    monkeypatch.setattr(sentiment_module, "fetch_reddit_posts", lambda *a, **k: "<no Reddit posts>")
+    monkeypatch.setattr(sentiment_module.get_news, "func", lambda *a, **k: "Yahoo news")
+    structured = MagicMock()
+    structured.invoke.return_value = SentimentReport(
+        overall_band=SentimentBand.BULLISH,
+        overall_score=8,
+        confidence="high",
+        narrative="two bullish posts",
+    )
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+
+    report = sentiment_module.create_sentiment_analyst(llm)(_jp_state())["sentiment_report"]
+
+    assert "LOW_SAMPLE" in report
+    assert "**Confidence:** Low" in report
+
+
+def test_intraday_jp_daily_bar_uses_previous_completed_session():
+    jst = ZoneInfo("Asia/Tokyo")
+    assert latest_completed_japan_session(
+        date(2026, 8, 31), now=datetime(2026, 8, 31, 14, 12, tzinfo=jst)
+    ) == date(2026, 8, 28)
+    frame = pd.DataFrame(
+        {"Date": ["2026-08-28", "2026-08-31"], "Close": [3900, 3926]}
+    )
+    filtered = _filter_japan_completed_sessions(
+        frame,
+        "2026-08-31",
+        "5801.T",
+        now=datetime(2026, 8, 31, 14, 12, tzinfo=jst),
+    )
+    assert filtered["Date"].tolist() == ["2026-08-28"]
+
+
+def test_nightly_jp_daily_bar_uses_same_day_completed_session():
+    jst = ZoneInfo("Asia/Tokyo")
+    assert latest_completed_japan_session(
+        date(2026, 8, 31), now=datetime(2026, 8, 31, 20, 0, tzinfo=jst)
+    ) == date(2026, 8, 31)
+
+
+def test_historical_outcome_cannot_be_current_directional_evidence():
+    result = enforce_agent_output(
+        _jp_state(), "上次交易5801亏损，所以本轮应当HOLD观望。", "Portfolio Manager"
+    )
+    assert "historical_outcome_as_current_evidence" in result.warnings
+
+
+def test_financial_document_is_only_in_fundamentals_audience():
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [
+                {
+                    "source": "TDnet",
+                    "source_type": "earnings_or_quarterly",
+                    "timestamp": "2026-08-06",
+                    "title": "Q1 results",
+                    "metadata": {},
+                }
+            ],
+            "provider_metadata": {
+                "Japan Financial Authority": {
+                    "actual": {"status": "INSUFFICIENT_DATA", "critical_gate": {}},
+                    "guidance": {"status": "NOT_PROVIDED"},
+                }
+            },
+        }
+    )
+    fundamentals = render_japan_financial_context(state)
+    sentiment = render_japan_audience_context(state, "SENTIMENT")
+    downstream = render_downstream_evidence_context(state)
+
+    assert "Latest Actual" in fundamentals
+    assert "Latest Actual" not in sentiment
+    assert "Latest Actual" not in downstream
+    assert "Q1 results" not in sentiment
+
+
+def test_us_observer_behavior_remains_byte_for_byte():
+    state = {"market_context": {"market": "US"}, "company_of_interest": "NVDA"}
+    expected = {"market_report": "US report 1234"}
+    observed = _observe_agent_node(
+        "Market Analyst", lambda _state: expected, provider="test", timeout=1, retries=0
+    )
+    assert observed(state) == expected

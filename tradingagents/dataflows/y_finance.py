@@ -8,6 +8,7 @@ from dateutil.relativedelta import relativedelta
 from .stockstats_utils import (
     StockstatsUtils,
     _assert_ohlcv_not_stale,
+    _filter_japan_completed_sessions,
     filter_financials_by_date,
     load_ohlcv,
     yf_retry,
@@ -45,6 +46,12 @@ def get_YFin_data_online(
     # Remove timezone info from index for cleaner output
     if data.index.tz is not None:
         data.index = data.index.tz_localize(None)
+
+    data = _filter_japan_completed_sessions(data, end_date, symbol, canonical)
+    if data.empty:
+        raise NoMarketDataError(
+            symbol, canonical, "no completed daily bar is available as of the requested time"
+        )
 
     # Reject a stale frame (e.g. a year-old partial response) before it is
     # formatted into the report. Raises NoMarketDataError, which the router

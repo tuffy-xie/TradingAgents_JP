@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
+from tradingagents.agents.analysts import sentiment_analyst as sentiment_module
 from tradingagents.agents.analysts.sentiment_analyst import create_sentiment_analyst
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import (
@@ -200,7 +201,10 @@ class TestTraderAgent:
         prompt = captured["prompt"]
         assert any("Proposed Investment Plan" in m["content"] for m in prompt)
 
-    def test_falls_back_to_freetext_when_structured_unavailable(self):
+    def test_falls_back_to_freetext_when_structured_unavailable(self, monkeypatch):
+        monkeypatch.setattr(sentiment_module, "fetch_stocktwits_messages", lambda *a, **k: "<stocktwits unavailable>")
+        monkeypatch.setattr(sentiment_module, "fetch_reddit_posts", lambda *a, **k: "<reddit status=FETCH_FAILED; sample_count=UNKNOWN>")
+        monkeypatch.setattr(sentiment_module.get_news, "func", lambda *a, **k: "<news unavailable>")
         plain_response = (
             "**Action**: Sell\n\nGuidance cut hits margins.\n\n"
             "FINAL TRANSACTION PROPOSAL: **SELL**"
@@ -396,13 +400,20 @@ class TestSentimentAnalystAgent:
         llm = MagicMock()
         llm.with_structured_output.side_effect = NotImplementedError("provider unsupported")
         llm.invoke.return_value = MagicMock(content=plain)
-        assert create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"] == plain
+        report = create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"]
+        assert report.endswith(plain)
+        assert "Reddit：本次获取失败" in report
 
-    def test_falls_back_to_freetext_when_structured_call_fails(self):
+    def test_falls_back_to_freetext_when_structured_call_fails(self, monkeypatch):
+        monkeypatch.setattr(sentiment_module, "fetch_stocktwits_messages", lambda *a, **k: "<stocktwits unavailable>")
+        monkeypatch.setattr(sentiment_module, "fetch_reddit_posts", lambda *a, **k: "<reddit status=FETCH_FAILED; sample_count=UNKNOWN>")
+        monkeypatch.setattr(sentiment_module.get_news, "func", lambda *a, **k: "<news unavailable>")
         plain = "Fallback free-text sentiment."
         structured = MagicMock()
         structured.invoke.side_effect = ValueError("bad JSON from model")
         llm = MagicMock()
         llm.with_structured_output.return_value = structured
         llm.invoke.return_value = MagicMock(content=plain)
-        assert create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"] == plain
+        report = create_sentiment_analyst(llm)(_make_sentiment_state())["sentiment_report"]
+        assert report.endswith(plain)
+        assert "Reddit：本次获取失败" in report

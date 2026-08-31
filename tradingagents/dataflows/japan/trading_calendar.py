@@ -15,8 +15,12 @@ company or ticker special case.
 from __future__ import annotations
 
 import calendar
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from functools import cache
+from zoneinfo import ZoneInfo
+
+_JST = ZoneInfo("Asia/Tokyo")
+_TSE_CLOSE = time(15, 30)
 
 
 def _nth_weekday(year: int, month: int, weekday: int, occurrence: int) -> date:
@@ -113,6 +117,25 @@ def latest_japan_trading_day(as_of: date) -> date:
     while not is_japan_trading_day(cursor):
         cursor -= timedelta(days=1)
     return cursor
+
+
+def latest_completed_japan_session(
+    as_of: date, *, now: datetime | None = None
+) -> date:
+    """Latest completed TSE session for date-level analysis.
+
+    Historical dates retain the Stage 8 nightly contract.  For the current JST
+    date only, a run before the 15:30 cash-session close uses the prior session
+    so an intraday daily candle cannot be called a completed close.
+    """
+    observed = now or datetime.now(_JST)
+    if observed.tzinfo is None or observed.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    local = observed.astimezone(_JST)
+    candidate = latest_japan_trading_day(as_of)
+    if as_of == local.date() and candidate == as_of and local.time() < _TSE_CLOSE:
+        return previous_japan_trading_day(as_of)
+    return candidate
 
 
 def previous_japan_trading_day(value: date) -> date:
