@@ -52,6 +52,9 @@ class AgentState(MessagesState):
     japan_data_bundle: Annotated[dict, "Source-attributed Japan facts; empty for non-Japan markets"]
     decision_context: Annotated[dict, "Deterministic Japan decision dimensions; empty for non-Japan markets"]
     evidence_audit: Annotated[list[dict], "Internal JP output-evidence violations; never user-facing"]
+    evidence_registry: Annotated[list[dict], "Run-local fact identities and provenance; never rendered as raw provider payload"]
+    run_manifest: Annotated[dict, "Non-secret runtime identity metadata for reproducibility"]
+    validated_execution: Annotated[dict, "Deterministically calculated entry/stop/position risk facts"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     trade_date: Annotated[str, "What date we are trading at"]
     trade_constraints: Annotated[

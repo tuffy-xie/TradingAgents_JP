@@ -20,9 +20,20 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
     agent_log_parts = ["# 完整多智能体推理与风控日志"]
+    manifest = final_state.get("run_manifest") or {}
+    agent_log_parts.append(
+        "## Run Manifest\n\n```json\n"
+        + json.dumps(manifest, ensure_ascii=False, indent=2)
+        + "\n```"
+    )
     audit = final_state.get("evidence_audit") or []
     agent_log_parts.append(
         "## 证据校验审计\n\n```json\n" + json.dumps(audit, ensure_ascii=False, indent=2) + "\n```"
+    )
+    agent_log_parts.append(
+        "## Evidence Registry\n\n```json\n"
+        + json.dumps(final_state.get("evidence_registry") or [], ensure_ascii=False, indent=2)
+        + "\n```"
     )
 
     metadata = canonical_report_metadata(final_state)

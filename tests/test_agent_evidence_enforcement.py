@@ -148,11 +148,16 @@ def test_evidence_audit_is_internal_not_appended_to_agent_prose():
     )
     assert "Evidence enforcement" not in result["trader_investment_plan"]
     assert result["evidence_audit"] == [
-        {"agent": "Trader", "field": "trader_investment_plan", "warnings": ["unsupported_precise_number"]}
+        {
+            "category": "UNSUPPORTED_CLAIM",
+            "agent": "Trader",
+            "field": "trader_investment_plan",
+            "warning": "unsupported_precise_number",
+        }
     ]
 
 
-def test_graph_observer_passes_agent_result_without_rewriting_prose():
+def test_graph_observer_preserves_prose_and_captures_evidence_metadata():
     expected = {"market_report": "50日均线为1234。"}
     observed = _observe_agent_node(
         "Market Analyst",
@@ -161,7 +166,10 @@ def test_graph_observer_passes_agent_result_without_rewriting_prose():
         timeout=1,
         retries=0,
     )
-    assert observed(_state()) == expected
+    result = observed(_state())
+    assert result["market_report"] == expected["market_report"]
+    assert result["evidence_registry"]
+    assert result["evidence_audit"][0]["category"] == "SUPPORTED_FACT"
 
 
 def test_market_report_numbers_remain_valid_without_snapshot():

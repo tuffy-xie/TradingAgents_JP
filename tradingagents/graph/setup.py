@@ -24,6 +24,12 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
+from tradingagents.agents.utils.evidence_enforcement import enforce_agent_result
+from tradingagents.agents.utils.evidence_registry import capture_agent_evidence
+from tradingagents.agents.utils.execution_validation import (
+    enforce_execution_math,
+    validate_execution_plan,
+)
 
 from .analyst_execution import build_analyst_execution_plan
 from .conditional_logic import ConditionalLogic
@@ -70,12 +76,56 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
                 name, ticker, time.perf_counter() - start, _classify_agent_error(exc), type(exc).__name__,
             )
             raise
+        if isinstance(result, dict):
+            result = capture_agent_evidence(state, result, name)
+            combined_state = {**state, **result} if isinstance(state, dict) else result
+            result = enforce_agent_result(combined_state, result, name)
+            result = _apply_execution_authority(state, result, name)
         logger.info(
             "[Agent] complete name=%s ticker=%s elapsed_seconds=%.2f",
             name, ticker, time.perf_counter() - start,
         )
         return result
     return observed
+
+
+def _apply_execution_authority(
+    state: dict[str, Any], result: dict[str, Any], agent_name: str
+) -> dict[str, Any]:
+    if (state.get("market_context") or {}).get("market") != "JP":
+        return result
+    updated = dict(result)
+    audit = list(updated.get("evidence_audit") or state.get("evidence_audit") or [])
+    if agent_name == "Trader" and isinstance(updated.get("trader_investment_plan"), str):
+        validation = validate_execution_plan(updated["trader_investment_plan"])
+        updated["validated_execution"] = validation
+        cleaned, warnings = enforce_execution_math(updated["trader_investment_plan"], validation)
+        updated["trader_investment_plan"] = cleaned
+        if warnings:
+            audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "warnings": list(warnings)})
+    else:
+        validation = state.get("validated_execution") or {}
+        for key in ("final_trade_decision",):
+            if isinstance(updated.get(key), str):
+                cleaned, warnings = enforce_execution_math(updated[key], validation)
+                updated[key] = cleaned
+                if warnings:
+                    audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "field": key, "warnings": list(warnings)})
+        debate = updated.get("risk_debate_state")
+        if isinstance(debate, dict):
+            cleaned_debate = dict(debate)
+            for key, value in debate.items():
+                if not isinstance(value, str) or not (
+                    key.startswith("current_") or key == "judge_decision"
+                ):
+                    continue
+                cleaned, warnings = enforce_execution_math(value, validation)
+                cleaned_debate[key] = cleaned
+                if warnings:
+                    audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "field": f"risk_debate_state.{key}", "warnings": list(warnings)})
+            updated["risk_debate_state"] = cleaned_debate
+    updated["evidence_audit"] = audit
+    return updated
 
 # Every target a shared conditional router can return. Each edge driven by the
 # router maps all of them, so a fall-through return (e.g. under prompt/i18n/

@@ -6,6 +6,7 @@ from tradingagents.agents.utils.agent_states import (
     InvestDebateState,
     RiskDebateState,
 )
+from tradingagents.agents.utils.evidence_registry import initialize_evidence_registry
 from tradingagents.dataflows.japan.decision import build_japan_decision_context
 from tradingagents.dataflows.market import MarketContext, resolve_market_context
 
@@ -28,6 +29,7 @@ class Propagator:
         market_context: MarketContext | dict[str, Any] | None = None,
         japan_data_bundle: dict[str, Any] | None = None,
         verified_market_snapshot: str = "",
+        run_manifest: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -40,6 +42,12 @@ class Propagator:
         context = market_context or resolve_market_context(company_name)
         context_dict = context.to_dict() if isinstance(context, MarketContext) else dict(context)
         canonical_symbol = context_dict["symbol"]
+        evidence_registry, evidence_audit = initialize_evidence_registry(
+            market_context=context_dict,
+            japan_data_bundle=japan_data_bundle or {},
+            verified_market_snapshot=verified_market_snapshot,
+            analysis_as_of=str(trade_date),
+        )
         return {
             "messages": [("human", canonical_symbol)],
             "company_of_interest": canonical_symbol,
@@ -51,7 +59,10 @@ class Propagator:
             )
             if context_dict.get("market") == "JP"
             else {},
-            "evidence_audit": [],
+            "evidence_registry": evidence_registry,
+            "evidence_audit": evidence_audit,
+            "run_manifest": run_manifest or {},
+            "validated_execution": {},
             "verified_market_snapshot": verified_market_snapshot,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),

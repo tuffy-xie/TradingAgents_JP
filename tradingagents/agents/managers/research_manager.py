@@ -5,7 +5,7 @@ from __future__ import annotations
 from tradingagents.agents.schemas import ResearchPlan, render_research_plan
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_downstream_evidence_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -21,7 +21,7 @@ def create_research_manager(llm):
 
     def research_manager_node(state) -> dict:
         instrument_context = get_instrument_context_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_downstream_evidence_context_from_state(state)
         history = state["investment_debate_state"].get("history", "")
         trade_constraints = get_trade_constraints_from_state(state)
 

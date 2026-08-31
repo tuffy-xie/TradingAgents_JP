@@ -6,8 +6,8 @@ from tradingagents.agents.utils.agent_utils import (
     get_fundamentals,
     get_income_statement,
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
     get_japan_financial_context_from_state,
+    get_japan_fundamentals_context_from_state,
     get_language_instruction,
 )
 
@@ -16,7 +16,7 @@ def create_fundamentals_analyst(llm):
     def fundamentals_analyst_node(state):
         current_date = state["trade_date"]
         instrument_context = get_instrument_context_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_fundamentals_context_from_state(state)
         japan_financial_context = get_japan_financial_context_from_state(state)
         is_etf = (state.get("market_context") or {}).get("instrument_type") == "ETF"
 
@@ -37,6 +37,13 @@ def create_fundamentals_analyst(llm):
             + " " + framework
             + ("\n\n" + japan_data_context if japan_data_context else "")
             + ("\n\n" + japan_financial_context if japan_financial_context else "")
+            + (
+                "\n\nCritical financial consumption rule: if Latest Actual status or its Critical Gate is not OK, "
+                "state that current-quarter evidence is insufficient. Historical annuals, valuation, and consensus may still be analyzed, "
+                "but they must not be combined with one available quarterly metric into a claim that the latest quarter is comprehensively confirmed."
+                if japan_financial_context
+                else ""
+            )
             + get_language_instruction(),
         )
 

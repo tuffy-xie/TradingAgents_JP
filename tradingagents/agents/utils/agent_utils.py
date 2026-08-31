@@ -45,6 +45,11 @@ __all__ = [
     "get_trade_constraints_from_state",
     "get_language_instruction",
     "get_japan_data_context_from_state",
+    "get_japan_market_context_from_state",
+    "get_japan_news_context_from_state",
+    "get_japan_fundamentals_context_from_state",
+    "get_japan_sentiment_context_from_state",
+    "get_japan_downstream_evidence_context_from_state",
     "get_japan_financial_context_from_state",
     "get_japan_decision_context_from_state",
     "get_verified_market_snapshot_from_state",
@@ -239,6 +244,34 @@ def get_japan_data_context_from_state(state: Mapping[str, Any]) -> str:
     from tradingagents.dataflows.japan.context import render_japan_agent_context
 
     return render_japan_agent_context(state)
+
+
+def _japan_audience_context(state: Mapping[str, Any], audience: str) -> str:
+    from tradingagents.dataflows.japan.context import render_japan_audience_context
+
+    return render_japan_audience_context(state, audience)
+
+
+def get_japan_market_context_from_state(state: Mapping[str, Any]) -> str:
+    return _japan_audience_context(state, "MARKET")
+
+
+def get_japan_news_context_from_state(state: Mapping[str, Any]) -> str:
+    return _japan_audience_context(state, "NEWS")
+
+
+def get_japan_fundamentals_context_from_state(state: Mapping[str, Any]) -> str:
+    return _japan_audience_context(state, "FUNDAMENTALS")
+
+
+def get_japan_sentiment_context_from_state(state: Mapping[str, Any]) -> str:
+    return _japan_audience_context(state, "SENTIMENT")
+
+
+def get_japan_downstream_evidence_context_from_state(state: Mapping[str, Any]) -> str:
+    from tradingagents.agents.utils.evidence_registry import render_downstream_evidence_context
+
+    return render_downstream_evidence_context(state)
 
 
 def get_japan_financial_context_from_state(state: Mapping[str, Any]) -> str:

@@ -146,6 +146,67 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
     )
 
 
+def render_japan_audience_context(state: Mapping[str, Any], audience: str) -> str:
+    """Render provider facts only for the owning JP Analyst domain.
+
+    Downstream debate/decision agents use analyst reports plus evidence
+    continuity instead of receiving the same raw bundle a second time.
+    """
+    market = (state.get("market_context") or {}).get("market")
+    bundle = state.get("japan_data_bundle") or {}
+    if market != Market.JP or not bundle:
+        return ""
+    items = [item for item in bundle.get("items") or [] if isinstance(item, Mapping)]
+    audience = audience.upper()
+    if audience == "MARKET":
+        selected = [
+            item
+            for item in items
+            if item.get("source") in {"JPX", "JSF", "J-Quants", "Japan Macro"}
+            and item.get("layer") != "MARKET_SENTIMENT"
+        ]
+        controls = (
+            "Use dated supply/short observations only at their stated freshness. "
+            "STALE_SOURCE is historical background, never current directional evidence. "
+            "No reportable JPX row does not mean no shorts."
+        )
+    elif audience == "NEWS":
+        selected = [
+            item
+            for item in items
+            if item.get("source") in {"TDnet", "Company IR", "Japan Macro"}
+            and item.get("source_type") != "japan_analyst_expectations"
+        ]
+        controls = "Keep source and publication date with every factual event. Exclude future or unverified events."
+    elif audience == "FUNDAMENTALS":
+        selected = [
+            item
+            for item in items
+            if item.get("source_type") == "japan_analyst_expectations"
+            or item.get("source") in {"TDnet", "Company IR"}
+        ]
+        controls = (
+            "COMPANY_GUIDANCE, ANALYST_CONSENSUS, and VENDOR_FORWARD_ESTIMATE are separate semantic types. "
+            "The dedicated financial authority section controls current-quarter conclusions."
+        )
+    elif audience == "SENTIMENT":
+        selected = [item for item in items if item.get("layer") == "MARKET_SENTIMENT"]
+        controls = (
+            "Use only real investor/social sentiment samples here. Official filings, analyst consensus, "
+            "credit balances, macro data, and ordinary news are not sentiment substitutes."
+        )
+    else:
+        return ""
+    return "\n".join(
+        [
+            f"## Japan {audience.lower()} context (pre-fetched; source-attributed)",
+            *_item_lines(selected, include_metadata=True),
+            "### Domain controls",
+            controls,
+        ]
+    )
+
+
 def render_japan_financial_context(state: Mapping[str, Any]) -> str:
     """Render authority-assessed financial facts for the Fundamentals Analyst only.
 
@@ -190,6 +251,14 @@ def _financial_assessment_lines(value: Any, *, guidance: bool) -> list[str]:
         f"- Status: {status}",
         f"- Freshness: {value.get('freshness') or 'FRESHNESS_UNVERIFIED'}",
     ]
+    gate = value.get("critical_gate")
+    if isinstance(gate, Mapping):
+        lines.extend(
+            [
+                f"- Critical Gate: {gate.get('status') or 'INSUFFICIENT_DATA'}",
+                f"- Critical fields: {gate.get('critical_fields') or {}}",
+            ]
+        )
     document = value.get("document")
     if not isinstance(document, Mapping) or status != "OK":
         update = value.get("official_latest_update")
@@ -346,7 +415,11 @@ def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> li
     if not items:
         return ["DATA UNAVAILABLE: 本次窗口无可用匹配数据。"]
     lines = []
-    for item in items[:20]:
+    # Providers emit chronological series in different orders.  Agent context
+    # must retain the newest dated observations when bounded; slicing the
+    # provider order previously hid fresh JSF rows after 2026-08-17.
+    ordered = sorted(items, key=_item_timestamp_sort_key, reverse=True)
+    for item in ordered[:20]:
         prefix = f"- [{item.get('source', 'Unknown')}] {item.get('timestamp', '')}: {item.get('title', '')}"
         if item.get("status") and item.get("status") != "OK":
             prefix += f" [status={item['status']}]"
@@ -364,6 +437,14 @@ def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> li
                 prefix += f" — {selected}"
         lines.append(prefix)
     return lines
+
+
+def _item_timestamp_sort_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(item.get("timestamp") or ""),
+        str(item.get("source") or ""),
+        str(item.get("title") or ""),
+    )
 
 
 _DIAGNOSTIC_KEYS = {

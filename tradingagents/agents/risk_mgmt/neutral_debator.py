@@ -1,6 +1,6 @@
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_downstream_evidence_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -21,7 +21,7 @@ def create_neutral_debator(llm):
         fundamentals_report = state["fundamentals_report"]
         instrument_context = get_instrument_context_from_state(state)
         trade_constraints = get_trade_constraints_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_downstream_evidence_context_from_state(state)
 
         trader_decision = state["trader_investment_plan"]
 

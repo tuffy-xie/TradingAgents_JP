@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage
 from tradingagents.agents.schemas import TraderProposal, render_trader_proposal
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_downstream_evidence_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -28,7 +28,7 @@ def create_trader(llm):
         instrument_context = get_instrument_context_from_state(state)
         investment_plan = state["investment_plan"]
         trade_constraints = get_trade_constraints_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_downstream_evidence_context_from_state(state)
 
         messages = [
             {

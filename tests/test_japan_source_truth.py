@@ -166,6 +166,24 @@ def test_all_japan_agents_receive_exact_number_and_period_rules():
     assert render_japan_agent_context({"market_context": {"market": "US"}}) == ""
 
 
+def test_japan_agent_context_keeps_latest_jsf_rows_when_bounded():
+    items = [
+        _item(
+            "JSF",
+            "securities_finance_balance",
+            {"unit": "株", "finance_balance": index},
+            timestamp=datetime(2026, 8, index, tzinfo=UTC),
+        ).to_dict()
+        for index in range(1, 32)
+    ]
+    rendered = render_japan_agent_context(
+        {"market_context": {"market": "JP"}, "japan_data_bundle": {"items": items}}
+    )
+
+    assert "2026-08-31" in rendered
+    assert "2026-08-01" not in rendered
+
+
 def test_japan_context_does_not_make_snapshot_an_technical_data_gate():
     governance = build_governance_item([], "5016.T", date(2026, 8, 14)).to_dict()
     rendered = render_japan_agent_context(

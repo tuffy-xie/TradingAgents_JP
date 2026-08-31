@@ -26,6 +26,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_stock_data,
     resolve_instrument_identity,
 )
+from tradingagents.agents.utils.evidence_registry import build_run_manifest
 from tradingagents.agents.utils.memory import TradingMemoryLog
 from tradingagents.dataflows.config import set_config
 from tradingagents.dataflows.japan.context import collect_japan_data_bundle
@@ -489,6 +490,11 @@ class TradingAgentsGraph:
             market_context=market_context,
             japan_data_bundle=japan_data_bundle,
             verified_market_snapshot=verified_market_snapshot,
+            run_manifest=build_run_manifest(
+                analysis_as_of=str(trade_date),
+                market_context=market_context.to_dict(),
+                config=self.config,
+            ),
         )
         args = self.propagator.get_graph_args()
 
@@ -551,6 +557,9 @@ class TradingAgentsGraph:
             "verified_market_snapshot": final_state.get("verified_market_snapshot", ""),
             "japan_data_bundle": final_state.get("japan_data_bundle", {}),
             "evidence_audit": final_state.get("evidence_audit", []),
+            "evidence_registry": final_state.get("evidence_registry", []),
+            "run_manifest": final_state.get("run_manifest", {}),
+            "validated_execution": final_state.get("validated_execution", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],

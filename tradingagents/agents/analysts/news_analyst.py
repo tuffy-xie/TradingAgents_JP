@@ -3,7 +3,7 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tradingagents.agents.utils.agent_utils import (
     get_global_news,
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_news_context_from_state,
     get_language_instruction,
     get_macro_indicators,
     get_news,
@@ -17,7 +17,7 @@ def create_news_analyst(llm):
         asset_type = state.get("asset_type", "stock")
         asset_label = "company" if asset_type == "stock" else "asset"
         instrument_context = get_instrument_context_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_news_context_from_state(state)
 
         tools = [
             get_news,

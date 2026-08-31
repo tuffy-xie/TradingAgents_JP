@@ -13,7 +13,7 @@ from __future__ import annotations
 from tradingagents.agents.schemas import PortfolioDecision, render_pm_decision
 from tradingagents.agents.utils.agent_utils import (
     get_instrument_context_from_state,
-    get_japan_data_context_from_state,
+    get_japan_downstream_evidence_context_from_state,
     get_language_instruction,
     get_trade_constraints_from_state,
 )
@@ -35,11 +35,13 @@ def create_portfolio_manager(llm):
         research_plan = state["investment_plan"]
         trader_plan = state["trader_investment_plan"]
         trade_constraints = get_trade_constraints_from_state(state)
-        japan_data_context = get_japan_data_context_from_state(state)
+        japan_data_context = get_japan_downstream_evidence_context_from_state(state)
 
         past_context = state.get("past_context", "")
         lessons_line = (
-            f"- Lessons from prior decisions and outcomes:\n{past_context}\n"
+            "- Lessons from prior decisions and outcomes — historical outcome calibration only (not current directional evidence):\n"
+            f"{past_context}\n"
+            "Use history only to calibrate confidence, sizing, and process risk. A prior gain/loss in this ticker is not bullish or bearish evidence for the current run.\n"
             if past_context
             else ""
         )
