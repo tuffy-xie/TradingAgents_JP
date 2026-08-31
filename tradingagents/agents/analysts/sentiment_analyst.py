@@ -25,7 +25,9 @@ See: https://github.com/TauricResearch/TradingAgents/issues/796
 """
 
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta
+from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -144,9 +146,14 @@ def create_sentiment_analyst(llm):
             reddit_block,
         )
         if is_japan:
-            report_text = _apply_low_sample_integrity(
-                report_text, stocktwits_block, reddit_block, japan_data_context
+            social_authority = _japan_social_authority(state)
+            report_text = _apply_japan_sentiment_domain_integrity(
+                report_text, social_authority
             )
+            if social_authority is None:
+                report_text = _apply_low_sample_integrity(
+                    report_text, stocktwits_block, reddit_block, japan_data_context
+                )
 
         return {
             "messages": [AIMessage(content=report_text)],
@@ -215,6 +222,132 @@ def _apply_low_sample_integrity(
         "confidence is deterministically capped at Low.\n\n"
         + bounded
     )
+
+
+def _japan_social_authority(state: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the source-native JP investor/social aggregate, if usable.
+
+    News, macro, filings, consensus and credit data are intentionally absent
+    from this calculation.  The provider aggregate is the only authority for
+    a JP sentiment direction or score.
+    """
+    bundle = state.get("japan_data_bundle") or {}
+    for item in bundle.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        if item.get("source_type") != "japan_investor_sentiment_aggregate":
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        sample_count = metadata.get("sample_count")
+        score = metadata.get("sentiment_score")
+        if not isinstance(sample_count, int) or sample_count <= 0:
+            continue
+        if not isinstance(score, (int, float)) or not -1 <= float(score) <= 1:
+            continue
+        return {
+            "source": str(item.get("source") or "Japan investor/social sentiment"),
+            "sample_count": sample_count,
+            "positive_count": int(metadata.get("positive_count") or 0),
+            "neutral_count": int(metadata.get("neutral_count") or 0),
+            "negative_count": int(metadata.get("negative_count") or 0),
+            "sentiment_score": float(score),
+            "confidence": "Low" if sample_count < 5 else metadata.get("confidence", "Low"),
+        }
+    return None
+
+
+_SENTIMENT_HEADER = re.compile(
+    r"^\*\*(?:Overall Sentiment|Score|Confidence):\*\*.*(?:\n|$)", re.I | re.M
+)
+_NON_SOCIAL_DIRECTION = re.compile(
+    r"(?=.*(?:news|macro|headline|新闻|宏观))"
+    r"(?=.*(?:sentiment|bullish|bearish|positive|negative|情绪|看多|看空|利多|利空|印证|强化|支持))",
+    re.I,
+)
+_BACKGROUND_ONLY = re.compile(
+    r"(?:background\s+only|excluded\s+from|背景(?:信息)?|不计入|不得计入|不参与)",
+    re.I,
+)
+
+
+def _apply_japan_sentiment_domain_integrity(
+    report_text: str, authority: Mapping[str, Any] | None
+) -> str:
+    """Bind JP direction/score to social samples and keep news as background.
+
+    The LLM may summarize news in the narrative, but it cannot use news or
+    macro observations to strengthen, corroborate, or otherwise change the
+    source-native investor/social score and band.
+    """
+    if authority is None:
+        return report_text
+
+    score = float(authority["sentiment_score"])
+    sample_count = int(authority["sample_count"])
+    if sample_count < 5:
+        if score > 0.1:
+            band = "Weak Positive Observation (LOW_SAMPLE)"
+        elif score < -0.1:
+            band = "Weak Negative Observation (LOW_SAMPLE)"
+        else:
+            band = "Mixed Observation (LOW_SAMPLE)"
+        confidence = "Low"
+    else:
+        band = _social_band(score)
+        confidence = _social_confidence(authority.get("confidence"))
+
+    without_llm_header = _SENTIMENT_HEADER.sub("", report_text).strip()
+    cleaned_lines = [
+        _remove_non_social_directional_claims(line)
+        for line in without_llm_header.splitlines()
+    ]
+    narrative = "\n".join(line for line in cleaned_lines if line.strip()).strip()
+    header = (
+        "## Investor/social sentiment authority\n"
+        f"**Overall Sentiment:** **{band}**\n"
+        f"**Score:** {score:.4g} (source-native -1 to +1 scale)\n"
+        f"**Confidence:** {confidence}\n"
+        f"**Sample:** n={sample_count}; positive={authority['positive_count']}; "
+        f"neutral={authority['neutral_count']}; negative={authority['negative_count']}\n"
+        "**Domain boundary:** News and macro observations are background only; "
+        "they are excluded from this score and band."
+    )
+    return header + ("\n\n" + narrative if narrative else "")
+
+
+def _remove_non_social_directional_claims(line: str) -> str:
+    parts = re.split(r"(?<=[。！？；;])", line)
+    kept = []
+    for part in parts:
+        if _NON_SOCIAL_DIRECTION.search(part) and not _BACKGROUND_ONLY.search(part):
+            continue
+        kept.append(part)
+    return "".join(kept)
+
+
+def _social_band(score: float) -> str:
+    if score >= 0.5:
+        return "Bullish"
+    if score >= 0.1:
+        return "Mildly Bullish"
+    if score <= -0.5:
+        return "Bearish"
+    if score <= -0.1:
+        return "Mildly Bearish"
+    return "Mixed"
+
+
+def _social_confidence(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        if float(value) < 0.45:
+            return "Low"
+        if float(value) < 0.7:
+            return "Medium"
+        return "High"
+    label = str(value or "Low").strip().lower()
+    return {"low": "Low", "medium": "Medium", "high": "High"}.get(label, "Low")
 
 
 def _build_system_message(
@@ -292,7 +425,7 @@ def _build_japan_system_message(ticker: str, start_date: str, end_date: str, jap
     """Build supplemental JP context without replacing the original sources."""
     return f"""Supplemental Japanese-market context for {ticker}, covering {start_date} to {end_date}.
 
-The original Yahoo Finance, StockTwits, and Reddit blocks above remain active for this ticker. The data below is supplemental Japanese disclosure and supply/demand context, not a community-sentiment sample. Do not fabricate Japanese community metrics. If no Japanese community data is present, set confidence to low and state exactly: 暂无可用日本情绪数据。
+The StockTwits, Reddit and verified Japan investor/social samples remain active for this ticker. Yahoo/news and macro blocks are background only: they must not change, corroborate, strengthen, or weaken the sentiment score or overall band. The data below is supplemental Japanese context, not automatically a community-sentiment sample. Do not fabricate Japanese community metrics. If no Japanese community data is present, set confidence to low and state exactly: 暂无可用日本情绪数据。
 
 {japan_data_context}
 

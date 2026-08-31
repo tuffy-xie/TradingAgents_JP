@@ -136,10 +136,11 @@ def test_unsupported_claims_are_rewritten_as_complete_sentences():
         "Trader",
     )
     assert "9999" not in result.text
-    assert "EPS 数据不可用" not in result.text
-    assert "目标价数据不可用附近" not in result.text
-    assert "该精确数值缺少上游证据支持，已不纳入本项判断。" in result.text
-    assert "当前价格仅以已验证行情快照为准" in result.text
+    assert "77" not in result.text
+    assert "1200" not in result.text
+    assert "1100" not in result.text
+    assert "DATA_UNAVAILABLE" not in result.text
+    assert "缺少上游证据支持" not in result.text
 
 
 def test_evidence_audit_is_internal_not_appended_to_agent_prose():

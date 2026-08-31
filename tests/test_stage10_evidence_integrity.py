@@ -193,7 +193,7 @@ def test_stale_jsf_is_historical_only_not_current_directional_evidence():
     )
 
     assert current.warnings
-    assert "不作为当前判断依据" in current.text
+    assert "1234" not in current.text
     context = render_downstream_evidence_context(state)
     assert "current_eligible=False" not in context  # raw provider rows are not duplicated downstream
 
@@ -368,6 +368,199 @@ def test_unsupported_comparison_does_not_hide_verified_actual_table_value():
     assert "293,700" not in result.text
     assert "+24%" not in result.text
     assert "DATA_UNAVAILABLE" in result.text
+
+
+def _financial_evidence(
+    metric,
+    value,
+    *,
+    semantic_basis="REVENUE",
+    period="Q1",
+    target_period="2027-03-31",
+    unit="百万円",
+):
+    return {
+        "domain": "FUNDAMENTALS",
+        "claim_type": "FACT",
+        "metric": metric,
+        "value": value,
+        "unit": unit,
+        "period": period,
+        "target_period": target_period,
+        "semantic_basis": semantic_basis,
+        "verification_status": "VERIFIED_FINANCIAL_AUTHORITY",
+        "allowed_for_current_decision": True,
+    }
+
+
+def test_verified_financial_authority_value_is_preserved_and_wrong_value_replaced():
+    state = _jp_state(
+        evidence_registry=[_financial_evidence("revenue", 365_221)]
+    )
+
+    exact = enforce_agent_output(
+        state,
+        "Latest Actual Q1 revenue: 365,221 百万円，target 2027-03-31。",
+        "Fundamentals Analyst",
+    )
+    wrong = enforce_agent_output(
+        state,
+        "Latest Actual Q1 revenue: 365,220 百万円，target 2027-03-31。",
+        "Fundamentals Analyst",
+    )
+
+    assert exact.text.startswith("Latest Actual Q1 revenue: 365,221 百万円")
+    assert exact.warnings == ()
+    assert wrong.text == "Latest Actual revenue: 365,221 百万円。"
+    assert wrong.warnings == ("financial_authority_replaced",)
+
+
+def test_financial_authority_replacement_requires_semantic_period_and_target_match():
+    state = _jp_state(
+        evidence_registry=[
+            _financial_evidence(
+                "revenue",
+                1_530_000,
+                semantic_basis="COMPANY_GUIDANCE",
+                period="FY",
+            )
+        ]
+    )
+
+    wrong_period = enforce_agent_output(
+        state,
+        "Current Company Guidance Q1 revenue: 1,500,000 百万円。",
+        "Fundamentals Analyst",
+    )
+
+    assert "1,530,000" not in wrong_period.text
+    assert "1,500,000" not in wrong_period.text
+
+
+def test_table_redaction_replaces_complete_cells_without_token_corruption():
+    result = enforce_agent_output(
+        _jp_state(),
+        "| Metric | P/E 27x | move (+2.3pt) | FY2027 | 52億円 |",
+        "Fundamentals Analyst",
+    )
+
+    assert result.text.count("|") == 6
+    assert "| DATA_UNAVAILABLE |" in result.text
+    assert "FY2027" in result.text
+    for corrupt in (
+        "DATA_UNAVAILABLEx",
+        "DATA_UNAVAILABLEpt",
+        "FY2DATA_UNAVAILABLE",
+        "DATA_UNAVAILABLE億",
+    ):
+        assert corrupt not in result.text
+
+
+def test_copied_legacy_enforcement_corruption_is_sanitized():
+    result = enforce_agent_output(
+        _jp_state(),
+        "P/E DATA_UNAVAILABLEx；spread DATA_UNAVAILABLEpt；"
+        "FY2DATA_UNAVAILABLE增长预期。"
+        "该精确数值缺少上游证据支持，已不纳入本项判断。",
+        "Research Manager",
+    )
+
+    assert "DATA_UNAVAILABLEx" not in result.text
+    assert "DATA_UNAVAILABLEpt" not in result.text
+    assert "FY2DATA_UNAVAILABLE" not in result.text
+    assert "缺少上游证据支持" not in result.text
+
+
+def test_unsupported_parenthesized_percent_clause_is_removed_cleanly():
+    result = enforce_agent_output(
+        _jp_state(),
+        "增长非常强（+27.5%）。后续只保留定性观察。",
+        "Research Manager",
+    )
+
+    assert "+27.5%" not in result.text
+    assert "DATA_UNAVAILABLE" not in result.text
+    assert "后续只保留定性观察" in result.text
+
+
+def _japan_sentiment_item(*, score=0.505, sample_count=4):
+    return {
+        "source": "Japan Investor Sentiment",
+        "source_type": "japan_investor_sentiment_aggregate",
+        "layer": "MARKET_SENTIMENT",
+        "status": "OK",
+        "metadata": {
+            "sample_count": sample_count,
+            "positive_count": 3,
+            "neutral_count": 0,
+            "negative_count": 1,
+            "sentiment_score": score,
+            "confidence": 0.4,
+        },
+    }
+
+
+def test_japan_sentiment_score_and_band_ignore_news_macro_direction(monkeypatch):
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_stocktwits_messages",
+        lambda *a, **k: "<stocktwits unavailable>",
+    )
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_reddit_posts",
+        lambda *a, **k: "<no Reddit posts>",
+    )
+    monkeypatch.setattr(
+        sentiment_module.get_news,
+        "func",
+        lambda *a, **k: "Very bullish macro news",
+    )
+    structured = MagicMock()
+    structured.invoke.return_value = SentimentReport(
+        overall_band=SentimentBand.BULLISH,
+        overall_score=9,
+        confidence="high",
+        narrative="宏观新闻印证并强化看多情绪。Yahoo Board样本略偏正面。",
+    )
+    llm = MagicMock()
+    llm.with_structured_output.return_value = structured
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [_japan_sentiment_item()],
+            "provider_metadata": {},
+        }
+    )
+
+    report = sentiment_module.create_sentiment_analyst(llm)(state)["sentiment_report"]
+
+    assert "Weak Positive Observation (LOW_SAMPLE)" in report
+    assert "**Score:** 0.505 (source-native -1 to +1 scale)" in report
+    assert "**Confidence:** Low" in report
+    assert "News and macro observations are background only" in report
+    assert "印证并强化看多情绪" not in report
+    assert "**Score:** 9" not in report
+
+
+def test_jsf_low_lending_is_not_total_short_pressure():
+    result = enforce_agent_output(
+        _jp_state(),
+        "JSF贷株余额为3000股，因此做空压力极低。",
+        "Market Analyst",
+    )
+
+    assert result.warnings == ("short_pressure_overclaim",)
+    assert "可观察贷株余额较低" in result.text
+    assert "不代表全市场空头总量" in result.text
+    assert "做空压力极低" not in result.text
+
+    separated = enforce_agent_output(
+        _jp_state(),
+        "JSF贷株余额为3000股。做空压力极低。",
+        "Market Analyst",
+    )
+    assert "做空压力极低" not in separated.text
+    assert "不代表全市场空头总量" in separated.text
 
 
 def test_sentiment_unavailable_does_not_become_neutral_or_score(monkeypatch):

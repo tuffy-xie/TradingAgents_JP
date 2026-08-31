@@ -13,7 +13,12 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-_NUMBER = re.compile(r"(?<![A-Za-z_])[-+]?\d[\d,]*(?:\.\d+)?%?")
+# A numeric token may be followed immediately by a display suffix such as
+# ``x`` or ``pt``.  It may not, however, begin in the middle of an identifier
+# such as ``FY2027``.  The old look-behind allowed the engine to restart at the
+# second digit (``FY2`` + ``027``), which produced corrupt output such as
+# ``FY2DATA_UNAVAILABLE``.
+_NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-+]?\d[\d,]*(?:\.\d+)?%?")
 _CURRENT_PRICE = re.compile(r"(?:current\s+price|spot\s+price|当前(?:股)?价|现价|株価)", re.I)
 _GUIDANCE = re.compile(r"(?:company\s+guidance|guidance|公司指引|业绩指引)", re.I)
 _CONSENSUS = re.compile(r"(?:analyst\s+(?:consensus|estimate)|consensus|分析师(?:一致预期|预测)|市场预期)", re.I)
@@ -49,6 +54,11 @@ _SHORT_ABSENCE_OVERCLAIM = re.compile(
     r"空头(?:全部)?(?:死光|出清)|(?:没有|未见)(?:融券[/／])?做空压力(?:累积)?)",
     re.I,
 )
+_SHORT_PRESSURE_OVERCLAIM = re.compile(
+    r"(?:short\s+pressure\s+(?:is\s+)?(?:extremely|very)?\s*low|"
+    r"做空压力(?:极低|很低|有限)|空头压力(?:极低|很低|有限))",
+    re.I,
+)
 _HISTORY_AS_SIGNAL = re.compile(
     r"(?:last\s+(?:trade|time)|previous\s+(?:trade|outcome)|上次|此前交易)[^\n。！？;]*(?:loss|亏损|bearish|看空|hold|观望|sell|卖出)",
     re.I,
@@ -67,6 +77,18 @@ _COLLAPSED_PROVENANCE = re.compile(
     r"all\s+(?:data|facts|evidence).*VERIFIED_TOOL_OUTPUT)",
     re.I,
 )
+_ACTUAL_CONTEXT = re.compile(
+    r"(?:latest\s+actual|最新(?:季度)?(?:实绩|actual)|(?:Q1|H1|Q3|FY)[^\n。！？;]*(?:actual|实际|実績))",
+    re.I,
+)
+_FINANCIAL_METRIC_PATTERNS = {
+    "revenue": re.compile(r"(?:revenue|sales|营收|营业收入|売上高)", re.I),
+    "operating_profit": re.compile(r"(?:operating\s+profit|OP\b|营业利润|営業利益)", re.I),
+    "ordinary_profit": re.compile(r"(?:ordinary\s+profit|经常利润|経常利益)", re.I),
+    "net_income": re.compile(r"(?:net\s+income|归母净利润|净利润|純利益)", re.I),
+    "eps": re.compile(r"\bEPS\b|每股收益", re.I),
+    "profit_total": re.compile(r"(?:total\s+period\s+profit|profit\s+total|当期总利润)", re.I),
+}
 
 
 @dataclass(frozen=True)
@@ -116,6 +138,12 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         if _SHORT_ABSENCE_OVERCLAIM.search(clause):
             warnings.append("short_absence_overclaim")
             return "【语义约束：仅能陈述可观察的借券余额或官方可申报仓位；无申报记录不代表不存在空头。】"
+        if _SHORT_PRESSURE_OVERCLAIM.search(clause):
+            warnings.append("short_pressure_overclaim")
+            return (
+                "JSF 可观察贷株余额较低；该指标不代表全市场空头总量、"
+                "机构空头立场或不存在其他做空压力。"
+            )
         if _HISTORY_AS_SIGNAL.search(clause):
             warnings.append("historical_outcome_as_current_evidence")
             return "【历史隔离：既往交易结果仅用于风险与信心校准，不构成本轮方向性证据。】"
@@ -143,6 +171,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         tokens = _number_tokens(clause)
         if not tokens:
             return clause
+        financial_replacement = _financial_authority_replacement(clause, state)
+        if financial_replacement is not None:
+            warnings.append("financial_authority_replaced")
+            return financial_replacement
         if (
             agent_name == "Trader"
             and _EXECUTION_INPUT.search(clause)
@@ -178,6 +210,7 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     # Preserve markdown structure.  One line is a deliberately small enough
     # unit for reports and avoids splitting decimal values at their dot.
     cleaned = "".join(_clean_line(line, clean_clause) for line in text.splitlines(keepends=True))
+    cleaned = _sanitize_legacy_enforcement_artifacts(cleaned)
     if not warnings:
         return EvidenceEnforcementResult(cleaned)
     unique_warnings = tuple(dict.fromkeys(warnings))
@@ -274,6 +307,29 @@ def _clean_line(line: str, clean_clause) -> str:
     """Apply a downgrade to complete sentences, never isolated number tokens."""
     parts = re.split(r"(?<=[。！？；;])", line)
     return "".join(clean_clause(part) for part in parts if part)
+
+
+def _sanitize_legacy_enforcement_artifacts(text: str) -> str:
+    """Keep copied upstream text from carrying old substring corruption.
+
+    A later agent can quote an earlier report.  This final normalization makes
+    the no-substring contract transitive across handoffs without attempting to
+    recover the unsupported value that was previously destroyed.
+    """
+    text = text.replace("该精确数值缺少上游证据支持，已不纳入本项判断。", "")
+    text = re.sub(
+        r"FY\d*DATA_UNAVAILABLE(?:增长预期|growth\s+estimate)?",
+        "DATA_UNAVAILABLE",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        r"DATA_UNAVAILABLE(?:(?:x|pt|億円?|百万円|万亿|万億|日元|円|%))+",
+        "DATA_UNAVAILABLE",
+        text,
+        flags=re.I,
+    )
+    return re.sub(r"DATA_UNAVAILABLE\s*/\s*10", "DATA_UNAVAILABLE", text)
 
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
@@ -388,12 +444,17 @@ def _audit_category(warning: str) -> str:
         "analyst_estimate_as_guidance",
         "guidance_as_analyst_consensus",
         "short_absence_overclaim",
+        "short_pressure_overclaim",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "collapsed_provenance_types",
     }:
         return "SEMANTIC_MISMATCH"
-    if warning in {"verified_market_fact_downgraded", "verified_news_fact_downgraded"}:
+    if warning in {
+        "verified_market_fact_downgraded",
+        "verified_news_fact_downgraded",
+        "financial_authority_replaced",
+    }:
         return "SUPPORTED_FACT"
     return "UNSUPPORTED_CLAIM"
 
@@ -411,26 +472,91 @@ def _numbers_in(value: Any) -> set[str]:
 
 
 def _number_tokens(text: str) -> tuple[str, ...]:
-    return tuple(_normalise_number(match.group(0)) for match in _NUMBER.finditer(text))
+    # Dates, times and fiscal-year identifiers are temporal identity, not
+    # unsupported numeric evidence.  Freshness validation owns them.
+    searchable = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "", text)
+    searchable = re.sub(r"\b\d{1,2}:\d{2}(?::\d{2})?\b", "", searchable)
+    searchable = re.sub(r"\bFY\d{4}\b", "", searchable, flags=re.I)
+    return tuple(_normalise_number(match.group(0)) for match in _NUMBER.finditer(searchable))
 
 
 def _normalise_number(token: str) -> str:
     return token.replace(",", "")
 
 
+def _financial_authority_replacement(
+    clause: str, state: Mapping[str, Any]
+) -> str | None:
+    """Replace one incompatible current-financial claim with exact authority.
+
+    Matching is by section, canonical metric and (when stated) fiscal period
+    and target-period end.  Numeric proximity is never considered.  The helper
+    intentionally handles only a single semantic metric per clause; compound
+    prose falls through to normal clause-level removal rather than guessing.
+    """
+    is_guidance = bool(_GUIDANCE.search(clause))
+    is_actual = bool(_ACTUAL_CONTEXT.search(clause))
+    if is_guidance == is_actual:
+        return None
+    metrics = [
+        metric
+        for metric, pattern in _FINANCIAL_METRIC_PATTERNS.items()
+        if pattern.search(clause)
+    ]
+    if len(metrics) != 1:
+        return None
+    metric = metrics[0]
+    explicit_period = next(
+        (period for period in ("Q1", "H1", "Q3", "FY") if re.search(rf"\b{period}\b", clause, re.I)),
+        None,
+    )
+    target_match = re.search(r"\b\d{4}-\d{2}-\d{2}\b", clause)
+    explicit_target = target_match.group(0) if target_match else None
+    candidates = []
+    for item in _iter_mapping_values(state.get("evidence_registry") or []):
+        if item.get("verification_status") != "VERIFIED_FINANCIAL_AUTHORITY":
+            continue
+        if item.get("claim_type") != "FACT" or item.get("allowed_for_current_decision") is not True:
+            continue
+        if item.get("metric") != metric:
+            continue
+        semantic = str(item.get("semantic_basis") or "")
+        if is_guidance != (semantic == "COMPANY_GUIDANCE"):
+            continue
+        if explicit_period and str(item.get("period") or "").upper() != explicit_period:
+            continue
+        if explicit_target and str(item.get("target_period") or "") != explicit_target:
+            continue
+        candidates.append(item)
+    if len(candidates) != 1:
+        return None
+    authority = candidates[0]
+    authority_token = _normalise_number(str(authority.get("value")))
+    if authority_token in _number_tokens(clause):
+        return None
+    value = authority.get("value")
+    if isinstance(value, float):
+        displayed = f"{value:g}"
+    elif isinstance(value, int):
+        displayed = f"{value:,}"
+    else:
+        displayed = str(value)
+    unit = str(authority.get("unit") or "").strip()
+    section = "Current Company Guidance" if is_guidance else "Latest Actual"
+    return f"{section} {metric}: {displayed}{(' ' + unit) if unit else ''}。"
+
+
 def _replace_unsupported(clause: str, permitted: frozenset[str] | set[str]) -> str:
-    """Downgrade the complete unsupported claim so prose remains readable."""
+    """Remove a complete unsupported prose claim or fail-close a table cell.
+
+    Substituting only the numeric substring left suffixes such as ``x`` and
+    ``pt`` attached to ``DATA_UNAVAILABLE`` and could splice replacement text
+    into identifiers.  Prose is now removed at clause granularity.  Markdown
+    tables retain their shape and replace the complete unsupported cell.
+    """
     if "|" in clause:
         return _redact_unsupported_table_values(clause, permitted)
-    if _CURRENT_PRICE.search(clause):
-        return "当前价格仅以已验证行情快照为准；本句未获支持的精确价格不纳入判断。"
-    if _GUIDANCE.search(clause):
-        return "公司指引仅采用同期间官方披露；本句未获支持的精确预测不纳入判断。"
-    if _CONSENSUS.search(clause):
-        return "分析师预期仅采用有日期的独立一致预期数据；本句未获支持的精确预测不纳入判断。"
-    if _CURRENT_WORD.search(clause):
-        return "该项数据并非当前口径，已不作为当前判断依据。"
-    return "该精确数值缺少上游证据支持，已不纳入本项判断。"
+    return ""
 
 
 def _redact_unsupported_table_values(
@@ -444,8 +570,9 @@ def _redact_unsupported_table_values(
     unavailable; it does not infer or recalculate a replacement value.
     """
 
-    def replace(match: re.Match[str]) -> str:
-        token = _normalise_number(match.group(0))
-        return match.group(0) if token in permitted else "DATA_UNAVAILABLE"
-
-    return _NUMBER.sub(replace, clause)
+    cells = clause.split("|")
+    for index, cell in enumerate(cells):
+        tokens = _number_tokens(cell)
+        if tokens and any(token not in permitted for token in tokens):
+            cells[index] = " DATA_UNAVAILABLE "
+    return "|".join(cells)
