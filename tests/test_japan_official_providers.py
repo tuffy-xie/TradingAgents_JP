@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tradingagents.dataflows.japan.context import render_japan_audience_context
 from tradingagents.dataflows.japan.edinet import (
     EDINETProvider,
     _normalise_documents,
@@ -490,6 +491,58 @@ def test_jsf_csv_normalizers_keep_facts_separate():
     context = resolve_market_context("6981.T")
     assert normalise_balances(balances, context)[0].metadata["finance_balance"] == 1000
     assert normalise_premium_charges(charges, context)[0].metadata["premium_charge_yen"] == 0.05
+
+
+@pytest.mark.unit
+def test_jsf_preliminary_is_latest_available_and_confirmed_wins_same_date():
+    balances = (
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,速報／確報\n"
+        "2026/09/01,6981,村田製作所,1000,200,速報\n"
+        "2026/08/31,6981,村田製作所,900,180,確報\n"
+    ).encode("cp932")
+    items = normalise_balances(balances, resolve_market_context("6981.T"))
+    assert items[-1].metadata["publication_status"] == "PRELIMINARY"
+    assert items[-1].metadata["application_date"] == "2026-09-01"
+
+    same_date = (
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,速報／確報\n"
+        "2026/09/01,6981,村田製作所,1000,200,速報\n"
+        "2026/09/01,6981,村田製作所,1100,220,確報\n"
+    ).encode("cp932")
+    confirmed = normalise_balances(same_date, resolve_market_context("6981.T"))
+    assert len(confirmed) == 1
+    assert confirmed[0].metadata["publication_status"] == "CONFIRMED"
+    assert confirmed[0].metadata["finance_balance"] == 1100.0
+
+
+@pytest.mark.unit
+def test_jsf_unknown_publication_status_is_not_promoted():
+    balances = (
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,速報／確報\n"
+        "2026/09/01,6981,村田製作所,1000,200,不明\n"
+    ).encode("cp932")
+    item = normalise_balances(balances, resolve_market_context("6981.T"))[0]
+    assert item.metadata["publication_status"] == "UNKNOWN"
+
+
+@pytest.mark.unit
+def test_jsf_renderer_preserves_preliminary_label():
+    item = normalise_balances(
+        (
+            "申込日,銘柄コード,銘柄名,融資残高株数,速報／確報\n"
+            "2026/09/01,6981,村田製作所,1000,速報\n"
+        ).encode("cp932"),
+        resolve_market_context("6981.T"),
+    )[0]
+    rendered = render_japan_audience_context(
+        {
+            "market_context": {"market": "JP"},
+            "japan_data_bundle": {"items": [item.to_dict()]},
+        },
+        "MARKET",
+    )
+    assert "publication_status': 'PRELIMINARY'" in rendered
+    assert "CONFIRMED" not in rendered
 
 
 @pytest.mark.unit

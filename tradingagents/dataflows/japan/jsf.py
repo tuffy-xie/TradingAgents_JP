@@ -32,7 +32,7 @@ class JSFProvider:
 
     name = "JSF"
     category = "supply_demand"
-    cache_version = "public-history-trend-freshness-v5"
+    cache_version = "public-history-trend-freshness-v6-publication-status"
     cache_requires_completed_window = True
 
     def __init__(self):
@@ -217,6 +217,7 @@ def normalise_balances(
             continue
         application = _date(row.get("申込日"), compact=historical)
         unit = _unit_from_schema(row)
+        report_type = row.get("速報／確報") or "UNSPECIFIED"
         fields = {
             "company": row.get("銘柄名"),
             "finance_new": _number(row.get("融資新規（株）") or row.get("融資新規株数")),
@@ -230,7 +231,10 @@ def normalise_balances(
             # The official CSV does not publish a settlement-date column. Do
             # not infer T+2 because holidays and settlement rules can differ.
             "settlement_date": None,
-            "report_type": row.get("速報／確報") or "UNSPECIFIED",
+            # Keep the source label for backwards compatibility, while also
+            # exposing a canonical publication lifecycle to consumers.
+            "report_type": report_type,
+            "publication_status": _publication_status(report_type),
             "unit": unit,
             "schema_fields": [key for key in row if "融資" in key or "貸株" in key or "差引" in key],
             "history_observation": historical,
@@ -243,7 +247,40 @@ def normalise_balances(
             content="Official JSF securities-finance balance. This is not all brokerage margin positions.",
             url=url, confidence=0.95, verified=True, layer=InformationLayer.VERIFIED_FACT, metadata=fields,
         ))
-    return sorted(items, key=lambda item: item.timestamp)
+    # A preliminary and confirmed publication may coexist for one data date.
+    # Prefer confirmed for that date, but retain all observations when no
+    # publication state gives us a safe tie-breaker.
+    preferred: dict[date, list[MarketInformation]] = {}
+    for item in items:
+        key = item.timestamp.date()
+        current = preferred.get(key, [])
+        if not current:
+            preferred[key] = [item]
+            continue
+        current_rank = max(_publication_rank(existing.metadata.get("publication_status")) for existing in current)
+        item_rank = _publication_rank(item.metadata.get("publication_status"))
+        if item_rank > current_rank:
+            preferred[key] = [item]
+        elif item_rank == current_rank:
+            preferred[key].append(item)
+    return sorted(
+        (item for same_date in preferred.values() for item in same_date),
+        key=lambda item: item.timestamp,
+    )
+
+
+def _publication_status(value: Any) -> str:
+    """Normalize JSF's source publication label without guessing unknown values."""
+    normalized = str(value or "").strip().upper()
+    if "速報" in str(value) or "PRELIMINARY" in normalized:
+        return "PRELIMINARY"
+    if "確報" in str(value) or "確定" in str(value) or "CONFIRMED" in normalized:
+        return "CONFIRMED"
+    return "UNKNOWN"
+
+
+def _publication_rank(value: Any) -> int:
+    return {"UNKNOWN": 0, "PRELIMINARY": 1, "CONFIRMED": 2}.get(str(value), 0)
 
 
 def build_supply_demand_trend(
