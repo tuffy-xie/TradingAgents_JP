@@ -68,6 +68,7 @@ def create_sentiment_analyst(llm):
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
         japan_data_context = get_japan_sentiment_context_from_state(state)
+        social_authority = _japan_social_authority(state)
 
         # Keep the original sentiment preload for every market. Japan
         # sentiment is supplemental context, not a replacement for the
@@ -125,7 +126,11 @@ def create_sentiment_analyst(llm):
         # data is already in the prompt.
         formatted_messages = prompt.format_messages(messages=state["messages"])
 
-        if is_japan and not _has_real_social_sample(stocktwits_block, reddit_block, japan_data_context):
+        if is_japan and not _has_real_social_sample(
+            stocktwits_block,
+            reddit_block,
+            has_japan_sample=social_authority is not None,
+        ):
             report_text = (
                 "**Overall Sentiment:** **DATA_UNAVAILABLE**\n"
                 "**Score:** DATA_UNAVAILABLE\n"
@@ -146,7 +151,6 @@ def create_sentiment_analyst(llm):
             reddit_block,
         )
         if is_japan:
-            social_authority = _japan_social_authority(state)
             report_text = _apply_japan_sentiment_domain_integrity(
                 report_text, social_authority
             )
@@ -182,17 +186,16 @@ def _apply_source_status_integrity(report_text: str, reddit_block: str) -> str:
 
 
 def _has_real_social_sample(
-    stocktwits_block: str, reddit_block: str, japan_data_context: str
+    stocktwits_block: str,
+    reddit_block: str,
+    *,
+    has_japan_sample: bool = False,
 ) -> bool:
     stocktwits = stocktwits_block.strip().lower()
     reddit = reddit_block.strip().lower()
     stocktwits_available = bool(stocktwits) and not stocktwits.startswith("<")
     reddit_available = bool(reddit) and not reddit.startswith("<")
-    japan_sample = "data unavailable" not in japan_data_context.lower() and any(
-        token in japan_data_context.lower()
-        for token in ("sample_count", "message_count", "bullish", "bearish", "投稿")
-    )
-    return stocktwits_available or reddit_available or japan_sample
+    return stocktwits_available or reddit_available or has_japan_sample
 
 
 def _apply_low_sample_integrity(

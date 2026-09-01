@@ -56,7 +56,9 @@ _SHORT_ABSENCE_OVERCLAIM = re.compile(
 )
 _SHORT_PRESSURE_OVERCLAIM = re.compile(
     r"(?:short\s+pressure\s+(?:is\s+)?(?:extremely|very)?\s*low|"
-    r"做空压力(?:极低|很低|有限)|空头压力(?:极低|很低|有限))",
+    r"做空压力(?:极低|很低|有限)|空[头頭]压力(?:极低|很低|有限)|"
+    r"空[头頭](?:部位)?(?:大幅|幾乎|几乎|全部|全數|全数)?(?:回补|回補|出清)|"
+    r"(?:卖压|賣壓)(?:明显|明顯|大幅)?(?:减轻|減輕))",
     re.I,
 )
 _HISTORY_AS_SIGNAL = re.compile(
@@ -75,6 +77,12 @@ _EXECUTION_INPUT = re.compile(
 _COLLAPSED_PROVENANCE = re.compile(
     r"(?:以下(?:数据|事实|证据).*均来自.*VERIFIED_TOOL_OUTPUT|"
     r"all\s+(?:data|facts|evidence).*VERIFIED_TOOL_OUTPUT)",
+    re.I,
+)
+_FINANCIAL_GENERIC_PROVENANCE = re.compile(
+    r"(?:(?:Q[1-4]|FY|latest|current|最新|当前)[^\n。！？;]*)?"
+    r"(?:financial|fundamental|actual|guidance|revenue|profit|EPS|财务|基本面|业绩|指引|营收|利润)"
+    r"[^\n。！？;]*VERIFIED_TOOL_OUTPUT",
     re.I,
 )
 _ACTUAL_CONTEXT = re.compile(
@@ -123,6 +131,11 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     warnings: list[str] = []
 
     def clean_clause(clause: str) -> str:
+        if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
+            warnings.append("financial_provenance_collapsed")
+            return clause.replace(
+                "VERIFIED_TOOL_OUTPUT", "VERIFIED_FINANCIAL_AUTHORITY"
+            )
         if _COLLAPSED_PROVENANCE.search(clause):
             warnings.append("collapsed_provenance_types")
             return (
@@ -223,6 +236,14 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
     result = _enforce_unavailable_social_source(state, result)
     if (state.get("market_context") or {}).get("market") != "JP":
         return result
+    if isinstance(result.get("sentiment_report"), str) and not _has_japan_sentiment_evidence(state):
+        result["sentiment_report"] = (
+            "**Overall Sentiment:** **DATA_UNAVAILABLE**\n"
+            "**Score:** DATA_UNAVAILABLE\n"
+            "**Confidence:** Low\n\n"
+            "暂无可用日本情绪数据。投资者/社交样本不可用或为空；"
+            "News 和 Macro 仅为背景，未参与 sentiment score 或 band。"
+        )
     audit: list[dict[str, Any]] = list(state.get("evidence_audit") or [])
 
     def clean_value(key: str, value: str) -> str:
@@ -448,6 +469,7 @@ def _audit_category(warning: str) -> str:
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "collapsed_provenance_types",
+        "financial_provenance_collapsed",
     }:
         return "SEMANTIC_MISMATCH"
     if warning in {
@@ -461,6 +483,25 @@ def _audit_category(warning: str) -> str:
 
 def _iter_mapping_values(items: Iterable[Any]) -> Iterable[Mapping[str, Any]]:
     return (item for item in items if isinstance(item, Mapping))
+
+
+def _has_japan_sentiment_evidence(state: Mapping[str, Any]) -> bool:
+    bundle = state.get("japan_data_bundle") or {}
+    for item in _iter_mapping_values(bundle.get("items") or []):
+        if item.get("source_type") != "japan_investor_sentiment_aggregate":
+            continue
+        metadata = item.get("metadata")
+        if not isinstance(metadata, Mapping):
+            continue
+        sample_count = metadata.get("sample_count")
+        score = metadata.get("sentiment_score")
+        if (
+            isinstance(sample_count, int)
+            and sample_count > 0
+            and isinstance(score, (int, float))
+        ):
+            return True
+    return False
 
 
 def _numbers_in(value: Any) -> set[str]:

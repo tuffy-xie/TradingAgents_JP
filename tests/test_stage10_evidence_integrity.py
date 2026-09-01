@@ -10,7 +10,10 @@ from langchain_core.messages import ToolMessage
 
 from tradingagents.agents.analysts import sentiment_analyst as sentiment_module
 from tradingagents.agents.schemas import SentimentBand, SentimentReport
-from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.utils.evidence_enforcement import (
+    enforce_agent_output,
+    enforce_agent_result,
+)
 from tradingagents.agents.utils.evidence_registry import (
     build_run_manifest,
     capture_agent_evidence,
@@ -542,6 +545,57 @@ def test_japan_sentiment_score_and_band_ignore_news_macro_direction(monkeypatch)
     assert "**Score:** 9" not in report
 
 
+def test_missing_japan_social_sample_cannot_become_neutral_from_news(monkeypatch):
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_stocktwits_messages",
+        lambda *a, **k: "<stocktwits unavailable>",
+    )
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_reddit_posts",
+        lambda *a, **k: "<reddit status=RATE_LIMITED; sample_count=UNKNOWN>",
+    )
+    monkeypatch.setattr(
+        sentiment_module.get_news,
+        "func",
+        lambda *a, **k: "Bullish macro background",
+    )
+    llm = MagicMock()
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [
+                {
+                    **_japan_sentiment_item(score=None, sample_count=0),
+                    "status": "DATA_UNAVAILABLE",
+                }
+            ],
+            "provider_metadata": {},
+        }
+    )
+
+    report = sentiment_module.create_sentiment_analyst(llm)(state)["sentiment_report"]
+
+    assert "**Overall Sentiment:** **DATA_UNAVAILABLE**" in report
+    assert "**Score:** DATA_UNAVAILABLE" in report
+    assert "**Overall Sentiment:** **Neutral**" not in report
+    assert "**Score:** 5.0" not in report
+    llm.invoke.assert_not_called()
+
+    replayed = enforce_agent_result(
+        state,
+        {
+            "sentiment_report": (
+                "**Overall Sentiment:** **Neutral**\n**Score:** 5.0\n"
+                "宏观新闻支持中性情绪。"
+            )
+        },
+        "Sentiment Analyst",
+    )
+    assert "DATA_UNAVAILABLE" in replayed["sentiment_report"]
+    assert "Neutral" not in replayed["sentiment_report"]
+
+
 def test_jsf_low_lending_is_not_total_short_pressure():
     result = enforce_agent_output(
         _jp_state(),
@@ -561,6 +615,26 @@ def test_jsf_low_lending_is_not_total_short_pressure():
     )
     assert "做空压力极低" not in separated.text
     assert "不代表全市场空头总量" in separated.text
+
+    traditional = enforce_agent_output(
+        _jp_state(),
+        "借券餘額20日下降98.14%，空頭幾乎全數回補，賣壓大幅減輕。",
+        "Portfolio Manager",
+    )
+    assert "空頭幾乎全數回補" not in traditional.text
+    assert "賣壓大幅減輕" not in traditional.text
+
+
+def test_financial_fact_cannot_be_relabelled_generic_tool_output():
+    result = enforce_agent_output(
+        _jp_state(),
+        "Q1业绩和全年指引均为已验证事实（VERIFIED_TOOL_OUTPUT）。",
+        "Research Manager",
+    )
+
+    assert "VERIFIED_TOOL_OUTPUT" not in result.text
+    assert "VERIFIED_FINANCIAL_AUTHORITY" in result.text
+    assert result.warnings == ("financial_provenance_collapsed",)
 
 
 def test_sentiment_unavailable_does_not_become_neutral_or_score(monkeypatch):
