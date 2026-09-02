@@ -1,3 +1,6 @@
+import re
+from collections.abc import Mapping
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.utils.agent_utils import (
@@ -63,6 +66,8 @@ def create_news_analyst(llm):
 
         if len(result.tool_calls) == 0:
             report = result.content
+            if (state.get("market_context") or {}).get("market") == "JP":
+                report = _apply_japan_news_authority(report, state)
 
         return {
             "messages": [result],
@@ -70,3 +75,49 @@ def create_news_analyst(llm):
         }
 
     return news_analyst_node
+
+
+_NO_COMPANY_NEWS = re.compile(
+    r"(?:no\s+(?:company[- ]specific\s+)?news|no news found|"
+    r"(?:没有|无|未抓取到|未发现)[^。；\n|]{0,30}(?:公司|个股|相关)?新闻|"
+    r"新闻[^。；\n|]{0,20}(?:0\s*条|无结果)|"
+    r"ニュース[^。；\n|]{0,30}(?:0\s*条|ありません|なし))",
+    re.I,
+)
+
+
+def _apply_japan_news_authority(report: str, state: Mapping[str, object]) -> str:
+    """Make the pre-fetched, as-of-filtered Japan news list canonical.
+
+    The generic Yahoo tool may legitimately return no results while the Japan
+    bundle contains timestamped local-market headlines.  A tool-specific empty
+    result must not overwrite that independent authority.
+    """
+    bundle = state.get("japan_data_bundle")
+    if not isinstance(bundle, Mapping):
+        return report
+    items = [
+        item
+        for item in bundle.get("items") or []
+        if isinstance(item, Mapping)
+        and item.get("source_type") == "japan_stock_news"
+        and item.get("status") == "OK"
+        and (item.get("metadata") or {}).get("freshness_status")
+        in {"CURRENT", "LATEST_AVAILABLE"}
+    ]
+    if not items:
+        return report
+    cleaned_lines = [line for line in report.splitlines() if not _NO_COMPANY_NEWS.search(line)]
+    ordered = sorted(items, key=lambda item: str(item.get("timestamp") or ""), reverse=True)
+    authority = [
+        "## Japan company-news authority",
+        "The following timestamped Japan bundle headlines are available; a separate tool's empty result does not mean there is no company news.",
+    ]
+    for item in ordered[:8]:
+        published = (item.get("metadata") or {}).get("published_at") or item.get("timestamp")
+        authority.append(
+            f"- {published} [{item.get('source')}] {item.get('title')}"
+            + (f" ({item.get('url')})" if item.get("url") else "")
+        )
+    narrative = "\n".join(cleaned_lines).strip()
+    return "\n".join(authority) + ("\n\n" + narrative if narrative else "")

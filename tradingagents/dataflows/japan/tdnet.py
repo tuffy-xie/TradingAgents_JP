@@ -56,6 +56,7 @@ class TDnetProvider:
         self.feed_url = feed_url or config.get("tdnet_feed_url")
         self.timeout = float(config.get("request_timeout_seconds", 10))
         self.max_pages_per_day = int(config.get("tdnet_max_pages_per_day", 50))
+        self.max_scan_days = int(config.get("tdnet_max_scan_days", 120))
         self.page_concurrency = int(config.get("tdnet_page_concurrency", 8))
         self.extract_pdf_text = bool(config.get("tdnet_extract_pdf_text", True))
         self.max_pdf_bytes = int(config.get("tdnet_max_pdf_bytes", 8_000_000))
@@ -68,11 +69,33 @@ class TDnetProvider:
         if self.feed_url:
             return await self._fetch_authorised_feed(context, start_date, end_date)
 
-        # The financial-authority scan uses a 32-day inclusive window so a
-        # prior month-end structured disclosure remains inside official
-        # coverage on a month-end analysis date.  This is still tightly
-        # bounded and each day retains the independent page safety cap.
-        days = _date_range(start_date, end_date, maximum_days=32)
+        # The caller may widen the official-authority window back to the exact
+        # selected structured disclosure.  Keep that request bounded, but
+        # never silently truncate it and then claim complete coverage.
+        requested_count = _requested_day_count(start_date, end_date)
+        if requested_count is None:
+            return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
+        if requested_count > self.max_scan_days:
+            return ProviderResponse(
+                SourceStatus(
+                    self.name,
+                    DataStatus.DATA_UNAVAILABLE,
+                    detail=f"requested TDnet window exceeds tdnet_max_scan_days={self.max_scan_days}",
+                ),
+                metadata={
+                    "coverage": {
+                        "status": "INCOMPLETE",
+                        "complete": False,
+                        "requested_start_date": start_date,
+                        "requested_end_date": end_date,
+                        "requested_day_count": requested_count,
+                        "complete_day_count": 0,
+                        "max_scan_days": self.max_scan_days,
+                        "days": [],
+                    }
+                },
+            )
+        days = _date_range(start_date, end_date, maximum_days=self.max_scan_days)
         if not days:
             return ProviderResponse(SourceStatus(self.name, DataStatus.PARSE_FAILED, detail="invalid date range"))
         page_semaphore = asyncio.Semaphore(max(1, self.page_concurrency))
@@ -325,6 +348,17 @@ def _date_range(start_date: str, end_date: str, *, maximum_days: int) -> tuple[d
         return ()
     start = max(start, end - timedelta(days=maximum_days - 1))
     return tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
+
+
+def _requested_day_count(start_date: str, end_date: str) -> int | None:
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+    except ValueError:
+        return None
+    if end < start:
+        return None
+    return (end - start).days + 1
 
 
 def _page_count(html: str) -> int:

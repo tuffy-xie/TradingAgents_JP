@@ -131,6 +131,30 @@ def test_sentiment_cannot_reverse_core_conclusion_by_itself():
     assert context["overall_confidence"] == "low"
 
 
+def test_source_native_sentiment_aggregate_is_the_only_sentiment_vote():
+    aggregate = _item(
+        "Japan Investor Sentiment",
+        "japan_investor_sentiment_aggregate",
+        "source-native aggregate",
+        {"sample_count": 11, "sentiment_score": -0.1821, "confidence": 0.7},
+        layer="MARKET_SENTIMENT",
+    )
+    bullish_news = _item(
+        "Japan News",
+        "japan_stock_news",
+        "bullish macro headline",
+        {"sentiment": "positive"},
+        layer="NEWS_ANALYST_VIEW",
+    )
+
+    context = build_japan_decision_context(_bundle([aggregate, bullish_news]), "")
+    sentiment = context["dimensions"]["sentiment"]
+
+    assert sentiment["direction"] == "bearish"
+    assert sentiment["evidence_count"] == 11
+    assert "news and macro are excluded" in sentiment["note"].lower()
+
+
 def test_decision_context_is_carried_for_jp_final_nodes_only():
     bundle = _bundle([])
     jp_state = Propagator().create_initial_state("8002.T", "2026-08-14", japan_data_bundle=bundle)

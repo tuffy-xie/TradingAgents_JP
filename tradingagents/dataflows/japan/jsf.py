@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import csv
 import re
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from io import StringIO
@@ -241,6 +242,11 @@ def normalise_balances(
         }
         if application is None:
             continue
+        # JSF pages can expose a dated but still-empty column before any
+        # balance values are published.  A calendar label is not an
+        # observation and must not displace the latest valid source record.
+        if not _has_balance_observation(fields):
+            continue
         items.append(MarketInformation(
             source="JSF", source_type="securities_finance_balance", ticker=context.symbol,
             timestamp=application, title="JSF financing and stock-loan balance",
@@ -283,6 +289,13 @@ def _publication_rank(value: Any) -> int:
     return {"UNKNOWN": 0, "PRELIMINARY": 1, "CONFIRMED": 2}.get(str(value), 0)
 
 
+def _has_balance_observation(fields: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(fields.get(key), (int, float))
+        for key in ("finance_balance", "stock_loan_balance", "net_balance")
+    )
+
+
 def build_supply_demand_trend(
     balance_items: list[MarketInformation], context: MarketContext, start_date: str, end_date: str,
 ) -> MarketInformation:
@@ -315,7 +328,12 @@ def _valid_observations(items: list[MarketInformation]) -> list[MarketInformatio
     result: list[MarketInformation] = []
     for item in sorted(items, key=lambda value: value.timestamp):
         key = item.metadata.get("application_date")
-        if not key or key in seen or item.metadata.get("unit") != "株":
+        if (
+            not key
+            or key in seen
+            or item.metadata.get("unit") != "株"
+            or not _has_balance_observation(item.metadata)
+        ):
             continue
         seen.add(key)
         result.append(item)

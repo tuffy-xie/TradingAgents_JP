@@ -51,7 +51,7 @@ def test_japan_report_sections_are_explicit_and_do_not_fabricate_sentiment(tmp_p
     assert "## 信用与需给" in sections
     assert "## 空卖与机构行为" in sections
     assert "## 日本市场情绪" in sections
-    assert "DATA UNAVAILABLE" in sections
+    assert "数据不可用" in sections
 
     out = write_report_tree(
         {"market_context": {"market": "JP"}, "japan_data_bundle": _bundle()}, "6981.T", tmp_path

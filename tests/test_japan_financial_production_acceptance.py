@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from datetime import date, timedelta
 
 from tradingagents.dataflows.japan.cache import JapanDataCache
 from tradingagents.dataflows.japan.context import (
@@ -27,13 +28,14 @@ class _StructuredFinancialProvider:
     name = "EDINET DB Financials"
     category = "fundamentals"
     cache_version = "stage7-test"
+    disclosure_date = "2026-08-06"
 
     async def fetch(self, _context, *, start_date, end_date):
         del start_date
         document = normalize_financial_document(
             {
                 "record_id": "earnings-5016-q1",
-                "disclosure_date": "2026-08-06",
+                "disclosure_date": self.disclosure_date,
                 "accounting_standard": "IFRS",
                 "is_consolidated": True,
                 "quarter": 1,
@@ -63,11 +65,76 @@ class _StructuredFinancialProvider:
                 "guidance_document": guidance_document.to_dict(),
                 "actual_status": "OK",
                 "guidance_status": "OK",
-                "actual_selection": {"disclosure_date": "2026-08-06"},
-                "guidance_selection": {"disclosure_date": "2026-08-06"},
+                "actual_selection": {"disclosure_date": self.disclosure_date},
+                "guidance_selection": {"disclosure_date": self.disclosure_date},
                 "analysis_as_of": end_date,
             },
         )
+
+
+class _EarlierStructuredFinancialProvider(_StructuredFinancialProvider):
+    disclosure_date = "2026-07-31"
+
+
+class _CoverageSpyProvider:
+    name = "TDnet"
+    category = "official_disclosures"
+    cache_version = "dynamic-coverage-test"
+
+    def __init__(self):
+        self.requested_start = None
+
+    async def fetch(self, _context, *, start_date, end_date):
+        self.requested_start = start_date
+        days = []
+        current = date.fromisoformat(start_date)
+        finish = date.fromisoformat(end_date)
+        while current <= finish:
+            days.append(
+                {
+                    "date": current.isoformat(),
+                    "status": "COMPLETE",
+                    "complete": True,
+                }
+            )
+            current += timedelta(days=1)
+        return ProviderResponse(
+            SourceStatus(self.name, DataStatus.OK),
+            metadata={
+                "coverage": {
+                    "status": "COMPLETE",
+                    "complete": True,
+                    "requested_start_date": start_date,
+                    "requested_end_date": end_date,
+                    "complete_day_count": len(days),
+                    "days": days,
+                }
+            },
+        )
+
+
+def test_official_coverage_starts_at_selected_structured_disclosure(tmp_path):
+    tdnet = _CoverageSpyProvider()
+    bundle = asyncio.run(
+        JapanDataService(
+            (_EarlierStructuredFinancialProvider(), tdnet),
+            cache=JapanDataCache(tmp_path),
+            timeout_seconds=2,
+        ).collect(
+            resolve_market_context("6981.T"),
+            start_date="2026-08-26",
+            end_date="2026-09-02",
+            provider_start_dates={"TDnet": "2026-08-02"},
+        )
+    ).to_dict()
+
+    assessment = bundle["provider_metadata"]["Japan Financial Authority"]
+
+    assert tdnet.requested_start == "2026-07-31"
+    assert assessment["official_scan_start"] == "2026-07-31"
+    assert assessment["official_coverage"]["status"] == "COMPLETE"
+    assert assessment["actual"]["status"] == "OK"
+    assert assessment["guidance"]["status"] == "OK"
 
 
 def _index_page(*, page: int, total: int, target: bool = False) -> str:

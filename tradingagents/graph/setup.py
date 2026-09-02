@@ -77,11 +77,24 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
             )
             raise
         if isinstance(result, dict):
-            result = capture_agent_evidence(state, result, name)
+            # Tool facts must exist before enforcement, while report inference
+            # must be captured only after sanitization.  Capturing generated
+            # prose first allowed an agent's own unsupported draft to appear in
+            # the registry as a supported handoff.
+            result = capture_agent_evidence(
+                state, result, name, capture_tools=True, capture_reports=False
+            )
             combined_state = {**state, **result} if isinstance(state, dict) else result
             result = enforce_agent_result(combined_state, result, name)
             result = _append_authoritative_financial_context(state, result, name)
             result = _apply_execution_authority(state, result, name)
+            result = capture_agent_evidence(
+                {**state, **result} if isinstance(state, dict) else result,
+                result,
+                name,
+                capture_tools=False,
+                capture_reports=True,
+            )
         logger.info(
             "[Agent] complete name=%s ticker=%s elapsed_seconds=%.2f",
             name, ticker, time.perf_counter() - start,

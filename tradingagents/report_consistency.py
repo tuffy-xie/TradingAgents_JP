@@ -31,8 +31,28 @@ def sanitize_report_section(text: str, market: str, section: str) -> str:
         return ""
     if market == "JP" and section == "sentiment_report":
         text = _US_COMMUNITY.sub("海外社区情绪", text)
-        if "暂无可用日本情绪数据" not in text:
-            text = "暂无可用日本情绪数据。\n\n" + text
+    if market == "JP":
+        text = _localize_japan_internal_statuses(text)
+    return text
+
+
+def _localize_japan_internal_statuses(text: str) -> str:
+    """Keep internal enums in full_agent_log, not in the user report."""
+    replacements = {
+        "VERIFIED_FINANCIAL_AUTHORITY": "已验证财务权威来源",
+        "VERIFIED_TOOL_OUTPUT": "已验证工具数据",
+        "CURRENT_STRUCTURED_CONFIRMED": "已确认是截至分析日最新的结构化数据",
+        "CURRENT_OFFICIAL": "截至分析日最新官方数据",
+        "FRESHNESS_UNVERIFIED": "新鲜度未确认",
+        "INSUFFICIENT_DATA": "证据不足",
+        "DATA_UNAVAILABLE": "数据不可用",
+        "NOT_APPLICABLE": "不适用",
+        "NOT_PROVIDED": "公司未提供",
+        "LATEST_AVAILABLE": "来源当前最新可得",
+        "DATA UNAVAILABLE": "数据不可用",
+    }
+    for source, display in replacements.items():
+        text = text.replace(source, display)
     return text
 
 

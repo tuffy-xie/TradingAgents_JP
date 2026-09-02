@@ -9,6 +9,7 @@ import pandas as pd
 from langchain_core.messages import ToolMessage
 
 from tradingagents.agents.analysts import sentiment_analyst as sentiment_module
+from tradingagents.agents.analysts.news_analyst import _apply_japan_news_authority
 from tradingagents.agents.schemas import SentimentBand, SentimentReport
 from tradingagents.agents.utils.evidence_enforcement import (
     enforce_agent_output,
@@ -28,6 +29,7 @@ from tradingagents.agents.utils.execution_validation import (
 from tradingagents.dataflows.japan.context import (
     render_japan_audience_context,
     render_japan_financial_context,
+    render_japan_report_sections,
 )
 from tradingagents.dataflows.japan.edinet_db_guidance_selector import (
     select_latest_guidance_record,
@@ -143,6 +145,55 @@ def test_news_tool_fact_keeps_provenance_and_unsupported_claim_is_audited():
     assert "unsupported_precise_number" in unsupported.warnings
 
 
+def test_prefetched_japan_news_is_canonical_over_a_tool_specific_empty_result():
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [
+                {
+                    "source": "Japan News",
+                    "source_type": "japan_stock_news",
+                    "status": "OK",
+                    "timestamp": "2026-09-02T09:30:00+09:00",
+                    "title": "半導体製造装置の新製品を発表",
+                    "url": "https://example.test/news/6981",
+                    "metadata": {
+                        "published_at": "2026-09-02T09:30:00+09:00",
+                        "freshness_status": "LATEST_AVAILABLE",
+                    },
+                }
+            ],
+            "provider_metadata": {},
+        }
+    )
+
+    report = _apply_japan_news_authority(
+        "本日の個別ニュースは0条で、会社関連ニュースはありません。\nMacro background.",
+        state,
+    )
+    news_context = render_japan_audience_context(state, "NEWS")
+
+    assert "半導体製造装置の新製品を発表" in report
+    assert "ニュースは0条" not in report
+    assert "半導体製造装置の新製品を発表" in news_context
+
+
+def test_report_sentiment_uses_one_source_native_authority_without_unavailable_claim():
+    item = _japan_sentiment_item(score=-0.1821, sample_count=11)
+    item["metadata"].update(
+        positive_count=0,
+        neutral_count=9,
+        negative_count=2,
+        confidence=0.7,
+    )
+
+    report = render_japan_report_sections({"items": [item]})
+
+    assert "本次没有可用" not in report
+    assert "样本 11 条" in report
+    assert "温和偏空" in report
+    assert report.count("样本 11 条，置信度 高") == 1
+
+
 def test_evidence_audit_is_nonempty_from_run_initialization():
     registry, audit = initialize_evidence_registry(
         market_context={"market": "JP", "symbol": "5801.T"},
@@ -253,7 +304,8 @@ def test_critical_gate_failure_is_visible_and_blocks_current_quarter_conviction(
         state, "最新季度已经全面明确确认强劲盈利爆发。", "Fundamentals Analyst"
     )
 
-    assert "Critical Gate: INSUFFICIENT_DATA" in context
+    assert "Critical field completeness: INSUFFICIENT_DATA" in context
+    assert "Current-use eligibility: INSUFFICIENT_DATA" in context
     assert "critical_gate_bypassed" in guarded.warnings
 
 
@@ -370,7 +422,8 @@ def test_unsupported_comparison_does_not_hide_verified_actual_table_value():
     assert "365,221" in result.text
     assert "293,700" not in result.text
     assert "+24%" not in result.text
-    assert "DATA_UNAVAILABLE" in result.text
+    assert "数据不足" in result.text
+    assert "证据不足，暂不判断" in result.text
 
 
 def _financial_evidence(
@@ -448,8 +501,9 @@ def test_table_redaction_replaces_complete_cells_without_token_corruption():
     )
 
     assert result.text.count("|") == 6
-    assert "| DATA_UNAVAILABLE |" in result.text
-    assert "FY2027" in result.text
+    assert "| 数据不足 |" in result.text
+    assert "| 证据不足，暂不判断 |" in result.text
+    assert "FY2027" not in result.text
     for corrupt in (
         "DATA_UNAVAILABLEx",
         "DATA_UNAVAILABLEpt",
@@ -524,7 +578,10 @@ def test_japan_sentiment_score_and_band_ignore_news_macro_direction(monkeypatch)
         overall_band=SentimentBand.BULLISH,
         overall_score=9,
         confidence="high",
-        narrative="宏观新闻印证并强化看多情绪。Yahoo Board样本略偏正面。",
+        narrative=(
+            "宏观新闻印证并强化看多情绪。Yahoo Board样本略偏正面。\n"
+            "整体置信度为 Low。"
+        ),
     )
     llm = MagicMock()
     llm.with_structured_output.return_value = structured
@@ -542,6 +599,8 @@ def test_japan_sentiment_score_and_band_ignore_news_macro_direction(monkeypatch)
     assert "**Confidence:** Low" in report
     assert "News and macro observations are background only" in report
     assert "印证并强化看多情绪" not in report
+    assert "整体置信度为 Low" not in report
+    assert report.count("**Confidence:**") == 1
     assert "**Score:** 9" not in report
 
 
@@ -823,3 +882,93 @@ def test_us_observer_behavior_remains_byte_for_byte():
         "Market Analyst", lambda _state: expected, provider="test", timeout=1, retries=0
     )
     assert observed(state) == expected
+
+
+def test_long_tool_output_keeps_complete_numeric_index_without_dumping_full_value():
+    content = "A" * 12_050 + "\nHistorical Metric: 987654321"
+    state = _jp_state(
+        messages=[
+            ToolMessage(
+                content=content,
+                name="get_balance_sheet",
+                tool_call_id="historical-long",
+            )
+        ]
+    )
+
+    captured = capture_agent_evidence(
+        state,
+        {},
+        "Fundamentals Analyst",
+        capture_tools=True,
+        capture_reports=False,
+    )
+    tool_entry = next(
+        item
+        for item in captured["evidence_registry"]
+        if item.get("source_record_id") == "historical-long"
+    )
+    guarded = enforce_agent_output(
+        {**state, **captured},
+        "Historical Metric: 987654321。",
+        "Fundamentals Analyst",
+    )
+
+    assert len(tool_entry["value"]) == 12_000
+    assert "987654321" in tool_entry["derivation"]["numeric_tokens"]
+    assert guarded.text == "Historical Metric: 987654321。"
+    assert not guarded.warnings
+
+
+def test_vendor_forward_semantic_applies_only_to_explicit_forward_fields():
+    tool = ToolMessage(
+        content="Revenue (TTM): 1916966010880\nForward EPS: 237.27\nNet Income: 265492004864",
+        name="get_fundamentals",
+        tool_call_id="fundamentals-semantic",
+    )
+    captured = capture_agent_evidence(
+        _jp_state(messages=[tool]),
+        {},
+        "Fundamentals Analyst",
+        capture_tools=True,
+        capture_reports=False,
+    )
+    entries = [
+        item
+        for item in captured["evidence_registry"]
+        if item.get("source_record_id") == "fundamentals-semantic"
+    ]
+
+    assert any(item.get("semantic_basis") == "TOOL_FACT" for item in entries)
+    forward = [
+        item
+        for item in entries
+        if item.get("semantic_basis") == "VENDOR_FORWARD_ESTIMATE"
+    ]
+    assert [(item["metric"], item["value"]) for item in forward] == [
+        ("eps", "237.27")
+    ]
+
+
+def test_observer_registers_only_post_enforcement_report_inference():
+    observed = _observe_agent_node(
+        "Fundamentals Analyst",
+        lambda _state: {"fundamentals_report": "Unsupported target 999999。"},
+        provider="test",
+        timeout=1,
+        retries=0,
+    )
+    result = observed(_jp_state())
+
+    assert "999999" not in result["fundamentals_report"]
+    assert all(
+        "999999" not in str(item.get("value"))
+        for item in result.get("evidence_registry") or []
+    )
+    warning = next(
+        item
+        for item in result["evidence_audit"]
+        if item.get("warning") == "unsupported_precise_number"
+    )
+    assert warning["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert warning["execution_blocking"] is False

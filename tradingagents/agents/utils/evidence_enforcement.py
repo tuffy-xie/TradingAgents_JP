@@ -256,6 +256,8 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
                         "agent": agent_name,
                         "field": key,
                         "warning": warning,
+                        "resolution": "CLAIM_REMOVED_OR_REPLACED",
+                        "execution_blocking": False,
                     }
                 )
         return checked.text
@@ -384,6 +386,12 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
         if item.get("claim_type") not in {"FACT", "DERIVED"}:
             continue
         payload_numbers = _numbers_in(item.get("value"))
+        derivation = item.get("derivation")
+        if isinstance(derivation, Mapping):
+            payload_numbers.update(
+                str(token)
+                for token in derivation.get("numeric_tokens") or []
+            )
         all_numbers.update(payload_numbers)
         semantic = str(item.get("semantic_basis") or "")
         if semantic == "COMPANY_GUIDANCE":
@@ -612,8 +620,21 @@ def _redact_unsupported_table_values(
     """
 
     cells = clause.split("|")
+    first_unsupported: int | None = None
     for index, cell in enumerate(cells):
         tokens = _number_tokens(cell)
         if tokens and any(token not in permitted for token in tokens):
-            cells[index] = " DATA_UNAVAILABLE "
+            cells[index] = " 数据不足 "
+            if first_unsupported is None:
+                first_unsupported = index
+    # A qualitative assessment to the right of an unavailable input depends
+    # on that input unless it carries its own evidence identity.  Do not retain
+    # free-form labels such as "极强" or "财务堡垒" after removing the fact they
+    # purport to summarize.
+    if first_unsupported is not None:
+        for index in range(first_unsupported + 1, len(cells) - 1):
+            if cells[index].strip() and not re.fullmatch(
+                r"\s*:?-+:?\s*", cells[index]
+            ):
+                cells[index] = " 证据不足，暂不判断 "
     return "|".join(cells)

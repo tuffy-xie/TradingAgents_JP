@@ -30,6 +30,9 @@ def test_report_metadata_is_only_read_from_market_context():
 
 def test_japan_sentiment_removes_us_community_platform_names():
     text = sanitize_report_section("Reddit and StockTwits were quiet.", "JP", "sentiment_report")
-    assert "暂无可用日本情绪数据" in text
+    assert "暂无可用日本情绪数据" not in text
+    assert "Reddit" not in text
+    assert "StockTwits" not in text
+    assert "海外社区情绪" in text
     assert "Reddit" not in text
     assert "StockTwits" not in text

@@ -64,6 +64,37 @@ def test_full_debate_is_kept_out_of_default_report_and_in_debug_log(tmp_path):
 
 
 @pytest.mark.unit
+def test_japan_user_report_localizes_internal_statuses_but_debug_log_keeps_them(tmp_path):
+    state = _state() | {
+        "market_context": {
+            "market": "JP",
+            "symbol": "6981.T",
+            "currency": "JPY",
+            "instrument_type": "EQUITY",
+        },
+        "fundamentals_report": (
+            "Status: INSUFFICIENT_DATA; freshness=FRESHNESS_UNVERIFIED; "
+            "value=DATA_UNAVAILABLE; provenance=VERIFIED_FINANCIAL_AUTHORITY"
+        ),
+    }
+
+    report = write_report_tree(state, "6981.T", tmp_path)
+    user_text = report.read_text(encoding="utf-8")
+    debug_text = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
+
+    for internal in (
+        "INSUFFICIENT_DATA",
+        "FRESHNESS_UNVERIFIED",
+        "DATA_UNAVAILABLE",
+        "VERIFIED_FINANCIAL_AUTHORITY",
+    ):
+        assert internal not in user_text
+    assert "证据不足" in user_text
+    assert "新鲜度未确认" in user_text
+    assert "INSUFFICIENT_DATA" in debug_text
+
+
+@pytest.mark.unit
 def test_web_report_excludes_raw_debate_and_risk_transcripts():
     html = _render_report_html(
         {

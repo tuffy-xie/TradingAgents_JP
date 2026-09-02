@@ -88,7 +88,38 @@ class JapanDataService:
                     end_date,
                 )
 
-        responses = await asyncio.gather(*(collect_one(provider) for provider in providers))
+        # Financial freshness must be proved from the selected structured
+        # disclosure date forward.  Fetch the normalized EDINET snapshot first
+        # so the official TDnet/IR window can start at the earliest selected
+        # Actual/Guidance disclosure instead of an arbitrary rolling lookback.
+        # The remaining independent providers still run concurrently.
+        responses: list[ProviderResponse] = []
+        financial_provider = next(
+            (provider for provider in providers if provider.name == "EDINET DB Financials"),
+            None,
+        )
+        if financial_provider is not None:
+            financial_response = await collect_one(financial_provider)
+            responses.append(financial_response)
+            structured_start = _structured_financial_disclosure_start(
+                financial_response.metadata
+            )
+            if structured_start is not None:
+                for source in ("TDnet", "Company IR"):
+                    configured = provider_start_dates.get(source, start_date)
+                    try:
+                        configured_date = date.fromisoformat(configured)
+                    except (TypeError, ValueError):
+                        configured_date = structured_start
+                    provider_start_dates = {
+                        **provider_start_dates,
+                        source: min(configured_date, structured_start).isoformat(),
+                    }
+
+        remaining = tuple(
+            provider for provider in providers if provider is not financial_provider
+        )
+        responses.extend(await asyncio.gather(*(collect_one(provider) for provider in remaining)))
         statuses = tuple(response.status for response in responses)
         raw_items = tuple(item for response in responses for item in response.items)
         items = tuple(self._deduplicate(raw_items))
@@ -116,7 +147,6 @@ class JapanDataService:
             source_statuses=statuses,
             provider_metadata=provider_metadata,
         )
-
     async def _collect_one(
         self,
         provider: JapanDataProvider,
@@ -305,3 +335,26 @@ class JapanDataService:
     def _event_key(item: MarketInformation) -> str:
         normalized_title = re.sub(r"[^0-9A-Z一-龯ぁ-んァ-ン]", "", item.title.upper())
         return f"{item.ticker}:{item.timestamp.date().isoformat()}:{normalized_title or item.url or item.source}"
+
+
+def _structured_financial_disclosure_start(
+    metadata: Mapping[str, object] | None,
+) -> date | None:
+    """Return the earliest selected Actual/Guidance disclosure date.
+
+    This is source metadata, not a guessed fiscal date.  Malformed or missing
+    values simply leave the caller's bounded official window unchanged.
+    """
+    if not isinstance(metadata, Mapping):
+        return None
+    candidates: list[date] = []
+    for key in ("actual_selection", "guidance_selection"):
+        selection = metadata.get(key)
+        if not isinstance(selection, Mapping):
+            continue
+        raw = selection.get("disclosure_date")
+        try:
+            candidates.append(date.fromisoformat(str(raw)))
+        except (TypeError, ValueError):
+            continue
+    return min(candidates) if candidates else None

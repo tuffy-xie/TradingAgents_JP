@@ -46,6 +46,29 @@ def test_tdnet_financial_window_retains_prior_month_end_disclosure_date():
 
 
 @pytest.mark.unit
+def test_tdnet_oversized_authority_window_fails_without_silent_truncation(monkeypatch):
+    async def should_not_fetch(*_args, **_kwargs):
+        raise AssertionError("oversized TDnet window must fail before HTTP")
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", should_not_fetch)
+    provider = TDnetProvider()
+    provider.max_scan_days = 10
+
+    result = __import__("asyncio").run(
+        provider.fetch(
+            resolve_market_context("6981.T"),
+            start_date="2026-08-01",
+            end_date="2026-08-31",
+        )
+    )
+
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert result.metadata["coverage"]["complete"] is False
+    assert result.metadata["coverage"]["requested_start_date"] == "2026-08-01"
+    assert result.metadata["coverage"]["requested_day_count"] == 31
+
+
+@pytest.mark.unit
 def test_jquants_without_key_returns_auth_required(monkeypatch):
     monkeypatch.delenv("JQUANTS_API_KEY", raising=False)
     result = __import__("asyncio").run(
@@ -523,6 +546,21 @@ def test_jsf_unknown_publication_status_is_not_promoted():
     ).encode("cp932")
     item = normalise_balances(balances, resolve_market_context("6981.T"))[0]
     assert item.metadata["publication_status"] == "UNKNOWN"
+
+
+@pytest.mark.unit
+def test_jsf_dated_empty_row_does_not_displace_latest_valid_observation():
+    balances = (
+        "申込日,銘柄コード,銘柄名,融資残高株数,貸株残高株数,差引残高株数,速報／確報\n"
+        "2026/09/01,6981,村田製作所,922600,1300,921300,確報\n"
+        "2026/09/02,6981,村田製作所,,,,速報\n"
+    ).encode("cp932")
+
+    items = normalise_balances(balances, resolve_market_context("6981.T"))
+
+    assert len(items) == 1
+    assert items[0].metadata["application_date"] == "2026-09-01"
+    assert items[0].metadata["finance_balance"] == 922600
 
 
 @pytest.mark.unit

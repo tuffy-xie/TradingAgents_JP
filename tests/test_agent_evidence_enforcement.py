@@ -154,6 +154,8 @@ def test_evidence_audit_is_internal_not_appended_to_agent_prose():
             "agent": "Trader",
             "field": "trader_investment_plan",
             "warning": "unsupported_precise_number",
+            "resolution": "CLAIM_REMOVED_OR_REPLACED",
+            "execution_blocking": False,
         }
     ]
 

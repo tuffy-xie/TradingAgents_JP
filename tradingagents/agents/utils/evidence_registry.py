@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import uuid
 from collections.abc import Iterable, Mapping
@@ -130,7 +131,12 @@ def initialize_evidence_registry(
 
 
 def capture_agent_evidence(
-    state: Mapping[str, Any], result: Mapping[str, Any], agent_name: str
+    state: Mapping[str, Any],
+    result: Mapping[str, Any],
+    agent_name: str,
+    *,
+    capture_tools: bool = True,
+    capture_reports: bool = True,
 ) -> dict[str, Any]:
     """Attach tool/report provenance to a node result without changing prose."""
     if (state.get("market_context") or {}).get("market") != "JP":
@@ -139,25 +145,21 @@ def capture_agent_evidence(
     audit = list(state.get("evidence_audit") or [])
     analysis_as_of = str(state.get("trade_date") or "")
     new_entries: list[dict[str, Any]] = []
-    for message in state.get("messages") or []:
+    for message in (state.get("messages") or []) if capture_tools else []:
         if getattr(message, "type", "") != "tool" and type(message).__name__ != "ToolMessage":
             continue
         tool_name = str(getattr(message, "name", "") or "unknown_tool")
         content = str(getattr(message, "content", "") or "")
         if not content:
             continue
-        semantic = (
-            "VENDOR_FORWARD_ESTIMATE"
-            if tool_name == "get_fundamentals" and "forward" in content.lower()
-            else "TOOL_FACT"
-        )
+        numeric_tokens = sorted(_numeric_tokens(content))
         new_entries.append(
             _make_entry(
                 domain=_TOOL_DOMAINS.get(tool_name, _AGENT_DOMAINS.get(agent_name, "OTHER")),
                 claim_type="FACT",
                 metric="tool_output",
                 value=content[:12000],
-                semantic_basis=semantic,
+                semantic_basis="TOOL_FACT",
                 source=tool_name,
                 source_type="TOOL_OUTPUT",
                 source_record_id=str(getattr(message, "tool_call_id", "") or "") or None,
@@ -165,6 +167,18 @@ def capture_agent_evidence(
                 freshness="AS_OF_FILTERED",
                 verification_status="VERIFIED_TOOL_OUTPUT",
                 allowed=True,
+                derivation={"numeric_tokens": numeric_tokens},
+            )
+        )
+        new_entries.extend(
+            _semantic_tool_entries(
+                tool_name=tool_name,
+                content=content,
+                analysis_as_of=analysis_as_of,
+                source_record_id=str(
+                    getattr(message, "tool_call_id", "") or ""
+                )
+                or None,
             )
         )
     report_fields = {
@@ -177,7 +191,7 @@ def capture_agent_evidence(
         "final_trade_decision": "PORTFOLIO",
     }
     upstream_ids = [entry["evidence_id"] for entry in registry + new_entries if entry.get("allowed_for_current_decision")]
-    for field, domain in report_fields.items():
+    for field, domain in report_fields.items() if capture_reports else ():
         value = result.get(field)
         if not isinstance(value, str) or not value.strip():
             continue
@@ -202,7 +216,11 @@ def capture_agent_evidence(
             {
                 "category": "SUPPORTED_FACT",
                 "agent": agent_name,
-                "detail": "Tool/report provenance captured before natural-language handoff.",
+                "detail": (
+                    "Sanitized report provenance captured after evidence enforcement."
+                    if capture_reports and not capture_tools
+                    else "Tool/report provenance captured for natural-language handoff."
+                ),
                 "evidence_ids": [entry["evidence_id"] for entry in new_entries],
             }
         )
@@ -210,6 +228,56 @@ def capture_agent_evidence(
     updated["evidence_registry"] = registry
     updated["evidence_audit"] = audit
     return updated
+
+
+def _semantic_tool_entries(
+    *,
+    tool_name: str,
+    content: str,
+    analysis_as_of: str,
+    source_record_id: str | None,
+) -> list[dict[str, Any]]:
+    """Create narrow semantic entries without relabelling an entire tool dump.
+
+    A fundamentals response may contain historical statements, TTM values and
+    vendor forward estimates together.  Only explicit Forward fields receive
+    the VENDOR_FORWARD_ESTIMATE semantic basis.
+    """
+    if tool_name != "get_fundamentals":
+        return []
+    entries: list[dict[str, Any]] = []
+    for line in content.splitlines():
+        match = re.match(
+            r"\s*(Forward\s+(?P<metric>[A-Za-z][A-Za-z ]*)):\s*(?P<value>[-+\d,.]+)\s*$",
+            line,
+            re.I,
+        )
+        if not match:
+            continue
+        entries.append(
+            _make_entry(
+                domain="FUNDAMENTALS",
+                claim_type="FACT",
+                metric=re.sub(r"\s+", "_", match.group("metric").strip().lower()),
+                value=match.group("value"),
+                semantic_basis="VENDOR_FORWARD_ESTIMATE",
+                source=tool_name,
+                source_type="TOOL_OUTPUT",
+                source_record_id=source_record_id,
+                analysis_as_of=analysis_as_of,
+                freshness="AS_OF_FILTERED",
+                verification_status="VERIFIED_TOOL_OUTPUT",
+                allowed=True,
+            )
+        )
+    return entries
+
+
+def _numeric_tokens(text: str) -> set[str]:
+    return {
+        match.group(0).replace(",", "")
+        for match in re.finditer(r"(?<![A-Za-z0-9_])[-+]?\d[\d,]*(?:\.\d+)?%?", text)
+    }
 
 
 def render_downstream_evidence_context(state: Mapping[str, Any]) -> str:

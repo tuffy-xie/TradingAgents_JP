@@ -178,8 +178,15 @@ def render_japan_audience_context(state: Mapping[str, Any], audience: str) -> st
         selected = [
             item
             for item in items
-            if item.get("source") in {"TDnet", "Company IR", "Japan Macro"}
-            and item.get("source_type") != "japan_analyst_expectations"
+            if (
+                item.get("source") in {"TDnet", "Company IR", "Japan Macro"}
+                or item.get("source_type") == "japan_stock_news"
+            )
+        ]
+        selected = [
+            item
+            for item in selected
+            if item.get("source_type") != "japan_analyst_expectations"
         ]
         controls = "Keep source and publication date with every factual event. Exclude future or unverified events."
     elif audience == "FUNDAMENTALS":
@@ -259,10 +266,20 @@ def _financial_assessment_lines(value: Any, *, guidance: bool) -> list[str]:
     if isinstance(gate, Mapping):
         lines.extend(
             [
-                f"- Critical Gate: {gate.get('status') or 'INSUFFICIENT_DATA'}",
+                f"- Critical field completeness: {gate.get('status') or 'INSUFFICIENT_DATA'}",
                 f"- Critical fields: {gate.get('critical_fields') or {}}",
             ]
         )
+    decision_eligible = bool(
+        status == "OK"
+        and isinstance(gate, Mapping)
+        and gate.get("status") == "OK"
+    )
+    lines.append(
+        "- Current-use eligibility: OK"
+        if decision_eligible
+        else "- Current-use eligibility: INSUFFICIENT_DATA"
+    )
     document = value.get("document")
     if not isinstance(document, Mapping) or status != "OK":
         update = value.get("official_latest_update")
@@ -389,15 +406,6 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
-    statuses = bundle.get("source_statuses") or []
-    source_status = (
-        "\n".join(
-            f"- {entry.get('source', 'Unknown')}: {entry.get('status', 'DATA_UNAVAILABLE')}"
-            + (f" — {entry['detail']}" if entry.get("detail") else "")
-            for entry in statuses
-        )
-        or "- DATA_UNAVAILABLE"
-    )
     return "\n\n".join(
         [
             "## 日本官方披露\n" + "\n".join(_item_lines(official, include_metadata=False)),
@@ -406,18 +414,71 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
             + (
                 "\n".join(_item_lines(short, include_metadata=True))
                 if short
-                else "DATA UNAVAILABLE: 未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
+                else "数据不可用：未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
             ),
-            "## 日本市场情绪\n暂无可用日本情绪数据。",
-            "## 日股波段交易计划\n以上官方披露与需给数据作为补充上下文，最终交易计划由各 Agent 结合 Analyst 报告综合形成；若关键数据不可用，应保持观望而非补造结论。",
-            "### Japan data source status\n" + source_status,
+            "## 日本市场情绪\n" + "\n".join(_sentiment_report_lines(items)),
+            "## 日股波段交易计划\n以上官方披露与需给数据作为补充上下文，最终交易计划由各 Agent 结合 Analyst 报告综合形成；若关键数据不可用，应降低结论置信度，不得补造事实。",
         ]
+    )
+
+
+def _sentiment_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
+    aggregates = [
+        item
+        for item in items
+        if item.get("source_type") == "japan_investor_sentiment_aggregate"
+        and item.get("status") == "OK"
+        and isinstance(item.get("metadata"), Mapping)
+    ]
+    if not aggregates:
+        return ["本次没有可用的日本投资者/社交情绪样本。"]
+    latest = max(aggregates, key=_item_timestamp_sort_key)
+    metadata = latest["metadata"]
+    sample_count = metadata.get("sample_count")
+    score = metadata.get("sentiment_score")
+    if not isinstance(sample_count, int) or sample_count <= 0 or not isinstance(
+        score, (int, float)
+    ):
+        return ["本次没有可用的日本投资者/社交情绪样本。"]
+    band = _sentiment_band(float(score))
+    confidence = _sentiment_confidence(metadata.get("confidence"), sample_count)
+    return [
+        f"- 观察：{band}（样本 {sample_count} 条，置信度 {confidence}）",
+        f"- 样本构成：正面 {metadata.get('positive_count', 0)} / "
+        f"中性 {metadata.get('neutral_count', 0)} / 负面 {metadata.get('negative_count', 0)}",
+        "- 说明：仅投资者/社交样本决定本项方向；新闻和宏观信息不参与情绪评分。",
+    ]
+
+
+def _sentiment_band(score: float) -> str:
+    if score >= 0.5:
+        return "偏多"
+    if score >= 0.1:
+        return "温和偏多"
+    if score <= -0.5:
+        return "偏空"
+    if score <= -0.1:
+        return "温和偏空"
+    return "中性混合"
+
+
+def _sentiment_confidence(value: Any, sample_count: int) -> str:
+    if sample_count < 5:
+        return "低"
+    if isinstance(value, (int, float)):
+        if float(value) < 0.45:
+            return "低"
+        if float(value) < 0.7:
+            return "中"
+        return "高"
+    return {"low": "低", "medium": "中", "high": "高"}.get(
+        str(value or "").strip().lower(), "低"
     )
 
 
 def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> list[str]:
     if not items:
-        return ["DATA UNAVAILABLE: 本次窗口无可用匹配数据。"]
+        return ["数据不可用：本次窗口无可用匹配数据。"]
     lines = []
     # Providers emit chronological series in different orders.  Agent context
     # must retain the newest dated observations when bounded; slicing the

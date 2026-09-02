@@ -196,6 +196,32 @@ def _macro_dimension(items: list[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def _sentiment_dimension(items: list[Mapping[str, Any]]) -> dict[str, Any]:
+    aggregates = [
+        item
+        for item in items
+        if item.get("source_type") == "japan_investor_sentiment_aggregate"
+        and isinstance(item.get("metadata"), Mapping)
+    ]
+    if aggregates:
+        latest = max(aggregates, key=lambda item: str(item.get("timestamp") or ""))
+        metadata = latest.get("metadata") or {}
+        sample_count = metadata.get("sample_count")
+        score = metadata.get("sentiment_score")
+        if (
+            isinstance(sample_count, int)
+            and sample_count > 0
+            and isinstance(score, (int, float))
+        ):
+            numeric = float(score)
+            direction = "bullish" if numeric >= 0.1 else "bearish" if numeric <= -0.1 else "neutral"
+            confidence = "low" if sample_count < 5 else _confidence([latest])
+            return _dimension(
+                direction,
+                confidence,
+                sample_count,
+                _freshness([latest]),
+                "Source-native investor/social aggregate only; news and macro are excluded.",
+            )
     posts = [item for item in items if item.get("source_type") == "japan_investor_post"]
     if not posts:
         return _dimension("unavailable", "low", 0, "DATA_UNAVAILABLE", "No sufficient local sentiment sample.")

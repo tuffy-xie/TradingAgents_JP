@@ -24,6 +24,7 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     resolve_instrument_identity,
 )
+from tradingagents.agents.utils.evidence_registry import build_run_manifest
 from tradingagents.agents.utils.rating import parse_rating
 from tradingagents.dataflows.market import enrich_market_context, resolve_market_context
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
@@ -288,6 +289,11 @@ async def analyze(
                 market_context=market_context,
                 japan_data_bundle=japan_data_bundle,
                 verified_market_snapshot=verified_market_snapshot,
+                run_manifest=build_run_manifest(
+                    analysis_as_of=date,
+                    market_context=market_context.to_dict(),
+                    config=config,
+                ),
             )
             graph_args = ta.propagator.get_graph_args()
             graph_args["stream_mode"] = "updates"

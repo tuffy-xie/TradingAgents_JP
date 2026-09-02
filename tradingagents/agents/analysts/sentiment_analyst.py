@@ -273,6 +273,9 @@ _BACKGROUND_ONLY = re.compile(
     r"(?:background\s+only|excluded\s+from|背景(?:信息)?|不计入|不得计入|不参与)",
     re.I,
 )
+_OVERALL_CONFIDENCE_CLAIM = re.compile(
+    r"(?:overall\s+)?confidence|(?:整体|总体|综合)?(?:置信度|信心)", re.I
+)
 
 
 def _apply_japan_sentiment_domain_integrity(
@@ -302,10 +305,14 @@ def _apply_japan_sentiment_domain_integrity(
         confidence = _social_confidence(authority.get("confidence"))
 
     without_llm_header = _SENTIMENT_HEADER.sub("", report_text).strip()
-    cleaned_lines = [
-        _remove_non_social_directional_claims(line)
-        for line in without_llm_header.splitlines()
-    ]
+    cleaned_lines = []
+    for line in without_llm_header.splitlines():
+        # The source-native authority above owns the run-level confidence.
+        # Retaining a second LLM-authored High/Low statement created two
+        # mutually incompatible confidence labels in one report.
+        if _OVERALL_CONFIDENCE_CLAIM.search(line):
+            continue
+        cleaned_lines.append(_remove_non_social_directional_claims(line))
     narrative = "\n".join(line for line in cleaned_lines if line.strip()).strip()
     header = (
         "## Investor/social sentiment authority\n"
