@@ -184,7 +184,12 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         tokens = _number_tokens(clause)
         if not tokens:
             return clause
-        financial_replacement = _financial_authority_replacement(clause, state)
+        # A Markdown row is a compound claim. Replacing one metric with prose
+        # would splice the sentence into the remaining cells. Let the table
+        # path either preserve the fully supported row or omit it as a unit.
+        financial_replacement = (
+            None if "|" in clause else _financial_authority_replacement(clause, state)
+        )
         if financial_replacement is not None:
             warnings.append("financial_authority_replaced")
             return financial_replacement
@@ -352,7 +357,17 @@ def _sanitize_legacy_enforcement_artifacts(text: str) -> str:
         text,
         flags=re.I,
     )
-    return re.sub(r"DATA_UNAVAILABLE\s*/\s*10", "DATA_UNAVAILABLE", text)
+    text = re.sub(r"DATA_UNAVAILABLE\s*/\s*10", "DATA_UNAVAILABLE", text)
+    # Reports generated before row-level enforcement can be quoted by later
+    # agents. Remove those complete legacy table claims instead of exposing a
+    # wall of placeholders in the user report.
+    text = re.sub(
+        r"(?m)^\|[^\n]*(?:数据不足|证据不足，暂不判断)[^\n]*\|\s*$",
+        "",
+        text,
+    )
+    text = text.replace("。|", "。\n\n|")
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:

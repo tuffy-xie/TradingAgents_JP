@@ -12,6 +12,9 @@ from collections.abc import Mapping
 from typing import Any
 
 _US_COMMUNITY = re.compile(r"(?i)\b(?:stocktwits|reddit)\b")
+_LEGACY_FINANCIAL_REPLACEMENT = re.compile(
+    r"(?m)^(?:Latest Actual|Current Company Guidance) [a-z_]+: [^\n]+。\s*$"
+)
 
 
 def canonical_report_metadata(state: Mapping[str, Any]) -> dict[str, str]:
@@ -32,6 +35,10 @@ def sanitize_report_section(text: str, market: str, section: str) -> str:
     if market == "JP" and section == "sentiment_report":
         text = _US_COMMUNITY.sub("海外社区情绪", text)
     if market == "JP":
+        # Old enforcement output could carry an internal authority-replacement
+        # sentence into an unrelated table position. The canonical Japan
+        # financial authority section remains the sole user-facing rendering.
+        text = _LEGACY_FINANCIAL_REPLACEMENT.sub("", text)
         text = _localize_japan_internal_statuses(text)
     return text
 

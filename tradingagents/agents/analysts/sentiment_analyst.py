@@ -262,7 +262,10 @@ def _japan_social_authority(state: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 _SENTIMENT_HEADER = re.compile(
-    r"^\*\*(?:Overall Sentiment|Score|Confidence):\*\*.*(?:\n|$)", re.I | re.M
+    r"^\s*(?:##\s+Investor/social sentiment authority|"
+    r"\*\*(?:Overall Sentiment|Score|Confidence|Sample|Domain boundary):\*\*.*)"
+    r"(?:\n|$)",
+    re.I | re.M,
 )
 _ALTERNATE_SENTIMENT_AUTHORITY = re.compile(
     r"^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:\*\*)?"
@@ -281,6 +284,11 @@ _BACKGROUND_ONLY = re.compile(
 )
 _OVERALL_CONFIDENCE_CLAIM = re.compile(
     r"(?:overall\s+)?confidence|(?:整体|总体|综合)?(?:置信度|信心)", re.I
+)
+_ALTERNATE_SENTIMENT_SCORE_CLAIM = re.compile(
+    r"(?:overall[_\s-]*score|(?:情绪)?得分|情绪评分|sentiment\s+score)"
+    r"[^\n]*(?:5\.0|0\s*[–—-]\s*10|映射|mapped)",
+    re.I,
 )
 
 
@@ -320,6 +328,8 @@ def _apply_japan_sentiment_domain_integrity(
         # Retaining a second LLM-authored High/Low statement created two
         # mutually incompatible confidence labels in one report.
         if _OVERALL_CONFIDENCE_CLAIM.search(line):
+            continue
+        if _ALTERNATE_SENTIMENT_SCORE_CLAIM.search(line):
             continue
         cleaned_lines.append(_remove_non_social_directional_claims(line))
     narrative = "\n".join(line for line in cleaned_lines if line.strip()).strip()

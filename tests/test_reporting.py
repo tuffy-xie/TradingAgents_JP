@@ -95,6 +95,28 @@ def test_japan_user_report_localizes_internal_statuses_but_debug_log_keeps_them(
 
 
 @pytest.mark.unit
+def test_japan_user_report_hides_internal_financial_replacement_artifact(tmp_path):
+    artifact = "Current Company Guidance net_income: 338,000 百万円。"
+    state = _state() | {
+        "market_context": {
+            "market": "JP",
+            "symbol": "6981.T",
+            "currency": "JPY",
+            "instrument_type": "EQUITY",
+        },
+        "fundamentals_report": artifact + "\n正常基本面叙述。",
+    }
+
+    report = write_report_tree(state, "6981.T", tmp_path)
+    user_text = report.read_text(encoding="utf-8")
+    debug_text = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
+
+    assert artifact not in user_text
+    assert "正常基本面叙述" in user_text
+    assert artifact in debug_text
+
+
+@pytest.mark.unit
 def test_web_report_excludes_raw_debate_and_risk_transcripts():
     html = _render_report_html(
         {

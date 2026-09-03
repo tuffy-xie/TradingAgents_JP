@@ -492,6 +492,14 @@ def test_financial_authority_replacement_requires_semantic_period_and_target_mat
     assert "1,530,000" not in wrong_period.text
     assert "1,500,000" not in wrong_period.text
 
+    table_row = enforce_agent_output(
+        state,
+        "| Current Company Guidance net income | 1,500,000 百万円 | FY |",
+        "Fundamentals Analyst",
+    )
+    assert table_row.text == ""
+    assert "Current Company Guidance net_income:" not in table_row.text
+
 
 def test_table_redaction_removes_complete_claim_without_token_corruption():
     result = enforce_agent_output(
@@ -544,6 +552,16 @@ def test_copied_legacy_enforcement_corruption_is_sanitized():
     assert "DATA_UNAVAILABLEpt" not in result.text
     assert "FY2DATA_UNAVAILABLE" not in result.text
     assert "缺少上游证据支持" not in result.text
+
+    legacy_table = enforce_agent_output(
+        _jp_state(),
+        "| P/E | 数据不足 | 证据不足，暂不判断 |\n"
+        "JSF 可观察贷株余额较低。| Conclusion | HOLD |",
+        "Research Manager",
+    )
+    assert "数据不足" not in legacy_table.text
+    assert "证据不足，暂不判断" not in legacy_table.text
+    assert "可观察贷株余额较低。\n\n| Conclusion" in legacy_table.text
 
 
 def test_unsupported_parenthesized_percent_clause_is_removed_cleanly():
@@ -655,6 +673,13 @@ def test_japan_sentiment_removes_alternate_llm_band_and_score_authority(monkeypa
     assert "overall_band" not in report
     assert "overall_score" not in report
     assert "5.0" not in report
+
+    reapplied = sentiment_module._apply_japan_sentiment_domain_integrity(
+        report, sentiment_module._japan_social_authority(state)
+    )
+    assert reapplied.count("## Investor/social sentiment authority") == 1
+    assert reapplied.count("**Sample:**") == 1
+    assert reapplied.count("**Domain boundary:**") == 1
 
 
 def test_missing_japan_social_sample_cannot_become_neutral_from_news(monkeypatch):
