@@ -290,6 +290,11 @@ _ALTERNATE_SENTIMENT_SCORE_CLAIM = re.compile(
     r"[^\n]*(?:5\.0|0\s*[–—-]\s*10|映射|mapped)",
     re.I,
 )
+_ALTERNATE_SENTIMENT_BAND_CLAIM = re.compile(
+    r"(?:overall\s+sentiment|整体情绪|总体情绪|综合情绪|情绪读数)"
+    r"[^\n]*(?:neutral|mixed|bullish|bearish|中性|混合|看多|看空|偏多|偏空)",
+    re.I,
+)
 
 
 def _apply_japan_sentiment_domain_integrity(
@@ -330,6 +335,8 @@ def _apply_japan_sentiment_domain_integrity(
         if _OVERALL_CONFIDENCE_CLAIM.search(line):
             continue
         if _ALTERNATE_SENTIMENT_SCORE_CLAIM.search(line):
+            continue
+        if _ALTERNATE_SENTIMENT_BAND_CLAIM.search(line):
             continue
         cleaned_lines.append(_remove_non_social_directional_claims(line))
     narrative = "\n".join(line for line in cleaned_lines if line.strip()).strip()

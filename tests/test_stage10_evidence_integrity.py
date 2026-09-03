@@ -657,7 +657,10 @@ def test_japan_sentiment_removes_alternate_llm_band_and_score_authority(monkeypa
         overall_band=SentimentBand.NEUTRAL,
         overall_score=5,
         confidence="high",
-        narrative="## overall_band：Neutral\n## overall_score：5.0\n社交样本方向接近中性。",
+        narrative=(
+            "## overall_band：Neutral\n## overall_score：5.0\n"
+            "情绪读数明确为中性。社交样本方向接近中性。"
+        ),
     )
     state = _jp_state(
         japan_data_bundle={
@@ -673,6 +676,7 @@ def test_japan_sentiment_removes_alternate_llm_band_and_score_authority(monkeypa
     assert "overall_band" not in report
     assert "overall_score" not in report
     assert "5.0" not in report
+    assert "情绪读数明确为中性" not in report
 
     reapplied = sentiment_module._apply_japan_sentiment_domain_integrity(
         report, sentiment_module._japan_social_authority(state)
