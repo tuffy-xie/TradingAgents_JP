@@ -402,7 +402,7 @@ def test_low_lending_balance_cannot_become_no_short_pressure_claim():
     assert "无申报记录不代表不存在空头" in result.text
 
 
-def test_unsupported_comparison_does_not_hide_verified_actual_table_value():
+def test_unsupported_comparison_removes_the_compound_table_claim():
     state = _jp_state(
         evidence_registry=[
             {
@@ -419,11 +419,11 @@ def test_unsupported_comparison_does_not_hide_verified_actual_table_value():
         "Fundamentals Analyst",
     )
 
-    assert "365,221" in result.text
+    assert result.text == ""
+    assert "365,221" not in result.text
     assert "293,700" not in result.text
     assert "+24%" not in result.text
-    assert "数据不足" in result.text
-    assert "证据不足，暂不判断" in result.text
+    assert "数据不足" not in result.text
 
 
 def _financial_evidence(
@@ -493,16 +493,14 @@ def test_financial_authority_replacement_requires_semantic_period_and_target_mat
     assert "1,500,000" not in wrong_period.text
 
 
-def test_table_redaction_replaces_complete_cells_without_token_corruption():
+def test_table_redaction_removes_complete_claim_without_token_corruption():
     result = enforce_agent_output(
         _jp_state(),
         "| Metric | P/E 27x | move (+2.3pt) | FY2027 | 52億円 |",
         "Fundamentals Analyst",
     )
 
-    assert result.text.count("|") == 6
-    assert "| 数据不足 |" in result.text
-    assert "| 证据不足，暂不判断 |" in result.text
+    assert result.text == ""
     assert "FY2027" not in result.text
     for corrupt in (
         "DATA_UNAVAILABLEx",
@@ -511,6 +509,26 @@ def test_table_redaction_replaces_complete_cells_without_token_corruption():
         "DATA_UNAVAILABLE億",
     ):
         assert corrupt not in result.text
+
+
+def test_fully_supported_table_row_remains_intact():
+    row = "| Revenue | 365,221 |"
+    result = enforce_agent_output(
+        _jp_state(
+            evidence_registry=[
+                {
+                    "claim_type": "FACT",
+                    "value": 365_221,
+                    "allowed_for_current_decision": True,
+                }
+            ]
+        ),
+        row,
+        "Fundamentals Analyst",
+    )
+
+    assert result.text == row
+    assert not result.warnings
 
 
 def test_copied_legacy_enforcement_corruption_is_sanitized():
@@ -595,13 +613,48 @@ def test_japan_sentiment_score_and_band_ignore_news_macro_direction(monkeypatch)
     report = sentiment_module.create_sentiment_analyst(llm)(state)["sentiment_report"]
 
     assert "Weak Positive Observation (LOW_SAMPLE)" in report
-    assert "**Score:** 0.505 (source-native -1 to +1 scale)" in report
+    assert "**Score:** 0.505 (source-native signed scale)" in report
     assert "**Confidence:** Low" in report
     assert "News and macro observations are background only" in report
     assert "印证并强化看多情绪" not in report
     assert "整体置信度为 Low" not in report
     assert report.count("**Confidence:**") == 1
     assert "**Score:** 9" not in report
+
+
+def test_japan_sentiment_removes_alternate_llm_band_and_score_authority(monkeypatch):
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_stocktwits_messages",
+        lambda *a, **k: "<stocktwits unavailable>",
+    )
+    monkeypatch.setattr(
+        sentiment_module,
+        "fetch_reddit_posts",
+        lambda *a, **k: "<no Reddit posts>",
+    )
+    monkeypatch.setattr(sentiment_module.get_news, "func", lambda *a, **k: "Macro")
+    llm = MagicMock()
+    llm.with_structured_output.return_value.invoke.return_value = SentimentReport(
+        overall_band=SentimentBand.NEUTRAL,
+        overall_score=5,
+        confidence="high",
+        narrative="## overall_band：Neutral\n## overall_score：5.0\n社交样本方向接近中性。",
+    )
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [_japan_sentiment_item(score=-0.0009, sample_count=9)],
+            "provider_metadata": {},
+        }
+    )
+
+    report = sentiment_module.create_sentiment_analyst(llm)(state)["sentiment_report"]
+
+    assert "**Overall Sentiment:** **Mixed**" in report
+    assert "**Score:** -0.0009" in report
+    assert "overall_band" not in report
+    assert "overall_score" not in report
+    assert "5.0" not in report
 
 
 def test_missing_japan_social_sample_cannot_become_neutral_from_news(monkeypatch):
@@ -682,6 +735,14 @@ def test_jsf_low_lending_is_not_total_short_pressure():
     )
     assert "空頭幾乎全數回補" not in traditional.text
     assert "賣壓大幅減輕" not in traditional.text
+
+    live_wording = enforce_agent_output(
+        _jp_state(),
+        "贷株余额20日下降52%，空头已大规模回补。",
+        "Market Analyst",
+    )
+    assert "空头已大规模回补" not in live_wording.text
+    assert "不代表全市场空头总量" in live_wording.text
 
 
 def test_financial_fact_cannot_be_relabelled_generic_tool_output():
@@ -917,6 +978,35 @@ def test_long_tool_output_keeps_complete_numeric_index_without_dumping_full_valu
     assert len(tool_entry["value"]) == 12_000
     assert "987654321" in tool_entry["derivation"]["numeric_tokens"]
     assert guarded.text == "Historical Metric: 987654321。"
+    assert not guarded.warnings
+
+
+def test_bundle_metadata_numbers_are_indexed_for_evidence_enforcement():
+    state = _jp_state(
+        japan_data_bundle={
+            "items": [_japan_sentiment_item(score=-0.0009, sample_count=9)],
+            "provider_metadata": {},
+        }
+    )
+    registry, _ = initialize_evidence_registry(
+        market_context=state["market_context"],
+        japan_data_bundle=state["japan_data_bundle"],
+        verified_market_snapshot="",
+        analysis_as_of="2026-09-02",
+    )
+    entry = next(
+        item
+        for item in registry
+        if item.get("metric") == "japan_investor_sentiment_aggregate"
+    )
+    guarded = enforce_agent_output(
+        {**state, "evidence_registry": registry},
+        "**Score:** -0.0009 (source-native signed scale)。",
+        "Sentiment Analyst",
+    )
+
+    assert "-0.0009" in entry["derivation"]["numeric_tokens"]
+    assert guarded.text.startswith("**Score:** -0.0009")
     assert not guarded.warnings
 
 

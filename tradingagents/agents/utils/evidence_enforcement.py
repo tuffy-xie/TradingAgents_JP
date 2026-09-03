@@ -57,7 +57,7 @@ _SHORT_ABSENCE_OVERCLAIM = re.compile(
 _SHORT_PRESSURE_OVERCLAIM = re.compile(
     r"(?:short\s+pressure\s+(?:is\s+)?(?:extremely|very)?\s*low|"
     r"做空压力(?:极低|很低|有限)|空[头頭]压力(?:极低|很低|有限)|"
-    r"空[头頭](?:部位)?(?:大幅|幾乎|几乎|全部|全數|全数)?(?:回补|回補|出清)|"
+    r"空[头頭](?:部位)?(?:已)?(?:大幅|大规模|大規模|幾乎|几乎|全部|全數|全数)?(?:回补|回補|出清)|"
     r"(?:卖压|賣壓)(?:明显|明顯|大幅)?(?:减轻|減輕))",
     re.I,
 )
@@ -611,30 +611,15 @@ def _replace_unsupported(clause: str, permitted: frozenset[str] | set[str]) -> s
 def _redact_unsupported_table_values(
     clause: str, permitted: frozenset[str] | set[str]
 ) -> str:
-    """Keep supported cells visible while fail-closing unsupported table cells.
+    """Drop one unsupported Markdown data row as a complete claim.
 
-    Replacing an entire Markdown row because one comparison value was absent
-    previously hid verified current-quarter Actual and Guidance values.  This
-    keeps only exact source-backed numbers and marks every other numeric token
-    unavailable; it does not infer or recalculate a replacement value.
+    Cell-by-cell placeholders preserved table syntax but produced dozens of
+    user-visible ``数据不足`` fragments and left qualitative conclusions beside
+    removed inputs.  A row is one compound claim: if any numeric cell lacks an
+    exact evidence identity, omit that row.  Fully supported rows and separator
+    rows remain byte-for-byte intact.
     """
 
-    cells = clause.split("|")
-    first_unsupported: int | None = None
-    for index, cell in enumerate(cells):
-        tokens = _number_tokens(cell)
-        if tokens and any(token not in permitted for token in tokens):
-            cells[index] = " 数据不足 "
-            if first_unsupported is None:
-                first_unsupported = index
-    # A qualitative assessment to the right of an unavailable input depends
-    # on that input unless it carries its own evidence identity.  Do not retain
-    # free-form labels such as "极强" or "财务堡垒" after removing the fact they
-    # purport to summarize.
-    if first_unsupported is not None:
-        for index in range(first_unsupported + 1, len(cells) - 1):
-            if cells[index].strip() and not re.fullmatch(
-                r"\s*:?-+:?\s*", cells[index]
-            ):
-                cells[index] = " 证据不足，暂不判断 "
-    return "|".join(cells)
+    if any(token not in permitted for token in _number_tokens(clause)):
+        return ""
+    return clause

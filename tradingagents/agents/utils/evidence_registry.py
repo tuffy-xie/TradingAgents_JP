@@ -360,6 +360,7 @@ def _entry_from_bundle_item(item: Mapping[str, Any], analysis_as_of: str) -> dic
         freshness=freshness,
         verification_status="VERIFIED_SOURCE" if item.get("verified") is True else "UNVERIFIED",
         allowed=allowed,
+        derivation={"numeric_tokens": sorted(_numeric_tokens(_canonical(metadata)))},
     )
 
 

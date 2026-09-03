@@ -264,6 +264,12 @@ def _japan_social_authority(state: Mapping[str, Any]) -> dict[str, Any] | None:
 _SENTIMENT_HEADER = re.compile(
     r"^\*\*(?:Overall Sentiment|Score|Confidence):\*\*.*(?:\n|$)", re.I | re.M
 )
+_ALTERNATE_SENTIMENT_AUTHORITY = re.compile(
+    r"^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:\*\*)?"
+    r"(?:overall[_\s-]*(?:band|score)|overall[_\s-]*sentiment|sentiment[_\s-]*score)"
+    r"(?:\*\*)?\s*[:：].*(?:\n|$)",
+    re.I | re.M,
+)
 _NON_SOCIAL_DIRECTION = re.compile(
     r"(?=.*(?:news|macro|headline|新闻|宏观))"
     r"(?=.*(?:sentiment|bullish|bearish|positive|negative|情绪|看多|看空|利多|利空|印证|强化|支持))",
@@ -304,7 +310,10 @@ def _apply_japan_sentiment_domain_integrity(
         band = _social_band(score)
         confidence = _social_confidence(authority.get("confidence"))
 
-    without_llm_header = _SENTIMENT_HEADER.sub("", report_text).strip()
+    without_llm_header = _SENTIMENT_HEADER.sub("", report_text)
+    without_llm_header = _ALTERNATE_SENTIMENT_AUTHORITY.sub(
+        "", without_llm_header
+    ).strip()
     cleaned_lines = []
     for line in without_llm_header.splitlines():
         # The source-native authority above owns the run-level confidence.
@@ -317,7 +326,7 @@ def _apply_japan_sentiment_domain_integrity(
     header = (
         "## Investor/social sentiment authority\n"
         f"**Overall Sentiment:** **{band}**\n"
-        f"**Score:** {score:.4g} (source-native -1 to +1 scale)\n"
+        f"**Score:** {score:.4g} (source-native signed scale)\n"
         f"**Confidence:** {confidence}\n"
         f"**Sample:** n={sample_count}; positive={authority['positive_count']}; "
         f"neutral={authority['neutral_count']}; negative={authority['negative_count']}\n"
