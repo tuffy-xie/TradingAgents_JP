@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from tradingagents.final_output import build_canonical_final_state
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.reporting import write_report_tree
 from web.server import _render_report_html
@@ -78,7 +79,9 @@ def test_japan_user_report_localizes_internal_statuses_but_debug_log_keeps_them(
         ),
     }
 
-    report = write_report_tree(state, "6981.T", tmp_path)
+    report = write_report_tree(
+        build_canonical_final_state(state), "6981.T", tmp_path
+    )
     user_text = report.read_text(encoding="utf-8")
     debug_text = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
 
@@ -107,7 +110,9 @@ def test_japan_user_report_hides_internal_financial_replacement_artifact(tmp_pat
         "fundamentals_report": artifact + "\n正常基本面叙述。",
     }
 
-    report = write_report_tree(state, "6981.T", tmp_path)
+    report = write_report_tree(
+        build_canonical_final_state(state), "6981.T", tmp_path
+    )
     user_text = report.read_text(encoding="utf-8")
     debug_text = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
 

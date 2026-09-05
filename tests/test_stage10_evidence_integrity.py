@@ -1069,7 +1069,7 @@ def test_vendor_forward_semantic_applies_only_to_explicit_forward_fields():
     ]
 
 
-def test_observer_registers_only_post_enforcement_report_inference():
+def test_observer_audits_without_mutating_agent_reasoning():
     observed = _observe_agent_node(
         "Fundamentals Analyst",
         lambda _state: {"fundamentals_report": "Unsupported target 999999。"},
@@ -1079,15 +1079,19 @@ def test_observer_registers_only_post_enforcement_report_inference():
     )
     result = observed(_jp_state())
 
-    assert "999999" not in result["fundamentals_report"]
-    assert all(
-        "999999" not in str(item.get("value"))
+    assert result["fundamentals_report"] == "Unsupported target 999999。"
+    inference = next(
+        item
         for item in result.get("evidence_registry") or []
+        if item.get("metric") == "fundamentals_report"
     )
+    assert inference["claim_type"] == "INFERENCE"
+    assert inference["verification_status"] == "ANALYST_INFERENCE"
+    assert inference["allowed_for_current_decision"] is False
     warning = next(
         item
         for item in result["evidence_audit"]
         if item.get("warning") == "unsupported_precise_number"
     )
-    assert warning["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
-    assert warning["execution_blocking"] is False
+    assert warning["resolution"] == "PENDING_FINAL_ARTIFACT_VALIDATION"
+    assert warning["execution_blocking"] is True

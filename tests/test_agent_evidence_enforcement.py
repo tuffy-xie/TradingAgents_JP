@@ -172,13 +172,26 @@ def test_graph_observer_preserves_prose_and_captures_evidence_metadata():
     result = observed(_state())
     assert result["market_report"] == expected["market_report"]
     assert result["evidence_registry"]
-    assert result["evidence_audit"][0]["category"] == "SUPPORTED_FACT"
+    assert result["evidence_audit"][0]["category"] == "UNSUPPORTED_CLAIM"
+    assert (
+        result["evidence_audit"][0]["resolution"]
+        == "PENDING_FINAL_ARTIFACT_VALIDATION"
+    )
 
 
-def test_market_report_numbers_remain_valid_without_snapshot():
+def test_verified_market_tool_numbers_remain_valid_without_snapshot():
     state = _state()
     state["verified_market_snapshot"] = ""
     state["market_report"] = "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。"
+    state["evidence_registry"] = [
+        {
+            "domain": "MARKET",
+            "claim_type": "FACT",
+            "value": state["market_report"],
+            "verification_status": "VERIFIED_TOOL_OUTPUT",
+            "allowed_for_current_decision": True,
+        }
+    ]
     result = enforce_agent_output(
         state,
         "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。",
@@ -186,3 +199,14 @@ def test_market_report_numbers_remain_valid_without_snapshot():
     )
     assert result.warnings == ()
     assert result.text == state["market_report"]
+
+
+def test_market_agent_prose_is_not_its_own_numeric_authority():
+    state = _state()
+    state["verified_market_snapshot"] = ""
+    state["market_report"] = "当前价9999。"
+
+    result = enforce_agent_output(state, state["market_report"], "Market Analyst")
+
+    assert "9999" not in result.text
+    assert "non_snapshot_current_price" in result.warnings

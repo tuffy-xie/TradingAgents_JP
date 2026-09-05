@@ -11,6 +11,7 @@ from tradingagents.dataflows.japan.context import (
 )
 from tradingagents.dataflows.japan.models import JapanResearchBundle
 from tradingagents.dataflows.market import resolve_market_context
+from tradingagents.final_output import build_canonical_final_state
 from tradingagents.graph.propagation import Propagator
 from tradingagents.reporting import write_report_tree
 
@@ -53,9 +54,10 @@ def test_japan_report_sections_are_explicit_and_do_not_fabricate_sentiment(tmp_p
     assert "## 日本市场情绪" in sections
     assert "数据不可用" in sections
 
-    out = write_report_tree(
-        {"market_context": {"market": "JP"}, "japan_data_bundle": _bundle()}, "6981.T", tmp_path
+    state = build_canonical_final_state(
+        {"market_context": {"market": "JP"}, "japan_data_bundle": _bundle()}
     )
+    out = write_report_tree(state, "6981.T", tmp_path)
     content = out.read_text(encoding="utf-8")
     assert "日本官方披露" in content
     assert (tmp_path / "0_japan_market_data" / "official_and_supply_demand.md").exists()
