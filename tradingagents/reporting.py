@@ -7,12 +7,24 @@ run produces the same on-disk report tree a CLI run does.
 """
 
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 
 from tradingagents.dataflows.japan.context import render_japan_report_sections
 from tradingagents.final_output import require_canonical_final_state
 from tradingagents.report_consistency import canonical_report_metadata
+
+
+def _agent_section(name: str, text: str, market: str) -> str:
+    """Nest accepted JP headings under the display wrapper without editing facts."""
+    if market == "JP":
+        def nested_heading(match):
+            level = len(match.group(1)) + 3
+            return ("#" * level + " " if level <= 6 else "") + match.group(2)
+
+        text = re.sub(r"(?m)^(#{1,6})\s+(.+)$", nested_heading, text)
+    return f"### {name}\n{text}"
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
@@ -87,7 +99,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             f"## 基本面分析师原始报告\n\n{raw_outputs.get('fundamentals_report', final_state['fundamentals_report'])}"
         )
     if analyst_parts:
-        content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
+        content = "\n\n".join(_agent_section(name, text, market) for name, text in analyst_parts)
         sections.append(f"## I. Analyst Team Reports\n\n{content}")
 
     # 2. Research
@@ -113,7 +125,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             raw_debate = raw_outputs.get("investment_debate_state") or {}
             agent_log_parts.append(f"## 研究经理原始评判\n\n{raw_debate.get('judge_decision', debate['judge_decision'])}")
         if research_parts:
-            content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
+            content = "\n\n".join(_agent_section(name, text, market) for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
 
     # 3. Trading
@@ -123,7 +135,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         report = final_state["trader_investment_plan"]
         (trading_dir / "trader.md").write_text(report, encoding="utf-8")
         agent_log_parts.append(f"## 交易员原始决策\n\n{raw_outputs.get('trader_investment_plan', final_state['trader_investment_plan'])}")
-        sections.append(f"## III. Trading Team Plan\n\n### Trader\n{report}")
+        sections.append("## III. Trading Team Plan\n\n" + _agent_section("Trader", report, market))
 
     # 4. Risk Management
     if final_state.get("risk_debate_state"):
@@ -152,7 +164,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             report = risk["judge_decision"]
             (portfolio_dir / "decision.md").write_text(report, encoding="utf-8")
             sections.append(
-                f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{report}"
+                "## V. Portfolio Manager Decision\n\n" + _agent_section("Portfolio Manager", report, market)
             )
             raw_risk = raw_outputs.get("risk_debate_state") or {}
             agent_log_parts.append(f"## 投资组合经理原始决策\n\n{raw_risk.get('judge_decision', risk['judge_decision'])}")

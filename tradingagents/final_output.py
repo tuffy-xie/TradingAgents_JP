@@ -26,6 +26,7 @@ _REPORT_FIELDS = (
     "final_trade_decision",
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
+_CONTRACT_VERSION = "v2"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -49,6 +50,9 @@ _EXECUTION_HEADINGS = (
     "execution plan",
     "trade parameters",
     "可操作交易计划",
+    "可操作投资计划",
+    "具体行动建议",
+    "investment execution plan",
     "交易参数",
     "入场",
     "止损",
@@ -61,6 +65,37 @@ _EXECUTION_LINE = re.compile(
     re.I,
 )
 _JSF_CLAIM = re.compile(r"(?:\bJSF\b|日证金|日證金|貸株|贷株)", re.I)
+_EXECUTION_INSTRUCTIONS = re.compile(
+    r"(?:严守|严格|设置|设定|执行|触发|强制)?(?:止损|止盈)|强制离场|"
+    r"(?:小|轻|重|试探|少量)[仓倉](?:位)?|"
+    r"(?:建议|可以|可|应|宜|考虑|确认后|破位后|逢高|择机|伺机|开始|建立)[^。；;\n]{0,80}(?:做空|试空|试多|开空|开多|建仓|入场|介入|进场)|"
+    r"(?:做空|建仓|入场|开空|开多)[^。；;\n]{0,80}(?:条件|触发|执行|建议)|"
+    r"可执行方案|执行纪律|(?:仓位|敞口)[^。；;\n]{0,8}(?:纪律|配置)|价格触发条件|"
+    r"\b(?:enter|initiate|open|take)\b[^.;\n]{0,30}\b(?:short|long|position|trade)\b|"
+    r"\b(?:stop[ -]?loss|small position|forced exit)\b",
+    re.I,
+)
+_POSITION_RECOMMENDATION = re.compile(
+    r"(?:仓位|倉位|净敞口|净暴露|组合总值|position(?: size| sizing)?|net exposure|allocation)"
+    r"[^。；;\n]*(?:\d|%|≤|≥|上限|不超过)|"
+    r"\d[\d.]*\s*%[^。；;\n]*(?:组合|portfolio|position|仓位(?:配置|分配|上限))",
+    re.I,
+)
+_EXECUTION_PARAMETER = re.compile(
+    r"(?:入场|建仓|目标价|第一目标|第二目标|\bentry\b|\bstop\b|\btarget\b)"
+    r"[^。；;\n]*\d",
+    re.I,
+)
+_TRADER_WITHHELD = "确定性执行校验未通过，因此没有获准的入场、止损、目标价或仓位计划。"
+_EXECUTION_WITHHELD = (
+    "确定性执行校验未通过。本报告不提供可执行的入场、止损、目标价或仓位参数；"
+    "方向性研究结论不等于已批准交易指令。"
+)
+_PUBLIC_NEWS_TEXT = {
+    "Japan company-news authority": "已核验的日本公司新闻",
+    "The following timestamped Japan bundle headlines are available; a separate tool's empty result does not mean there is no company news.":
+        "以下公司新闻均有明确发布时间；其他新闻工具返回空结果，不代表本次没有公司新闻。",
+}
 _INTERNAL_STATUS = {
     "VERIFIED_FINANCIAL_AUTHORITY": "已核验的财务权威数据",
     "VERIFIED_TOOL_OUTPUT": "已核验的工具数据",
@@ -82,8 +117,11 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     if (result.get("market_context") or {}).get("market") != "JP":
         return result
     contract = result.get("final_output_contract") or {}
-    if contract.get("status") == "FINALIZED":
+    if contract.get("status") == "FINALIZED" and contract.get("version") == _CONTRACT_VERSION:
         return result
+    if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
+        # Re-accept archived v1 state under the current output contract.
+        result.update(copy.deepcopy(result["raw_agent_outputs"]))
     if not result.get("trader_investment_plan") and result.get(
         "trader_investment_decision"
     ):
@@ -153,7 +191,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         # alias of the accepted plan so raw legacy prose cannot bypass the gate.
         result["trader_investment_decision"] = result["trader_investment_plan"]
     result["final_output_contract"] = {
-        "version": "v1",
+        "version": _CONTRACT_VERSION,
         "status": "FINALIZED" if not artifact_issues else "BLOCKED",
         "authority": "CANONICAL_FINAL_STATE",
         "execution_allowed": execution_allowed,
@@ -167,7 +205,8 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
     """Fail closed when a JP renderer receives non-canonical business state."""
     if (state.get("market_context") or {}).get("market") != "JP":
         return
-    if (state.get("final_output_contract") or {}).get("status") != "FINALIZED":
+    contract = state.get("final_output_contract") or {}
+    if contract.get("status") != "FINALIZED" or contract.get("version") != _CONTRACT_VERSION:
         raise ValueError("Japan report input is not an accepted canonical final state")
 
 
@@ -252,18 +291,16 @@ def _remove_current_financial_sections(text: str) -> str:
 def _filter_markdown_sections(text: str, keep_heading) -> str:
     lines = text.splitlines(keepends=True)
     output: list[str] = []
-    section: list[str] = []
-    keep = True
+    excluded_level: int | None = None
     for line in lines:
-        if re.match(r"^##\s+", line):
-            if keep:
-                output.extend(section)
-            section = [line]
-            keep = keep_heading(re.sub(r"^##\s+", "", line).strip())
-        else:
-            section.append(line)
-    if keep:
-        output.extend(section)
+        level = _heading_level(line)
+        if level is not None:
+            if excluded_level is not None and level <= excluded_level:
+                excluded_level = None
+            if excluded_level is None and not keep_heading(line.lstrip("#").strip()):
+                excluded_level = level
+        if excluded_level is None:
+            output.append(line)
     return "".join(output).strip()
 
 
@@ -297,7 +334,60 @@ def _fold_empty_sections(text: str) -> str:
         body = "".join(section[1:]).strip()
         if body:
             kept.extend(section)
-    return re.sub(r"\n{3,}", "\n\n", "".join(kept)).strip()
+    return _clean_empty_markdown("".join(kept))
+
+
+def _clean_empty_markdown(text: str) -> str:
+    """Fold empty headings/lead-ins after pruning, without deleting their siblings."""
+    lines = text.splitlines()
+    kept: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if (
+            stripped
+            and not re.sub(r"[\s*_#>+\-\d.)]", "", stripped)
+            and stripped not in {"---", "***", "___"}
+        ):
+            continue
+        # Clause pruning can leave one end of an emphasis span behind.
+        if line.count("**") % 2:
+            line = line.replace("**", "")
+        kept.append(line)
+    # Removing an empty child can empty its parent: work to a fixed point.
+    while True:
+        result: list[str] = []
+        for index, line in enumerate(kept):
+            heading = _heading_level(line)
+            label = line.strip().strip("*_ ")
+            lead_in = label.endswith((":", "：")) and not line.lstrip().startswith("|")
+            bold_heading = (
+                line.strip().startswith("**") and line.strip().endswith("**")
+                and not re.search(r"[。；;.!?：:]", label)
+            )
+            if heading is not None or lead_in or bold_heading:
+                next_index = next(
+                    (i for i in range(index + 1, len(kept)) if kept[i].strip()), len(kept)
+                )
+                following = kept[next_index] if next_index < len(kept) else ""
+                next_level = _heading_level(following)
+                boundary = not following or following.strip() in {"---", "***", "___"}
+                if heading is not None:
+                    boundary = boundary or (next_level is not None and next_level <= heading)
+                else:
+                    boundary = boundary or next_level is not None or (
+                        following.strip().startswith("**") and following.strip().endswith("**")
+                    )
+                    if lead_in and next_index > index + 1 and not re.match(
+                        r"\s*(?:[-*+>]\s|\d+[.)]\s|\|)", following
+                    ):
+                        boundary = True
+                if boundary:
+                    continue
+            result.append(line)
+        if result == kept:
+            break
+        kept = result
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 def _drop_empty_table_subsections(lines: list[str]) -> list[str]:
@@ -376,39 +466,54 @@ def _is_table_separator(line: str) -> bool:
 
 
 def _withhold_unvalidated_execution(state: dict[str, Any]) -> dict[str, Any]:
-    result = dict(state)
+    # Every potentially displayed Agent field obeys the same policy, including
+    # Research Manager and legacy investment_plan aliases.
+    result = _map_report_text(state, _prune_unapproved_execution)
     decision = str(result.get("final_trade_decision") or "")
-    accepted = _strip_execution_plan(decision, include_target=True)
-    gate = (
-        "## 执行许可\n\n"
-        "确定性执行校验未通过。本报告不提供可执行的入场、止损、目标价或仓位参数；"
-        "方向性研究结论不等于已批准交易指令。"
-    )
-    accepted = (accepted.rstrip() + "\n\n" + gate).strip() if accepted else gate
-    result["trader_investment_plan"] = (
-        "## 交易执行状态\n\n"
-        "确定性执行校验未通过，因此没有获准的入场、止损、目标价或仓位计划。"
-    )
+    gate = "## 执行许可\n\n" + _EXECUTION_WITHHELD
+    accepted = (decision.rstrip() + "\n\n" + gate).strip() if decision else gate
+    result["trader_investment_plan"] = "## 交易执行状态\n\n" + _TRADER_WITHHELD
     result["final_trade_decision"] = accepted
-    for field in ("market_report", "sentiment_report", "news_report", "fundamentals_report"):
-        if isinstance(result.get(field), str):
-            result[field] = _remove_unapproved_execution_lines(result[field])
     risk = result.get("risk_debate_state")
     if isinstance(risk, Mapping):
         risk = dict(risk)
         risk["judge_decision"] = accepted
         result["risk_debate_state"] = risk
-    research = result.get("investment_debate_state")
-    if isinstance(research, Mapping):
-        research = dict(research)
-        if isinstance(research.get("judge_decision"), str):
-            research["judge_decision"] = _strip_execution_plan(
-                research["judge_decision"], include_target=True
-            )
-        result["investment_debate_state"] = research
-    if isinstance(result.get("investment_plan"), str):
-        result["investment_plan"] = _remove_execution_sections(result["investment_plan"])
     return result
+
+
+def _execution_violation(text: str) -> str | None:
+    plain = text.replace("**", "").replace("`", "")
+    if _POSITION_RECOMMENDATION.search(plain):
+        return "POSITION_SIZE_RECOMMENDATION"
+    if _EXECUTION_INSTRUCTIONS.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _EXECUTION_PARAMETER.search(plain):
+        # A sourced valuation target is an analytical fact, not a trade exit.
+        if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", plain, re.I):
+            return None
+        return "UNVALIDATED_EXECUTABLE_PLAN"
+    return None
+
+
+def _prune_unapproved_execution(text: str) -> str:
+    text = _filter_markdown_sections(
+        text,
+        lambda heading: not any(word in heading.casefold() for word in _EXECUTION_HEADINGS),
+    )
+    lines = []
+    for line in text.splitlines():
+        if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
+            lines.append(line)
+            continue
+        if line.lstrip().startswith("|"):
+            if not _execution_violation(line):
+                lines.append(line)
+            continue
+        # Remove complete clauses, retaining independent directional judgments.
+        clauses = re.split(r"(?<=[。！？；;])", line)
+        lines.append("".join(clause for clause in clauses if not _execution_violation(clause)))
+    return _fold_empty_sections("\n".join(lines))
 
 
 def _apply_validated_execution(state: dict[str, Any]) -> dict[str, Any]:
@@ -508,43 +613,64 @@ def _remove_unapproved_execution_lines(
 
 
 def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
-    result = dict(state)
-
     def publicize(text: str) -> str:
+        for internal, display in _PUBLIC_NEWS_TEXT.items():
+            text = text.replace(internal, display)
         for internal, display in _INTERNAL_STATUS.items():
             text = text.replace(internal, display)
         text = text.replace("DATA UNAVAILABLE", "数据不可用")
         return _fold_empty_sections(text)
 
+    return _map_report_text(state, publicize)
+
+
+def _map_report_text(state: Mapping[str, Any], transform) -> dict[str, Any]:
+    result = dict(state)
     for field in _REPORT_FIELDS:
         if isinstance(result.get(field), str):
-            result[field] = publicize(result[field])
+            result[field] = transform(result[field])
     for field in _DEBATE_FIELDS:
         debate = result.get(field)
         if isinstance(debate, Mapping):
             result[field] = {
-                key: publicize(value) if isinstance(value, str) else value
+                key: transform(value) if isinstance(value, str) else value
                 for key, value in debate.items()
             }
     return result
 
 
 def _validate_final_artifact(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
-    text = "\n".join(
-        str(state.get(field) or "") for field in _REPORT_FIELDS
-    )
+    parts: list[str] = []
+    _map_report_text(state, lambda text: parts.append(text) or text)
+    return validate_final_report_text("\n".join(parts), execution_allowed=execution_allowed)
+
+
+def validate_final_report_text(text: str, *, execution_allowed: bool) -> list[str]:
+    """Detect violations in accepted text or a composed artifact; never edit it."""
     issues: list[str] = []
     for token in _INTERNAL_STATUS:
         if token in text:
             issues.append(f"INTERNAL_STATUS_VISIBLE:{token}")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):
         issues.append("SHORT_MARKET_OVERCLAIM")
-    if not execution_allowed and any(
-        _EXECUTION_LINE.search(str(state.get(field) or ""))
-        for field in ("trader_investment_plan", "final_trade_decision")
-    ):
-        issues.append("UNVALIDATED_EXECUTABLE_PLAN")
-    return issues
+    for internal in _PUBLIC_NEWS_TEXT:
+        if internal in text:
+            issues.append("UNLOCALIZED_NEWS_AUTHORITY")
+    for line in text.splitlines():
+        if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
+            continue
+        if not execution_allowed:
+            if _heading_level(line) and any(word in line.casefold() for word in _EXECUTION_HEADINGS):
+                issues.append("UNAPPROVED_EXECUTION_SECTION")
+            violation = _execution_violation(line)
+            if violation:
+                issues.append(violation)
+    if _clean_empty_markdown(text) != re.sub(r"\n{3,}", "\n\n", text).strip():
+        issues.append("EMPTY_MARKDOWN_STRUCTURE")
+    lines = text.splitlines()
+    if any(not _table_has_data_row(lines[start:end]) for start, end in _table_blocks(lines, 0, len(lines))):
+        issues.append("EMPTY_MARKDOWN_TABLE")
+    return list(dict.fromkeys(issues))
 
 
 def _finalize_audit(
