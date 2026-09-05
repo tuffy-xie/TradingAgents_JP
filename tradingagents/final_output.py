@@ -395,13 +395,19 @@ def _clean_empty_markdown(text: str) -> str:
 _NUMBERED_HEADING = re.compile(
     r"^(?P<prefix>\s*)(?:(?P<arabic>\d+)(?P<arabic_punct>[.)])"
     r"(?P<arabic_space>\s+)|(?P<chinese>[一二三四五六七八九十百千万]+)"
-    r"(?P<chinese_punct>[、.])(?P<chinese_space>\s*))(?P<body>.+?)\s*$"
+    r"(?P<chinese_punct>[、.])(?P<chinese_space>\s*)|(?P<roman>[IVXLCDM]+)"
+    r"(?P<roman_punct>[.)])(?P<roman_space>\s+))(?P<body>.+?)\s*$",
+    re.IGNORECASE,
 )
 _NUMBERED_LIST = re.compile(
     r"^(?P<indent>\s*)(?P<number>\d+|[一二三四五六七八九十百千万]+)"
     r"(?P<punct>[.、)])(?P<space>\s+)(?P<body>.+?)\s*$"
 )
 _SEPARATOR = re.compile(r"^\s*(?P<char>[-*_])(?:\s*(?P=char)){2,}\s*$")
+_CIRCLED_LIST = re.compile(r"^(?P<indent>\s*)(?P<number>[①②③④⑤⑥⑦⑧⑨⑩])(?P<space>\s+)(?P<body>.+?)\s*$")
+_HEADING_COUNT_CLAIM = re.compile(
+    r"[（(]\s*\d+\s*个[^）)]{0,24}(?:指标|要点|项目|因素|维度|信号)[^）)]*[）)]"
+)
 
 
 def _chinese_ordinal(value: int) -> str:
@@ -434,6 +440,40 @@ def _ordinal_value(value: str) -> int | None:
     return None
 
 
+def _roman_value(value: str) -> int | None:
+    values = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+    total = 0
+    previous = 0
+    for char in reversed(value.upper()):
+        current = values.get(char)
+        if current is None:
+            return None
+        if current < previous:
+            total -= current
+        else:
+            total += current
+            previous = current
+    return total
+
+
+def _heading_number_kind(match: re.Match[str]) -> str:
+    if match.group("arabic") is not None:
+        return "arabic"
+    if match.group("chinese") is not None:
+        return "chinese"
+    return "roman"
+
+
+def _reset_heading_counters(
+    counters: dict[tuple[int, tuple[str, ...], str], int],
+    level: int,
+    parent: tuple[str, ...],
+) -> None:
+    for key in tuple(counters):
+        if key[0] == level and key[1] == parent:
+            counters.pop(key, None)
+
+
 def _is_ordinary_year(value: str) -> bool:
     return value.isdigit() and len(value) == 4 and 1900 <= int(value) <= 2100
 
@@ -442,7 +482,7 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
     """Renumber numbered sibling headings without touching ordinary numbers."""
     output = list(lines)
     stack: list[tuple[int, str]] = []
-    counters: dict[tuple[int, tuple[str, ...]], int] = {}
+    counters: dict[tuple[int, tuple[str, ...], str], int] = {}
     for index, line in enumerate(output):
         level = _heading_level(line)
         if level is None:
@@ -453,27 +493,100 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
         while stack and stack[-1][0] >= level:
             stack.pop()
         parent = tuple(title for _, title in stack)
-        key = (level, parent)
         numbered = _NUMBERED_HEADING.match(match.group(2))
+        kind = _heading_number_kind(numbered) if numbered else "plain"
+        key = (level, parent, kind)
         if numbered and _is_ordinary_year(numbered.group("arabic") or ""):
             numbered = None
+            kind = "plain"
+            key = (level, parent, kind)
         # A non-numbered sibling starts a new heading sequence.
         if not numbered:
-            counters.pop(key, None)
+            _reset_heading_counters(counters, level, parent)
         else:
             counters[key] = counters.get(key, 0) + 1
             number = counters[key]
-            is_arabic = numbered.group("arabic") is not None
-            replacement = str(number) if is_arabic else _chinese_ordinal(number)
+            kind = _heading_number_kind(numbered)
+            replacement = (
+                str(number)
+                if kind == "arabic"
+                else _chinese_ordinal(number)
+                if kind == "chinese"
+                else _int_to_roman(number)
+            )
             body = numbered.group("body")
-            punctuation = numbered.group("arabic_punct") or numbered.group("chinese_punct")
-            space = numbered.group("arabic_space") or numbered.group("chinese_space")
+            punctuation = (
+                numbered.group("arabic_punct")
+                or numbered.group("chinese_punct")
+                or numbered.group("roman_punct")
+                or ""
+            )
+            space = (
+                numbered.group("arabic_space")
+                or numbered.group("chinese_space")
+                or numbered.group("roman_space")
+                or ""
+            )
             line_ending = "\n" if line.endswith("\n") else ""
             output[index] = (
                 f"{match.group(1)} {replacement}{punctuation}"
                 f"{space}{body}{line_ending}"
             )
         stack.append((level, match.group(2)))
+    return output
+
+
+def _normalize_heading_count_claims(lines: list[str]) -> list[str]:
+    output = list(lines)
+    for index, line in enumerate(output):
+        level = _heading_level(line)
+        if level is None:
+            continue
+        match = re.match(r"^(#{1,6})\s+(.+?)(\n?)$", line)
+        if not match:
+            continue
+        body = _HEADING_COUNT_CLAIM.sub("", match.group(2)).strip()
+        if body != match.group(2):
+            output[index] = f"{match.group(1)} {body}{match.group(3)}"
+    return output
+
+
+def _int_to_roman(value: int) -> str:
+    parts = ((10, "X"), (9, "IX"), (5, "V"), (4, "IV"), (1, "I"))
+    result = []
+    for unit, symbol in parts:
+        count, value = divmod(value, unit)
+        result.append(symbol * count)
+    return "".join(result)
+
+
+def _normalize_circled_lists(lines: list[str]) -> list[str]:
+    output = list(lines)
+    index = 0
+    while index < len(output):
+        match = _CIRCLED_LIST.match(output[index])
+        if not match:
+            index += 1
+            continue
+        indent = match.group("indent")
+        current = index
+        number = 1
+        while current < len(output):
+            item = _CIRCLED_LIST.match(output[current])
+            if item and item.group("indent") == indent:
+                symbol = "①②③④⑤⑥⑦⑧⑨⑩"[number - 1] if number <= 10 else str(number)
+                ending = "\n" if output[current].endswith("\n") else ""
+                output[current] = f"{indent}{symbol}{item.group('space')}{item.group('body')}{ending}"
+                number += 1
+                current += 1
+                continue
+            if not output[current].strip() and current + 1 < len(output):
+                next_item = _CIRCLED_LIST.match(output[current + 1])
+                if next_item and next_item.group("indent") == indent:
+                    current += 1
+                    continue
+            break
+        index = max(current, index + 1)
     return output
 
 
@@ -563,7 +676,7 @@ def _remove_orphan_structures(lines: list[str]) -> list[str]:
             if not cleaned or cleaned[-1].strip() != "---":
                 cleaned.append("---\n")
             continue
-        if re.fullmatch(r"(?:[*_#>-]|\d+[.)])+(?:\s*)", stripped):
+        if re.fullmatch(r"(?:[*_#>-]|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])+(?:\s*)", stripped):
             continue
         cleaned.append(line)
 
@@ -586,7 +699,7 @@ def _remove_orphan_structures(lines: list[str]) -> list[str]:
             if heading is not None:
                 boundary = boundary or (next_level is not None and next_level <= heading)
             else:
-                boundary = boundary or next_level is not None or re.fullmatch(r"(?:[-*+]|\d+[.)])\s*", following.strip() or "") is not None
+                boundary = boundary or next_level is not None or re.fullmatch(r"(?:[-*+]|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", following.strip() or "") is not None
             if boundary:
                 changed = True
                 continue
@@ -606,7 +719,9 @@ def normalize_markdown_structure(text: str) -> str:
     lines = [line + "\n" for line in text.splitlines()]
     lines = _normalize_markdown_tables(lines)
     lines = _normalize_heading_numbers(lines)
+    lines = _normalize_heading_count_claims(lines)
     lines = _normalize_numbered_lists(lines)
+    lines = _normalize_circled_lists(lines)
     lines = _remove_orphan_structures(lines)
     # Collapse separators once more after orphan removal.
     output: list[str] = []
@@ -633,7 +748,7 @@ def _markdown_structure_issues(text: str) -> list[str]:
 
     # Heading sequence validation mirrors the renumbering state machine.
     stack: list[tuple[int, str]] = []
-    counters: dict[tuple[int, tuple[str, ...]], int] = {}
+    counters: dict[tuple[int, tuple[str, ...], str], int] = {}
     for line in lines:
         level = _heading_level(line)
         if level is None:
@@ -643,17 +758,28 @@ def _markdown_structure_issues(text: str) -> list[str]:
             continue
         while stack and stack[-1][0] >= level:
             stack.pop()
-        key = (level, tuple(title for _, title in stack))
+        parent = tuple(title for _, title in stack)
         numbered = _NUMBERED_HEADING.match(match.group(2))
+        kind = _heading_number_kind(numbered) if numbered else "plain"
+        key = (level, parent, kind)
         if numbered and _is_ordinary_year(numbered.group("arabic") or ""):
             numbered = None
+            kind = "plain"
+            key = (level, parent, kind)
         if not numbered:
-            counters.pop(key, None)
+            _reset_heading_counters(counters, level, parent)
         else:
             counters[key] = counters.get(key, 0) + 1
-            parsed = _ordinal_value(numbered.group("arabic") or numbered.group("chinese") or "")
+            raw_number = numbered.group("arabic") or numbered.group("chinese") or numbered.group("roman") or ""
+            parsed = (
+                _ordinal_value(raw_number)
+                if kind != "roman"
+                else _roman_value(raw_number)
+            )
             if parsed != counters[key]:
                 issues.append("HEADING_NUMBERING_DISCONTINUITY")
+        if _HEADING_COUNT_CLAIM.search(match.group(2)):
+            issues.append("STALE_HEADING_COUNT_CLAIM")
         stack.append((level, match.group(2)))
 
     # Numbered list blocks must start at one and increase without gaps.
@@ -694,6 +820,34 @@ def _markdown_structure_issues(text: str) -> list[str]:
             break
         index = max(current, index + 1)
 
+    # Circled-number lead-ins are list items too, even when they are not
+    # rendered as Markdown list markers.
+    index = 0
+    circled = "①②③④⑤⑥⑦⑧⑨⑩"
+    while index < len(lines):
+        match = _CIRCLED_LIST.match(lines[index])
+        if not match:
+            index += 1
+            continue
+        indent = match.group("indent")
+        expected = 1
+        current = index
+        while current < len(lines):
+            item = _CIRCLED_LIST.match(lines[current])
+            if item and item.group("indent") == indent:
+                if circled.index(item.group("number")) + 1 != expected:
+                    issues.append("CIRCLED_NUMBER_DISCONTINUITY")
+                expected += 1
+                current += 1
+                continue
+            if not lines[current].strip() and current + 1 < len(lines):
+                next_item = _CIRCLED_LIST.match(lines[current + 1])
+                if next_item and next_item.group("indent") == indent:
+                    current += 1
+                    continue
+            break
+        index = max(current, index + 1)
+
     for start, end in _table_blocks(lines, 0, len(lines)):
         block = lines[start:end]
         if len(block) < 2 or not _is_table_separator(block[1]):
@@ -716,7 +870,7 @@ def _markdown_structure_issues(text: str) -> list[str]:
             break
 
     for index, line in enumerate(lines):
-        if re.fullmatch(r"\s*(?:[*_#>-]|\d+[.)])\s*", line):
+        if re.fullmatch(r"\s*(?:[*_#>-]|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", line):
             issues.append("ORPHAN_MARKDOWN_MARKER")
             break
         heading = _heading_level(line)

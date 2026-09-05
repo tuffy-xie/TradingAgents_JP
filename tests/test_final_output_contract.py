@@ -468,6 +468,37 @@ def test_structural_normalization_does_not_rewrite_years_or_financial_numbers():
     assert "2026. 年度数据为 502264 百万円。" in normalized
 
 
+def test_structural_normalization_handles_circled_and_roman_sequences():
+    text = """## I. 分析师
+内容。
+## III. 交易结论
+内容。
+## V. 组合决策
+内容。
+
+③ 第一条保留事实
+⑤ 第二条保留事实
+"""
+    normalized = normalize_markdown_structure(text)
+    assert "## I. 分析师" in normalized
+    assert "## II. 交易结论" in normalized
+    assert "## III. 组合决策" in normalized
+    assert "① 第一条保留事实" in normalized
+    assert "② 第二条保留事实" in normalized
+    assert "③ 第一条保留事实" not in normalized
+    assert "⑤ 第二条保留事实" not in normalized
+    assert validate_final_report_text(normalized, execution_allowed=False) == []
+
+
+def test_heading_count_claim_is_removed_after_pruning():
+    normalized = normalize_markdown_structure(
+        "## 一、指标选择说明（8 个互补指标）\n指标 A。\n"
+    )
+    assert "8 个互补指标" not in normalized
+    assert "## 一、指标选择说明" in normalized
+    assert validate_final_report_text(normalized, execution_allowed=False) == []
+
+
 def test_complete_report_structure_has_no_pruning_residue(tmp_path):
     state = _jp_state()
     raw_market = (
