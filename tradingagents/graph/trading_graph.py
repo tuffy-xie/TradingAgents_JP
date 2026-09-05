@@ -34,6 +34,7 @@ from tradingagents.dataflows.market import enrich_market_context, resolve_market
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.final_output import build_canonical_final_state
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
 
@@ -526,6 +527,11 @@ class TradingAgentsGraph:
         else:
             final_state = self.graph.invoke(init_agent_state, **args)
 
+        # Establish the sole accepted user-facing state after every Agent has
+        # completed. Raw Agent prose is retained inside raw_agent_outputs for
+        # the technical log; renderers consume only this canonical state.
+        final_state = build_canonical_final_state(final_state)
+
         # Store current state for reflection.
         self.curr_state = final_state
 
@@ -560,6 +566,8 @@ class TradingAgentsGraph:
             "evidence_registry": final_state.get("evidence_registry", []),
             "run_manifest": final_state.get("run_manifest", {}),
             "validated_execution": final_state.get("validated_execution", {}),
+            "final_output_contract": final_state.get("final_output_contract", {}),
+            "raw_agent_outputs": final_state.get("raw_agent_outputs", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
             "news_report": final_state["news_report"],

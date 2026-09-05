@@ -55,6 +55,8 @@ class AgentState(MessagesState):
     evidence_registry: Annotated[list[dict], "Run-local fact identities and provenance; never rendered as raw provider payload"]
     run_manifest: Annotated[dict, "Non-secret runtime identity metadata for reproducibility"]
     validated_execution: Annotated[dict, "Deterministically calculated entry/stop/position risk facts"]
+    final_output_contract: Annotated[dict, "Canonical user-output acceptance contract"]
+    raw_agent_outputs: Annotated[dict, "Original Agent prose retained only for technical logs"]
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     trade_date: Annotated[str, "What date we are trading at"]
     trade_constraints: Annotated[

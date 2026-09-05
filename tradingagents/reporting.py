@@ -11,11 +11,13 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.dataflows.japan.context import render_japan_report_sections
-from tradingagents.report_consistency import canonical_report_metadata, sanitize_report_section
+from tradingagents.final_output import require_canonical_final_state
+from tradingagents.report_consistency import canonical_report_metadata
 
 
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
+    require_canonical_final_state(final_state)
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
@@ -26,6 +28,12 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         + json.dumps(manifest, ensure_ascii=False, indent=2)
         + "\n```"
     )
+    agent_log_parts.append(
+        "## Final Output Contract\n\n```json\n"
+        + json.dumps(final_state.get("final_output_contract") or {}, ensure_ascii=False, indent=2)
+        + "\n```"
+    )
+    raw_outputs = final_state.get("raw_agent_outputs") or {}
     audit = final_state.get("evidence_audit") or []
     agent_log_parts.append(
         "## 证据校验审计\n\n```json\n" + json.dumps(audit, ensure_ascii=False, indent=2) + "\n```"
@@ -50,35 +58,33 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     analyst_parts = []
     if final_state.get("market_report"):
         analysts_dir.mkdir(exist_ok=True)
-        report = sanitize_report_section(final_state["market_report"], market, "market_report")
+        report = final_state["market_report"]
         (analysts_dir / "market.md").write_text(report, encoding="utf-8")
         analyst_parts.append(("Market Analyst", report))
         agent_log_parts.append(
-            f"## 市场分析师原始报告\n\n{final_state['market_report']}"
+            f"## 市场分析师原始报告\n\n{raw_outputs.get('market_report', final_state['market_report'])}"
         )
     if final_state.get("sentiment_report"):
         analysts_dir.mkdir(exist_ok=True)
-        report = sanitize_report_section(final_state["sentiment_report"], market, "sentiment_report")
+        report = final_state["sentiment_report"]
         (analysts_dir / "sentiment.md").write_text(report, encoding="utf-8")
         analyst_parts.append(("Sentiment Analyst", report))
         agent_log_parts.append(
-            f"## 情绪分析师原始报告\n\n{final_state['sentiment_report']}"
+            f"## 情绪分析师原始报告\n\n{raw_outputs.get('sentiment_report', final_state['sentiment_report'])}"
         )
     if final_state.get("news_report"):
         analysts_dir.mkdir(exist_ok=True)
-        report = sanitize_report_section(final_state["news_report"], market, "news_report")
+        report = final_state["news_report"]
         (analysts_dir / "news.md").write_text(report, encoding="utf-8")
         analyst_parts.append(("News Analyst", report))
-        agent_log_parts.append(f"## 新闻分析师原始报告\n\n{final_state['news_report']}")
+        agent_log_parts.append(f"## 新闻分析师原始报告\n\n{raw_outputs.get('news_report', final_state['news_report'])}")
     if final_state.get("fundamentals_report"):
         analysts_dir.mkdir(exist_ok=True)
-        report = sanitize_report_section(
-            final_state["fundamentals_report"], market, "fundamentals_report"
-        )
+        report = final_state["fundamentals_report"]
         (analysts_dir / "fundamentals.md").write_text(report, encoding="utf-8")
         analyst_parts.append(("Fundamentals Analyst", report))
         agent_log_parts.append(
-            f"## 基本面分析师原始报告\n\n{final_state['fundamentals_report']}"
+            f"## 基本面分析师原始报告\n\n{raw_outputs.get('fundamentals_report', final_state['fundamentals_report'])}"
         )
     if analyst_parts:
         content = "\n\n".join(f"### {name}\n{text}" for name, text in analyst_parts)
@@ -92,19 +98,20 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         if debate.get("bull_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bull.md").write_text(debate["bull_history"], encoding="utf-8")
-            agent_log_parts.append(f"## 多头研究员\n\n{debate['bull_history']}")
+            raw_debate = raw_outputs.get("investment_debate_state") or {}
+            agent_log_parts.append(f"## 多头研究员\n\n{raw_debate.get('bull_history', debate['bull_history'])}")
         if debate.get("bear_history"):
             research_dir.mkdir(exist_ok=True)
             (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
-            agent_log_parts.append(f"## 空头研究员\n\n{debate['bear_history']}")
+            raw_debate = raw_outputs.get("investment_debate_state") or {}
+            agent_log_parts.append(f"## 空头研究员\n\n{raw_debate.get('bear_history', debate['bear_history'])}")
         if debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
-            report = sanitize_report_section(
-                debate["judge_decision"], market, "research_decision"
-            )
+            report = debate["judge_decision"]
             (research_dir / "manager.md").write_text(report, encoding="utf-8")
             research_parts.append(("Research Manager", report))
-            agent_log_parts.append(f"## 研究经理原始评判\n\n{debate['judge_decision']}")
+            raw_debate = raw_outputs.get("investment_debate_state") or {}
+            agent_log_parts.append(f"## 研究经理原始评判\n\n{raw_debate.get('judge_decision', debate['judge_decision'])}")
         if research_parts:
             content = "\n\n".join(f"### {name}\n{text}" for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
@@ -113,11 +120,9 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     if final_state.get("trader_investment_plan"):
         trading_dir = save_path / "3_trading"
         trading_dir.mkdir(exist_ok=True)
-        report = sanitize_report_section(
-            final_state["trader_investment_plan"], market, "trader_plan"
-        )
+        report = final_state["trader_investment_plan"]
         (trading_dir / "trader.md").write_text(report, encoding="utf-8")
-        agent_log_parts.append(f"## 交易员原始决策\n\n{final_state['trader_investment_plan']}")
+        agent_log_parts.append(f"## 交易员原始决策\n\n{raw_outputs.get('trader_investment_plan', final_state['trader_investment_plan'])}")
         sections.append(f"## III. Trading Team Plan\n\n### Trader\n{report}")
 
     # 4. Risk Management
@@ -127,28 +132,30 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         if risk.get("aggressive_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "aggressive.md").write_text(risk["aggressive_history"], encoding="utf-8")
-            agent_log_parts.append(f"## 激进风控分析师\n\n{risk['aggressive_history']}")
+            raw_risk = raw_outputs.get("risk_debate_state") or {}
+            agent_log_parts.append(f"## 激进风控分析师\n\n{raw_risk.get('aggressive_history', risk['aggressive_history'])}")
         if risk.get("conservative_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "conservative.md").write_text(risk["conservative_history"], encoding="utf-8")
-            agent_log_parts.append(f"## 保守风控分析师\n\n{risk['conservative_history']}")
+            raw_risk = raw_outputs.get("risk_debate_state") or {}
+            agent_log_parts.append(f"## 保守风控分析师\n\n{raw_risk.get('conservative_history', risk['conservative_history'])}")
         if risk.get("neutral_history"):
             risk_dir.mkdir(exist_ok=True)
             (risk_dir / "neutral.md").write_text(risk["neutral_history"], encoding="utf-8")
-            agent_log_parts.append(f"## 中性风控分析师\n\n{risk['neutral_history']}")
+            raw_risk = raw_outputs.get("risk_debate_state") or {}
+            agent_log_parts.append(f"## 中性风控分析师\n\n{raw_risk.get('neutral_history', risk['neutral_history'])}")
 
         # 5. Portfolio Manager
         if risk.get("judge_decision"):
             portfolio_dir = save_path / "5_portfolio"
             portfolio_dir.mkdir(exist_ok=True)
-            report = sanitize_report_section(
-                risk["judge_decision"], market, "final_trade_decision"
-            )
+            report = risk["judge_decision"]
             (portfolio_dir / "decision.md").write_text(report, encoding="utf-8")
             sections.append(
                 f"## V. Portfolio Manager Decision\n\n### Portfolio Manager\n{report}"
             )
-            agent_log_parts.append(f"## 投资组合经理原始决策\n\n{risk['judge_decision']}")
+            raw_risk = raw_outputs.get("risk_debate_state") or {}
+            agent_log_parts.append(f"## 投资组合经理原始决策\n\n{raw_risk.get('judge_decision', risk['judge_decision'])}")
 
     # Write consolidated report
     display_symbol = metadata["symbol"] or ticker

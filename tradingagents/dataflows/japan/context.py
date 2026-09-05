@@ -254,6 +254,152 @@ def render_japan_financial_context(state: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_japan_financial_report(state: Mapping[str, Any]) -> str:
+    """Render current financial authority as stable user-facing Markdown.
+
+    Current Actual and Company Guidance are rendered from the canonical
+    authority assessment rather than copied back from an LLM report. Historical
+    statements and vendor estimates remain the Fundamentals Analyst's domain.
+    """
+    bundle = state.get("japan_data_bundle") or {}
+    assessment = (bundle.get("provider_metadata") or {}).get(
+        "Japan Financial Authority"
+    )
+    if not isinstance(assessment, Mapping):
+        return ""
+    lines = ["## 当前财务权威摘要"]
+    lines.extend(_financial_report_section("最新实际业绩", assessment.get("actual"), False))
+    lines.extend(
+        _financial_report_section(
+            "当前公司业绩指引", assessment.get("guidance"), True
+        )
+    )
+    coverage = assessment.get("official_coverage")
+    if isinstance(coverage, Mapping):
+        status = _public_financial_status(coverage.get("status"))
+        sources = "、".join(str(value) for value in coverage.get("sources") or [])
+        lines.extend(
+            [
+                "### 时效与来源",
+                f"- 官方披露覆盖：{status}",
+                f"- 覆盖来源：{sources or '未提供'}",
+                f"- 分析截止日：{assessment.get('analysis_as_of') or '未提供'}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def _financial_report_section(title: str, value: Any, guidance: bool) -> list[str]:
+    lines = [f"### {title}"]
+    if not isinstance(value, Mapping):
+        return [*lines, "本次没有可核验的结构化数据。"]
+    status = str(value.get("status") or "DATA_UNAVAILABLE")
+    document = value.get("document")
+    expected = "GUIDANCE" if guidance else "ACTUAL"
+    record = None
+    if isinstance(document, Mapping):
+        record = next(
+            (
+                row
+                for row in document.get("records") or []
+                if isinstance(row, Mapping) and row.get("record_type") == expected
+            ),
+            None,
+        )
+    if status != "OK" or not isinstance(record, Mapping):
+        if status == "NOT_PROVIDED":
+            return [*lines, "公司未提供该项指引。"]
+        return [*lines, "当前数据证据不足，未作为已确认的最新值展示。"]
+
+    gate = value.get("critical_gate") or {}
+    lines.extend(
+        [
+            f"- 披露日：{value.get('selected_disclosure_date') or '未提供'}",
+            f"- 期间：{record.get('period_type') or '未提供'}",
+            f"- 目标期末：{record.get('target_period_end') or '未提供'}",
+            f"- 会计准则：{record.get('accounting_standard') or '未提供'}",
+            f"- 范围：{_public_scope(record.get('scope'))}",
+            f"- 关键数据门控：{_public_financial_status(gate.get('status'))}",
+            "",
+            "| 指标 | 数值 |",
+            "|---|---:|",
+        ]
+    )
+    labels = (
+        ("revenue", "营收"),
+        ("operating_profit", "营业利润"),
+        ("ordinary_profit", "经常利润"),
+        ("net_income", "归属于母公司所有者的净利润"),
+        ("profit_total", "当期总利润"),
+        ("eps", "每股收益（EPS）"),
+    )
+    metrics = record.get("metrics") or {}
+    for key, label in labels:
+        lines.append(
+            f"| {label} | {_public_financial_metric(metrics.get(key), guidance=guidance)} |"
+        )
+    source = document.get("source") or "未提供"
+    source_role = (
+        "结构化补充来源"
+        if document.get("source_type") == "STRUCTURED_SOURCE"
+        else "官方披露来源"
+    )
+    lines.extend(
+        [
+            "",
+            f"- 数据来源：{source}（{source_role}）",
+            f"- 时效：{_public_financial_status(value.get('freshness'))}",
+        ]
+    )
+    return lines
+
+
+def _public_financial_metric(value: Any, *, guidance: bool) -> str:
+    if not isinstance(value, Mapping):
+        return "公司未提供"
+    metric = value.get("current_value") if guidance else value
+    if not isinstance(metric, Mapping):
+        return _public_financial_status(value.get("status"))
+    status = str(metric.get("status") or value.get("status") or "DATA_UNAVAILABLE")
+    if status != "OK":
+        return _public_financial_status(status)
+    amount = metric.get("value")
+    if amount is None:
+        return "数据不可用"
+    unit = metric.get("unit") or value.get("unit")
+    display_amount: Any = amount
+    if isinstance(amount, float) and amount.is_integer():
+        display_amount = int(amount)
+    return (
+        f"{display_amount} {unit}"
+        if unit
+        else f"{display_amount}（单位未提供）"
+    )
+
+
+def _public_financial_status(value: Any) -> str:
+    return {
+        "OK": "通过",
+        "COMPLETE": "完整",
+        "CURRENT_STRUCTURED_CONFIRMED": "截至分析日已确认最新",
+        "CURRENT_OFFICIAL": "截至分析日最新官方数据",
+        "LATEST_AVAILABLE": "来源当前最新可得",
+        "NOT_APPLICABLE": "不适用",
+        "NOT_PROVIDED": "公司未提供",
+        "INSUFFICIENT_DATA": "证据不足",
+        "DATA_UNAVAILABLE": "数据不可用",
+        "FRESHNESS_UNVERIFIED": "新鲜度未确认",
+    }.get(str(value or ""), "未提供")
+
+
+def _public_scope(value: Any) -> str:
+    return {
+        "CONSOLIDATED": "合并",
+        "NON_CONSOLIDATED": "非合并",
+        "UNKNOWN": "未提供",
+    }.get(str(value or "UNKNOWN"), str(value))
+
+
 def _financial_assessment_lines(value: Any, *, guidance: bool) -> list[str]:
     if not isinstance(value, Mapping):
         return ["- Status: DATA_UNAVAILABLE", "- Freshness: FRESHNESS_UNVERIFIED"]
@@ -408,11 +554,11 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     short = [item for item in items if item.get("source_type") == "reported_short_position"]
     return "\n\n".join(
         [
-            "## 日本官方披露\n" + "\n".join(_item_lines(official, include_metadata=False)),
-            "## 信用与需给\n" + "\n".join(_item_lines(supply, include_metadata=True)),
+            "## 日本官方披露\n" + "\n".join(_official_report_lines(official)),
+            "## 信用与需给\n" + "\n".join(_supply_report_lines(supply)),
             "## 空卖与机构行为\n"
             + (
-                "\n".join(_item_lines(short, include_metadata=True))
+                "\n".join(_short_report_lines(short))
                 if short
                 else "数据不可用：未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
             ),
@@ -420,6 +566,72 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
             "## 日股波段交易计划\n以上官方披露与需给数据作为补充上下文，最终交易计划由各 Agent 结合 Analyst 报告综合形成；若关键数据不可用，应降低结论置信度，不得补造事实。",
         ]
     )
+
+
+def _official_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
+    if not items:
+        return ["本次窗口没有可核验的官方披露。"]
+    lines = []
+    for item in sorted(items, key=_item_timestamp_sort_key, reverse=True)[:20]:
+        date_text = str(item.get("timestamp") or "")[:10]
+        line = f"- [{item.get('source', '未提供')}] {date_text}：{item.get('title') or '公开披露'}"
+        if item.get("url"):
+            line += f"（{item['url']}）"
+        status = item.get("status")
+        if status and status != "OK":
+            line += f"；状态：{_public_financial_status(status)}"
+        lines.append(line)
+    return lines
+
+
+def _supply_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
+    """Expose dated observable balances without raw metadata or short inference."""
+    if not items:
+        return ["本次窗口没有可用的信用与需给数据。"]
+    lines: list[str] = []
+    for source in ("JSF", "JPX"):
+        candidates = [item for item in items if item.get("source") == source]
+        if source == "JSF":
+            candidates = [
+                item
+                for item in candidates
+                if item.get("source_type") == "securities_finance_balance"
+            ]
+        if not candidates:
+            continue
+        item = max(candidates, key=_item_timestamp_sort_key)
+        metadata = item.get("metadata") or {}
+        date_text = metadata.get("data_date") or str(item.get("timestamp") or "")[:10]
+        if source == "JSF":
+            lines.append(f"- JSF 观察日：{date_text}")
+            for key, label in (
+                ("finance_balance", "融资余额"),
+                ("stock_loan_balance", "贷株余额"),
+                ("net_balance", "差引余额"),
+            ):
+                if metadata.get(key) is not None:
+                    lines.append(
+                        f"  - {label}：{metadata[key]:g} {metadata.get('unit') or ''}".rstrip()
+                    )
+            publication = metadata.get("publication_status")
+            if publication == "PRELIMINARY":
+                lines.append("  - 发布状态：速報")
+            elif publication == "CONFIRMED":
+                lines.append("  - 发布状态：確報")
+            lines.append(
+                "  - 语义边界：以上仅是 JSF 可观察余额，不代表全市场空头总量或机构立场。"
+            )
+        else:
+            lines.append(f"- JPX：{date_text}，{item.get('title') or '公开数据'}")
+    return lines or ["本次窗口没有可用的信用与需给数据。"]
+
+
+def _short_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
+    return [
+        f"- [{item.get('source', 'JPX')}] {str(item.get('timestamp') or '')[:10]}："
+        f"{item.get('title') or '达到披露门槛的公开申报仓位'}"
+        for item in sorted(items, key=_item_timestamp_sort_key, reverse=True)[:10]
+    ]
 
 
 def _sentiment_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
@@ -531,9 +743,16 @@ def _research_metadata(value: Any) -> Any:
     """Strip operational metadata while preserving normalized research fields."""
     if isinstance(value, Mapping):
         result = {}
+        unknown_publication = value.get("publication_status") == "UNKNOWN"
         for key, nested in value.items():
             key_text = str(key).lower()
             if key_text in _DIAGNOSTIC_KEYS or "snapshot" in key_text:
+                continue
+            if (
+                unknown_publication
+                and key_text == "native_cadence"
+                and "CONFIRMED" in str(nested).upper()
+            ):
                 continue
             cleaned = _research_metadata(nested)
             if cleaned is not None:

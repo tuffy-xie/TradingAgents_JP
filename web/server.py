@@ -30,9 +30,13 @@ from tradingagents.dataflows.market import enrich_market_context, resolve_market
 from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
 from tradingagents.dataflows.utils import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.final_output import (
+    build_canonical_final_state,
+    require_canonical_final_state,
+)
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
-from tradingagents.report_consistency import canonical_report_metadata, sanitize_report_section
+from tradingagents.report_consistency import canonical_report_metadata
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -587,6 +591,7 @@ def list_history():
 
 
 def _render_report_html(data: dict, *, auto_print: bool) -> str:
+    require_canonical_final_state(data)
     metadata = canonical_report_metadata(data)
     ticker = metadata["symbol"]
     date = data.get("trade_date", "")
@@ -611,7 +616,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
 
     blocks = []
     for json_key, _stem, label in REPORT_SECTIONS:
-        content = sanitize_report_section(data.get(json_key, ""), metadata["market"], json_key)
+        content = data.get(json_key, "")
         if not content:
             continue
         blocks.append(f'<section class="report-section"><h2>{html.escape(label)}</h2>{_md(content)}</section>')
@@ -718,6 +723,9 @@ def get_report(ticker: str, date: str, print: bool = False):
     data = _load_run(ticker, date)
     if not data:
         raise HTTPException(status_code=404, detail="report not found")
+    # Historical archives may predate the final-output contract. Establish the
+    # accepted state at the controller boundary; the HTML renderer only displays it.
+    data = build_canonical_final_state(data)
     return HTMLResponse(_render_report_html(data, auto_print=print))
 
 
