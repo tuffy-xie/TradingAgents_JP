@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.dataflows.japan.context import render_japan_report_sections
-from tradingagents.final_output import require_canonical_final_state
+from tradingagents.final_output import normalize_markdown_structure, require_canonical_final_state
 from tradingagents.report_consistency import canonical_report_metadata
 
 
@@ -176,6 +176,7 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
         f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
     )
-    (save_path / "complete_report.md").write_text(header + "\n\n".join(sections), encoding="utf-8")
+    complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
+    (save_path / "complete_report.md").write_text(complete_report + "\n", encoding="utf-8")
     (save_path / "full_agent_log.md").write_text("\n\n".join(agent_log_parts) + "\n", encoding="utf-8")
     return save_path / "complete_report.md"

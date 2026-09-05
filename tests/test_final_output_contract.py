@@ -10,6 +10,7 @@ from tradingagents.dataflows.japan.context import (
 )
 from tradingagents.final_output import (
     build_canonical_final_state,
+    normalize_markdown_structure,
     validate_final_report_text,
 )
 from tradingagents.reporting import write_report_tree
@@ -417,3 +418,71 @@ def test_old_finalized_contract_is_reaccepted_instead_of_bypassing_execution_gat
 ])
 def test_final_artifact_validation_detects_leakage_without_editing(claim, category):
     assert category in validate_final_report_text(claim, execution_allowed=False)
+
+
+def test_post_pruning_structural_normalization_is_generic_and_value_preserving():
+    text = """## 三、保留的事实
+6981.T 的收入为 502264 百万円。
+
+## 五、后续事实
+### 3. 指标甲
+指标甲有效。
+### 5. 指标乙
+指标乙有效。
+
+1. 第一项
+3. 第三项
+
+| 指标 | 数值 | 来源 |
+|---|---:|---|
+| 收入 | 502264 | EDINET |
+| 损坏行 | 1 | TDnet | 多余列 |
+
+---
+
+---
+
+## 空小节
+---
+"""
+
+    normalized = normalize_markdown_structure(text)
+
+    assert "## 一、保留的事实" in normalized
+    assert "## 二、后续事实" in normalized
+    assert "### 1. 指标甲" in normalized
+    assert "### 2. 指标乙" in normalized
+    assert "1. 第一项" in normalized
+    assert "2. 第三项" in normalized
+    assert "损坏行" not in normalized
+    assert "502264 百万円" in normalized
+    assert sum(1 for line in normalized.splitlines() if line.strip() == "---") == 1
+    assert "## 空小节" not in normalized
+    assert validate_final_report_text(normalized, execution_allowed=False) == []
+
+
+def test_structural_normalization_does_not_rewrite_years_or_financial_numbers():
+    text = "## 2026. 年度背景\n2026. 年度数据为 502264 百万円。\n"
+    normalized = normalize_markdown_structure(text)
+    assert "## 2026. 年度背景" in normalized
+    assert "2026. 年度数据为 502264 百万円。" in normalized
+
+
+def test_complete_report_structure_has_no_pruning_residue(tmp_path):
+    state = _jp_state()
+    raw_market = (
+        "## 三、技术事实\n价格为 6981.T。\n\n"
+        "## 五、残留小节\n概览保留。\n**\n---\n---\n"
+        "### 4. MACD\nMACD 有效。\n### 7. RSI\nRSI 有效。\n"
+        "| 项目 | 数值 |\n|---|---|\n| 好行 | 1 |\n| 坏行 | 2 | 多余 |"
+    )
+    accepted = build_canonical_final_state(state)
+    accepted["market_report"] = normalize_markdown_structure(raw_market)
+    report = write_report_tree(accepted, "6981.T", tmp_path).read_text(encoding="utf-8")
+
+    assert "##### 一、技术事实" in report
+    assert "##### 二、残留小节" in report
+    assert "###### 1. MACD" in report
+    assert "###### 2. RSI" in report
+    assert "坏行" not in report
+    assert validate_final_report_text(report, execution_allowed=False) == []

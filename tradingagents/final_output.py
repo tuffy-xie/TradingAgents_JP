@@ -312,6 +312,8 @@ def _fold_empty_sections(text: str) -> str:
         if "|" not in line or line.lstrip().startswith("|")
     ]
     lines = _drop_empty_table_subsections(lines)
+    lines = _normalize_markdown_tables(lines)
+    lines = _drop_empty_table_subsections(lines)
     preamble: list[str] = []
     sections: list[list[str]] = []
     current: list[str] | None = None
@@ -334,7 +336,7 @@ def _fold_empty_sections(text: str) -> str:
         body = "".join(section[1:]).strip()
         if body:
             kept.extend(section)
-    return _clean_empty_markdown("".join(kept))
+    return normalize_markdown_structure(_clean_empty_markdown("".join(kept)))
 
 
 def _clean_empty_markdown(text: str) -> str:
@@ -388,6 +390,348 @@ def _clean_empty_markdown(text: str) -> str:
             break
         kept = result
     return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
+
+
+_NUMBERED_HEADING = re.compile(
+    r"^(?P<prefix>\s*)(?:(?P<arabic>\d+)(?P<arabic_punct>[.)])"
+    r"(?P<arabic_space>\s+)|(?P<chinese>[一二三四五六七八九十百千万]+)"
+    r"(?P<chinese_punct>[、.])(?P<chinese_space>\s*))(?P<body>.+?)\s*$"
+)
+_NUMBERED_LIST = re.compile(
+    r"^(?P<indent>\s*)(?P<number>\d+|[一二三四五六七八九十百千万]+)"
+    r"(?P<punct>[.、)])(?P<space>\s+)(?P<body>.+?)\s*$"
+)
+_SEPARATOR = re.compile(r"^\s*(?P<char>[-*_])(?:\s*(?P=char)){2,}\s*$")
+
+
+def _chinese_ordinal(value: int) -> str:
+    """Render the small ordinal range used by report headings in Chinese."""
+    digits = "零一二三四五六七八九"
+    if value < 10:
+        return digits[value]
+    if value < 20:
+        return "十" if value == 10 else "十" + digits[value - 10]
+    if value < 100:
+        tens, ones = divmod(value, 10)
+        return digits[tens] + "十" + (digits[ones] if ones else "")
+    return str(value)
+
+
+def _ordinal_value(value: str) -> int | None:
+    if value.isdigit():
+        return int(value)
+    chinese = {char: index for index, char in enumerate("零一二三四五六七八九")}
+    if value in chinese:
+        return chinese[value]
+    if value == "十":
+        return 10
+    if len(value) == 2 and value[0] == "十" and value[1] in chinese:
+        return 10 + chinese[value[1]]
+    if len(value) == 2 and value[1] == "十" and value[0] in chinese:
+        return chinese[value[0]] * 10
+    if len(value) == 3 and value[1] == "十" and value[0] in chinese and value[2] in chinese:
+        return chinese[value[0]] * 10 + chinese[value[2]]
+    return None
+
+
+def _is_ordinary_year(value: str) -> bool:
+    return value.isdigit() and len(value) == 4 and 1900 <= int(value) <= 2100
+
+
+def _normalize_heading_numbers(lines: list[str]) -> list[str]:
+    """Renumber numbered sibling headings without touching ordinary numbers."""
+    output = list(lines)
+    stack: list[tuple[int, str]] = []
+    counters: dict[tuple[int, tuple[str, ...]], int] = {}
+    for index, line in enumerate(output):
+        level = _heading_level(line)
+        if level is None:
+            continue
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        parent = tuple(title for _, title in stack)
+        key = (level, parent)
+        numbered = _NUMBERED_HEADING.match(match.group(2))
+        if numbered and _is_ordinary_year(numbered.group("arabic") or ""):
+            numbered = None
+        # A non-numbered sibling starts a new heading sequence.
+        if not numbered:
+            counters.pop(key, None)
+        else:
+            counters[key] = counters.get(key, 0) + 1
+            number = counters[key]
+            is_arabic = numbered.group("arabic") is not None
+            replacement = str(number) if is_arabic else _chinese_ordinal(number)
+            body = numbered.group("body")
+            punctuation = numbered.group("arabic_punct") or numbered.group("chinese_punct")
+            space = numbered.group("arabic_space") or numbered.group("chinese_space")
+            line_ending = "\n" if line.endswith("\n") else ""
+            output[index] = (
+                f"{match.group(1)} {replacement}{punctuation}"
+                f"{space}{body}{line_ending}"
+            )
+        stack.append((level, match.group(2)))
+    return output
+
+
+def _normalize_numbered_lists(lines: list[str]) -> list[str]:
+    """Renumber contiguous numbered lists, leaving prose numbers untouched."""
+    output = list(lines)
+    index = 0
+    while index < len(output):
+        match = _NUMBERED_LIST.match(output[index])
+        if not match or _is_ordinary_year(match.group("number")):
+            index += 1
+            continue
+        indent = match.group("indent")
+        style = match.group("number").isdigit()
+        current = index
+        number = 1
+        while current < len(output):
+            item = _NUMBERED_LIST.match(output[current])
+            if (
+                item
+                and not _is_ordinary_year(item.group("number"))
+                and item.group("indent") == indent
+                and item.group("number").isdigit() == style
+            ):
+                replacement = str(number) if style else _chinese_ordinal(number)
+                output[current] = (
+                    f"{indent}{replacement}{item.group('punct')}"
+                    f"{item.group('space')}{item.group('body')}"
+                    f"{chr(10) if output[current].endswith(chr(10)) else ''}"
+                )
+                number += 1
+                current += 1
+                continue
+            if not output[current].strip() and current + 1 < len(output):
+                next_item = _NUMBERED_LIST.match(output[current + 1])
+                if (
+                    next_item
+                    and not _is_ordinary_year(next_item.group("number"))
+                    and next_item.group("indent") == indent
+                    and next_item.group("number").isdigit() == style
+                ):
+                    current += 1
+                    continue
+            break
+        index = max(current, index + 1)
+    return output
+
+
+def _normalize_markdown_tables(lines: list[str]) -> list[str]:
+    """Keep only well-formed Markdown table rows; never guess how to split a row."""
+    result: list[str] = []
+    index = 0
+    while index < len(lines):
+        if not lines[index].lstrip().startswith("|"):
+            result.append(lines[index])
+            index += 1
+            continue
+        start = index
+        while index < len(lines) and lines[index].lstrip().startswith("|"):
+            index += 1
+        block = lines[start:index]
+        if len(block) < 2 or not _is_table_separator(block[1]):
+            continue
+        header = [cell.strip() for cell in block[0].strip().strip("|").split("|")]
+        separator = [cell.strip() for cell in block[1].strip().strip("|").split("|")]
+        if not header or len(header) != len(separator):
+            continue
+        valid = block[:2]
+        for row in block[2:]:
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            if len(cells) == len(header) and any(cells):
+                valid.append(row)
+        if len(valid) > 2:
+            result.extend(valid)
+    return result
+
+
+def _remove_orphan_structures(lines: list[str]) -> list[str]:
+    """Remove markers and headings/lead-ins emptied by an earlier prune."""
+    cleaned: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            cleaned.append(line)
+            continue
+        if _SEPARATOR.match(stripped):
+            if not cleaned or cleaned[-1].strip() != "---":
+                cleaned.append("---\n")
+            continue
+        if re.fullmatch(r"(?:[*_#>-]|\d+[.)])+(?:\s*)", stripped):
+            continue
+        cleaned.append(line)
+
+    # A heading or colon-ended lead-in with no following content is an orphan.
+    changed = True
+    while changed:
+        changed = False
+        output: list[str] = []
+        for index, line in enumerate(cleaned):
+            heading = _heading_level(line)
+            label = line.strip().strip("*_ ")
+            lead_in = label.endswith((":", "：")) and not line.lstrip().startswith("|")
+            if heading is None and not lead_in:
+                output.append(line)
+                continue
+            next_index = next((i for i in range(index + 1, len(cleaned)) if cleaned[i].strip()), len(cleaned))
+            following = cleaned[next_index] if next_index < len(cleaned) else ""
+            next_level = _heading_level(following)
+            boundary = not following or _SEPARATOR.match(following.strip()) is not None
+            if heading is not None:
+                boundary = boundary or (next_level is not None and next_level <= heading)
+            else:
+                boundary = boundary or next_level is not None or re.fullmatch(r"(?:[-*+]|\d+[.)])\s*", following.strip() or "") is not None
+            if boundary:
+                changed = True
+                continue
+            output.append(line)
+        cleaned = output
+    return cleaned
+
+
+def normalize_markdown_structure(text: str) -> str:
+    """Normalize user-facing Markdown after semantic pruning.
+
+    This function only changes Markdown structure: numbering, table shape,
+    separators, and empty fragments. It never edits facts or their values.
+    """
+    if not text:
+        return ""
+    lines = [line + "\n" for line in text.splitlines()]
+    lines = _normalize_markdown_tables(lines)
+    lines = _normalize_heading_numbers(lines)
+    lines = _normalize_numbered_lists(lines)
+    lines = _remove_orphan_structures(lines)
+    # Collapse separators once more after orphan removal.
+    output: list[str] = []
+    last_nonblank_separator = False
+    for line in lines:
+        if _SEPARATOR.match(line.strip()):
+            if last_nonblank_separator:
+                while output and not output[-1].strip():
+                    output.pop()
+                continue
+            output.append("---\n")
+            last_nonblank_separator = True
+        else:
+            output.append(line)
+            if line.strip():
+                last_nonblank_separator = False
+    return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
+def _markdown_structure_issues(text: str) -> list[str]:
+    """Return structural defects that must never reach a user artifact."""
+    lines = text.splitlines()
+    issues: list[str] = []
+
+    # Heading sequence validation mirrors the renumbering state machine.
+    stack: list[tuple[int, str]] = []
+    counters: dict[tuple[int, tuple[str, ...]], int] = {}
+    for line in lines:
+        level = _heading_level(line)
+        if level is None:
+            continue
+        match = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if not match:
+            continue
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        key = (level, tuple(title for _, title in stack))
+        numbered = _NUMBERED_HEADING.match(match.group(2))
+        if numbered and _is_ordinary_year(numbered.group("arabic") or ""):
+            numbered = None
+        if not numbered:
+            counters.pop(key, None)
+        else:
+            counters[key] = counters.get(key, 0) + 1
+            parsed = _ordinal_value(numbered.group("arabic") or numbered.group("chinese") or "")
+            if parsed != counters[key]:
+                issues.append("HEADING_NUMBERING_DISCONTINUITY")
+        stack.append((level, match.group(2)))
+
+    # Numbered list blocks must start at one and increase without gaps.
+    index = 0
+    while index < len(lines):
+        match = _NUMBERED_LIST.match(lines[index])
+        if not match or _is_ordinary_year(match.group("number")):
+            index += 1
+            continue
+        indent = match.group("indent")
+        style = match.group("number").isdigit()
+        expected = 1
+        current = index
+        while current < len(lines):
+            item = _NUMBERED_LIST.match(lines[current])
+            if (
+                item
+                and not _is_ordinary_year(item.group("number"))
+                and item.group("indent") == indent
+                and item.group("number").isdigit() == style
+            ):
+                parsed = _ordinal_value(item.group("number"))
+                if parsed != expected:
+                    issues.append("NUMBERED_LIST_DISCONTINUITY")
+                expected += 1
+                current += 1
+                continue
+            if not lines[current].strip() and current + 1 < len(lines):
+                next_item = _NUMBERED_LIST.match(lines[current + 1])
+                if (
+                    next_item
+                    and not _is_ordinary_year(next_item.group("number"))
+                    and next_item.group("indent") == indent
+                    and next_item.group("number").isdigit() == style
+                ):
+                    current += 1
+                    continue
+            break
+        index = max(current, index + 1)
+
+    for start, end in _table_blocks(lines, 0, len(lines)):
+        block = lines[start:end]
+        if len(block) < 2 or not _is_table_separator(block[1]):
+            issues.append("MALFORMED_MARKDOWN_TABLE")
+            continue
+        header_count = len(block[0].strip().strip("|").split("|"))
+        separator_count = len(block[1].strip().strip("|").split("|"))
+        if header_count != separator_count:
+            issues.append("MALFORMED_MARKDOWN_TABLE")
+            continue
+        for row in block[2:]:
+            if len(row.strip().strip("|").split("|")) != header_count:
+                issues.append("MALFORMED_MARKDOWN_TABLE")
+                break
+
+    meaningful = [line.strip() for line in lines if line.strip()]
+    for previous, current in zip(meaningful, meaningful[1:], strict=False):
+        if _SEPARATOR.match(previous) and _SEPARATOR.match(current):
+            issues.append("DUPLICATE_SEPARATOR")
+            break
+
+    for index, line in enumerate(lines):
+        if re.fullmatch(r"\s*(?:[*_#>-]|\d+[.)])\s*", line):
+            issues.append("ORPHAN_MARKDOWN_MARKER")
+            break
+        heading = _heading_level(line)
+        if heading is None:
+            continue
+        next_index = next((i for i in range(index + 1, len(lines)) if lines[i].strip()), len(lines))
+        if next_index == len(lines):
+            issues.append("ORPHAN_HEADING")
+            break
+        following = lines[next_index]
+        next_level = _heading_level(following)
+        if _SEPARATOR.match(following.strip()) or (next_level is not None and next_level <= heading):
+            issues.append("ORPHAN_HEADING")
+            break
+    return list(dict.fromkeys(issues))
 
 
 def _drop_empty_table_subsections(lines: list[str]) -> list[str]:
@@ -641,11 +985,25 @@ def _map_report_text(state: Mapping[str, Any], transform) -> dict[str, Any]:
 
 def _validate_final_artifact(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
     parts: list[str] = []
-    _map_report_text(state, lambda text: parts.append(text) or text)
-    return validate_final_report_text("\n".join(parts), execution_allowed=execution_allowed)
+    for field in _REPORT_FIELDS:
+        value = state.get(field)
+        if isinstance(value, str):
+            parts.append(value)
+    for field in _DEBATE_FIELDS:
+        debate = state.get(field)
+        if isinstance(debate, Mapping):
+            parts.extend(value for value in debate.values() if isinstance(value, str))
+    issues = validate_final_report_text(
+        "\n".join(parts), execution_allowed=execution_allowed, check_structure=False
+    )
+    for part in parts:
+        issues.extend(_markdown_structure_issues(part))
+    return list(dict.fromkeys(issues))
 
 
-def validate_final_report_text(text: str, *, execution_allowed: bool) -> list[str]:
+def validate_final_report_text(
+    text: str, *, execution_allowed: bool, check_structure: bool = True
+) -> list[str]:
     """Detect violations in accepted text or a composed artifact; never edit it."""
     issues: list[str] = []
     for token in _INTERNAL_STATUS:
@@ -670,6 +1028,8 @@ def validate_final_report_text(text: str, *, execution_allowed: bool) -> list[st
     lines = text.splitlines()
     if any(not _table_has_data_row(lines[start:end]) for start, end in _table_blocks(lines, 0, len(lines))):
         issues.append("EMPTY_MARKDOWN_TABLE")
+    if check_structure:
+        issues.extend(_markdown_structure_issues(text))
     return list(dict.fromkeys(issues))
 
 
