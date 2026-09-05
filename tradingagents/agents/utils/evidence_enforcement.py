@@ -51,7 +51,8 @@ _UNVERIFIED_NEWS = re.compile(
 )
 _SHORT_ABSENCE_OVERCLAIM = re.compile(
     r"(?:no\s+(?:reportable\s+)?short(?:s| interest)?|没有(?:机构)?做空|无空头|"
-    r"空头(?:全部)?(?:死光|出清)|(?:没有|未见)(?:融券[/／])?做空压力(?:累积)?)",
+    r"空头(?:全部)?(?:死光|出清)|(?:没有|未见)(?:融券[/／])?做空压力(?:累积)?|"
+    r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)(?:行情|基础|條件|条件|风险|風險)?)",
     re.I,
 )
 _SHORT_PRESSURE_OVERCLAIM = re.compile(
@@ -284,6 +285,57 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
     return result
 
 
+def audit_agent_result(
+    state: Mapping[str, Any], result: dict[str, Any], agent_name: str
+) -> dict[str, Any]:
+    """Detect JP evidence violations without rewriting an agent's reasoning.
+
+    Resolution belongs to the canonical final-state builder after the final
+    artifact exists.  Node-time audit entries are therefore deliberately
+    pending and execution-blocking until that final validation occurs.
+    """
+    result = dict(result)
+    if (state.get("market_context") or {}).get("market") != "JP":
+        return result
+    audit: list[dict[str, Any]] = list(state.get("evidence_audit") or [])
+
+    def inspect(key: str, value: str) -> None:
+        checked = enforce_agent_output(state, value, agent_name)
+        for warning in checked.warnings:
+            audit.append(
+                {
+                    "category": _audit_category(warning),
+                    "agent": agent_name,
+                    "field": key,
+                    "warning": warning,
+                    "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                    "execution_blocking": True,
+                }
+            )
+
+    for key in (
+        "market_report",
+        "fundamentals_report",
+        "news_report",
+        "sentiment_report",
+        "investment_plan",
+        "trader_investment_plan",
+        "final_trade_decision",
+    ):
+        if isinstance(result.get(key), str):
+            inspect(key, result[key])
+    for debate_key in ("investment_debate_state", "risk_debate_state"):
+        debate = result.get(debate_key)
+        if not isinstance(debate, Mapping):
+            continue
+        for key, value in debate.items():
+            if isinstance(value, str):
+                inspect(f"{debate_key}.{key}", value)
+    if audit:
+        result["evidence_audit"] = audit
+    return result
+
+
 def _enforce_unavailable_social_source(
     state: Mapping[str, Any], result: dict[str, Any]
 ) -> dict[str, Any]:
@@ -372,7 +424,7 @@ def _sanitize_legacy_enforcement_artifacts(text: str) -> str:
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
     snapshot_numbers = _numbers_in(state.get("verified_market_snapshot", ""))
-    market_report_numbers = _numbers_in(state.get("market_report", ""))
+    market_report_numbers: set[str] = set()
     all_numbers = set(snapshot_numbers) | set(market_report_numbers)
     guidance_numbers: set[str] = set()
     analyst_numbers: set[str] = set()
@@ -409,6 +461,11 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
             )
         all_numbers.update(payload_numbers)
         semantic = str(item.get("semantic_basis") or "")
+        if (
+            item.get("domain") == "MARKET"
+            and item.get("verification_status") == "VERIFIED_TOOL_OUTPUT"
+        ):
+            market_report_numbers.update(payload_numbers)
         if semantic == "COMPANY_GUIDANCE":
             guidance_numbers.update(payload_numbers)
         elif semantic == "ANALYST_CONSENSUS":

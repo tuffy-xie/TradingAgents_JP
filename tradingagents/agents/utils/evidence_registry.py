@@ -205,8 +205,8 @@ def capture_agent_evidence(
                 source_type="ANALYST_REPORT",
                 analysis_as_of=analysis_as_of,
                 freshness="DERIVED_AS_OF",
-                verification_status="SUPPORTED_INFERENCE",
-                allowed=True,
+                verification_status="ANALYST_INFERENCE",
+                allowed=False,
                 derivation={"upstream_evidence_ids": upstream_ids[-40:]},
             )
         )
@@ -217,7 +217,7 @@ def capture_agent_evidence(
                 "category": "SUPPORTED_FACT",
                 "agent": agent_name,
                 "detail": (
-                    "Sanitized report provenance captured after evidence enforcement."
+                    "Agent inference captured after node-time evidence audit."
                     if capture_reports and not capture_tools
                     else "Tool/report provenance captured for natural-language handoff."
                 ),

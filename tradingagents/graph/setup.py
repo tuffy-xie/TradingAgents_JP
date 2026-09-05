@@ -24,7 +24,7 @@ from tradingagents.agents import (
     create_trader,
 )
 from tradingagents.agents.utils.agent_states import AgentState
-from tradingagents.agents.utils.evidence_enforcement import enforce_agent_result
+from tradingagents.agents.utils.evidence_enforcement import audit_agent_result
 from tradingagents.agents.utils.evidence_registry import capture_agent_evidence
 from tradingagents.agents.utils.execution_validation import (
     enforce_execution_math,
@@ -77,15 +77,14 @@ def _observe_agent_node(name: str, node: Any, *, provider: str, timeout: Any, re
             )
             raise
         if isinstance(result, dict):
-            # Tool facts must exist before enforcement, while report inference
-            # must be captured only after sanitization.  Capturing generated
-            # prose first allowed an agent's own unsupported draft to appear in
-            # the registry as a supported handoff.
+            # Tool facts exist before audit. Agent reasoning remains intact for
+            # downstream debate and the technical log; only the canonical
+            # final-state boundary may alter user-visible content.
             result = capture_agent_evidence(
                 state, result, name, capture_tools=True, capture_reports=False
             )
             combined_state = {**state, **result} if isinstance(state, dict) else result
-            result = enforce_agent_result(combined_state, result, name)
+            result = audit_agent_result(combined_state, result, name)
             result = _append_authoritative_financial_context(state, result, name)
             result = _apply_execution_authority(state, result, name)
             result = capture_agent_evidence(
@@ -133,6 +132,12 @@ def _append_authoritative_financial_context(
 def _apply_execution_authority(
     state: dict[str, Any], result: dict[str, Any], agent_name: str
 ) -> dict[str, Any]:
+    """Calculate and audit execution math without rewriting Agent prose.
+
+    The canonical final-state builder is the only layer allowed to expose or
+    withhold an executable plan. This node-time step only produces validation
+    metadata needed by later agents and that final decision.
+    """
     if (state.get("market_context") or {}).get("market") != "JP":
         return result
     updated = dict(result)
@@ -140,16 +145,14 @@ def _apply_execution_authority(
     if agent_name == "Trader" and isinstance(updated.get("trader_investment_plan"), str):
         validation = validate_execution_plan(updated["trader_investment_plan"])
         updated["validated_execution"] = validation
-        cleaned, warnings = enforce_execution_math(updated["trader_investment_plan"], validation)
-        updated["trader_investment_plan"] = cleaned
+        _, warnings = enforce_execution_math(updated["trader_investment_plan"], validation)
         if warnings:
             audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "warnings": list(warnings)})
     else:
         validation = state.get("validated_execution") or {}
         for key in ("final_trade_decision",):
             if isinstance(updated.get(key), str):
-                cleaned, warnings = enforce_execution_math(updated[key], validation)
-                updated[key] = cleaned
+                _, warnings = enforce_execution_math(updated[key], validation)
                 if warnings:
                     audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "field": key, "warnings": list(warnings)})
         debate = updated.get("risk_debate_state")
@@ -160,8 +163,7 @@ def _apply_execution_authority(
                     key.startswith("current_") or key == "judge_decision"
                 ):
                     continue
-                cleaned, warnings = enforce_execution_math(value, validation)
-                cleaned_debate[key] = cleaned
+                _, warnings = enforce_execution_math(value, validation)
                 if warnings:
                     audit.append({"category": "ARITHMETIC_MISMATCH", "agent": agent_name, "field": f"risk_debate_state.{key}", "warnings": list(warnings)})
             updated["risk_debate_state"] = cleaned_debate
