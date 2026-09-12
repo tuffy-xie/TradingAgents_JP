@@ -22,6 +22,7 @@ from tradingagents.dataflows.market import MarketContext
 
 from .http import get_bytes, get_json, get_text
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
+from .trading_calendar import is_japan_trading_day
 
 _PUBLIC_INDEX_URL = "https://www.release.tdnet.info/inbs/I_list_{page:03d}_{day:%Y%m%d}.html"
 _ROW = re.compile(r"<tr>\s*(?P<body>.*?)</tr>", re.IGNORECASE | re.DOTALL)
@@ -248,6 +249,18 @@ class TDnetProvider:
             first_url, page_semaphore
         )
         if status != DataStatus.OK:
+            # The public index may omit the page entirely on a deterministic
+            # non-trading day. A 404 there proves an empty disclosure day; the
+            # same response on a trading day remains an unresolved retrieval
+            # failure and must continue to fail freshness closed.
+            if error_detail == "HTTP 404" and not is_japan_trading_day(day):
+                return (), False, None, _coverage_entry(
+                    day,
+                    complete=True,
+                    total_items=0,
+                    advertised_pages=0,
+                    fetched_pages=0,
+                )
             failure = {
                 "requested_date": day.isoformat(),
                 "requested_url": first_url,

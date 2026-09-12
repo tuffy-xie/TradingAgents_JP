@@ -335,6 +335,45 @@ def test_tdnet_timeout_is_not_reported_as_empty(monkeypatch):
 
 
 @pytest.mark.unit
+def test_tdnet_non_trading_day_404_is_complete_empty(monkeypatch):
+    async def missing_index(*_args, **_kwargs):
+        return DataStatus.DATA_UNAVAILABLE, "", "HTTP 404"
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", missing_index)
+    result = __import__("asyncio").run(
+        TDnetProvider().fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-08-01",
+            end_date="2026-08-01",
+        )
+    )
+
+    assert result.status.status == DataStatus.OK
+    assert result.items == ()
+    assert result.metadata["coverage"]["complete"] is True
+    assert result.metadata["coverage"]["days"][0]["complete"] is True
+
+
+@pytest.mark.unit
+def test_tdnet_trading_day_404_remains_incomplete(monkeypatch):
+    async def missing_index(*_args, **_kwargs):
+        return DataStatus.DATA_UNAVAILABLE, "", "HTTP 404"
+
+    monkeypatch.setattr("tradingagents.dataflows.japan.tdnet.get_text", missing_index)
+    result = __import__("asyncio").run(
+        TDnetProvider().fetch(
+            resolve_market_context("5016.T"),
+            start_date="2026-07-31",
+            end_date="2026-07-31",
+        )
+    )
+
+    assert result.status.status == DataStatus.DATA_UNAVAILABLE
+    assert result.metadata["coverage"]["complete"] is False
+    assert result.metadata["coverage"]["days"][0]["complete"] is False
+
+
+@pytest.mark.unit
 def test_tdnet_successful_empty_is_not_a_fetch_failure(monkeypatch):
     async def empty_get_text(*_args, **_kwargs):
         return DataStatus.OK, "<html><body>に開示された情報はありません。</body></html>", ""
