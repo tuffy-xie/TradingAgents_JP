@@ -14,7 +14,11 @@ from collections.abc import Mapping
 from typing import Any
 
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
-from tradingagents.dataflows.japan.context import render_japan_financial_report
+from tradingagents.dataflows.japan.context import (
+    render_japan_financial_report,
+    render_japan_report_sections,
+)
+from tradingagents.report_consistency import canonical_report_metadata
 
 _REPORT_FIELDS = (
     "market_report",
@@ -26,7 +30,7 @@ _REPORT_FIELDS = (
     "final_trade_decision",
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
-_CONTRACT_VERSION = "v2"
+_CONTRACT_VERSION = "v3"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -45,20 +49,16 @@ _CURRENT_FINANCIAL_HEADINGS = (
     "管理层指引",
     "公司指引",
 )
-_EXECUTION_HEADINGS = (
-    "trading plan",
-    "execution plan",
-    "trade parameters",
-    "可操作交易计划",
-    "可操作投资计划",
-    "具体行动建议",
-    "investment execution plan",
-    "交易参数",
-    "入场",
-    "止损",
-    "止盈",
-    "仓位",
+_EXECUTION_HEADING = re.compile(
+    r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
+    r"可操作|执行|行动建议|交易者|交易计划|交易参数|入场|止损|止盈|仓位)",
+    re.I,
 )
+_WITHHELD_EXECUTION_HEADINGS = {
+    "trading team plan",
+    "交易执行状态",
+    "执行许可",
+}
 _EXECUTION_LINE = re.compile(
     r"(?:entry(?: price)?|stop(?:[ -]?loss)?|price target|position(?: sizing)?|"
     r"入场(?:价)?|建仓价|止损(?:价)?|止盈|目标价|仓位(?:上限)?)\s*[:：|]",
@@ -68,7 +68,7 @@ _JSF_CLAIM = re.compile(r"(?:\bJSF\b|日证金|日證金|貸株|贷株)", re.I)
 _EXECUTION_INSTRUCTIONS = re.compile(
     r"(?:严守|严格|设置|设定|执行|触发|强制)?(?:止损|止盈)|强制离场|"
     r"(?:小|轻|重|试探|少量)[仓倉](?:位)?|"
-    r"(?:建议|可以|可|应|宜|考虑|确认后|破位后|逢高|择机|伺机|开始|建立)[^。；;\n]{0,80}(?:做空|试空|试多|开空|开多|建仓|入场|介入|进场)|"
+    r"(?:建议|可以|可|应|宜|考虑|评估|确认后|破位后|逢高|择机|伺机|开始|建立)[^。；;\n]{0,80}(?:做空|试空|试多|开空|开多|建仓|入场|介入|进场|加仓|减仓|买入|卖出)|"
     r"(?:做空|建仓|入场|开空|开多)[^。；;\n]{0,80}(?:条件|触发|执行|建议)|"
     r"可执行方案|执行纪律|(?:仓位|敞口)[^。；;\n]{0,8}(?:纪律|配置)|价格触发条件|"
     r"\b(?:enter|initiate|open|take)\b[^.;\n]{0,30}\b(?:short|long|position|trade)\b|"
@@ -79,6 +79,13 @@ _POSITION_RECOMMENDATION = re.compile(
     r"(?:仓位|倉位|净敞口|净暴露|组合总值|position(?: size| sizing)?|net exposure|allocation)"
     r"[^。；;\n]*(?:\d|%|≤|≥|上限|不超过)|"
     r"\d[\d.]*\s*%[^。；;\n]*(?:组合|portfolio|position|仓位(?:配置|分配|上限))",
+    re.I,
+)
+_POSITION_DIRECTIVE = re.compile(
+    r"(?:(?:仓位|倉位|敞口|净暴露|position|allocation)"
+    r"[^。；;\n]{0,32}(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制)|"
+    r"(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制)"
+    r"[^。；;\n]{0,32}(?:仓位|倉位|敞口|净暴露|position|allocation))",
     re.I,
 )
 _EXECUTION_PARAMETER = re.compile(
@@ -97,6 +104,8 @@ _PUBLIC_NEWS_TEXT = {
         "以下公司新闻均有明确发布时间；其他新闻工具返回空结果，不代表本次没有公司新闻。",
 }
 _INTERNAL_STATUS = {
+    "OK": "通过",
+    "UNKNOWN": "未确认",
     "VERIFIED_FINANCIAL_AUTHORITY": "已核验的财务权威数据",
     "VERIFIED_TOOL_OUTPUT": "已核验的工具数据",
     "CURRENT_STRUCTURED_CONFIRMED": "截至分析日已确认最新",
@@ -108,7 +117,18 @@ _INTERNAL_STATUS = {
     "NOT_PROVIDED": "公司未提供",
     "LATEST_AVAILABLE": "来源当前最新可得",
     "STRUCTURED_SOURCE": "结构化补充来源",
+    "NO_COMPLETE_OFFICIAL_AUTHORITY_PATH": "官方披露覆盖链路不完整",
+    "OUTLIER_20D_CHANGE_GT_300_PCT": "异常变化，需复核",
+    "NO_CONFIRMED_TREND": "趋势未确认",
+    "UNCONFIRMED": "未确认",
+    "INCOMPLETE": "不完整",
+    "VENDOR_FORWARD_ESTIMATE": "供应商远期估计",
+    "COMPANY_GUIDANCE": "公司业绩指引",
+    "ANALYST_CONSENSUS": "分析师一致预期",
+    "J_GAAP": "日本会计准则",
+    "US_GAAP": "美国会计准则",
 }
+_MACHINE_ENUM = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]*)(?:_[A-Z0-9]+)+(?![A-Za-z0-9])")
 
 
 def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -173,7 +193,10 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     result = _publicize_state_text(result)
-    artifact_issues = _validate_final_artifact(result, execution_allowed)
+    accepted_report = compose_user_report_markdown(result)
+    artifact_issues = _validate_final_artifact(
+        result, execution_allowed, accepted_report=accepted_report
+    )
     audit = _finalize_audit(audit, artifact_ok=not artifact_issues)
     for issue in artifact_issues:
         audit.append(
@@ -186,6 +209,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
             }
         )
     result["evidence_audit"] = audit
+    result["accepted_report_markdown"] = accepted_report
     if result.get("trader_investment_plan"):
         # Archived web states use this historical key. Keep it as a display
         # alias of the accepted plan so raw legacy prose cannot bypass the gate.
@@ -199,6 +223,92 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_issues": artifact_issues,
     }
     return result
+
+
+def compose_user_report_markdown(
+    state: Mapping[str, Any], *, ticker: str | None = None
+) -> str:
+    """Compose the exact JP user artifact from accepted canonical state.
+
+    This is deterministic and side-effect free. Renderers may translate the
+    Markdown to another presentation format, but must not reselect facts,
+    execution parameters, or Agent prose.
+    """
+    metadata = canonical_report_metadata(state)
+    display_symbol = metadata["symbol"] or ticker or ""
+    instrument_type = {
+        "EQUITY": "股票",
+        "ETF": "ETF",
+    }.get(metadata["instrument_type"], metadata["instrument_type"])
+    manifest = state.get("run_manifest") or {}
+    generated = manifest.get("runtime_timestamp_jst")
+    header = [
+        f"# Trading Analysis Report: {display_symbol}",
+        "",
+        f"Market: {metadata['market']} | Currency: {metadata['currency']} | "
+        f"Instrument type: {instrument_type}",
+    ]
+    if generated:
+        header.extend(["", f"Generated: {generated}"])
+
+    sections: list[str] = []
+    japan_section = render_japan_report_sections(state.get("japan_data_bundle"))
+    if japan_section:
+        sections.append(japan_section)
+
+    analysts = [
+        ("Market Analyst", state.get("market_report")),
+        ("Sentiment Analyst", state.get("sentiment_report")),
+        ("News Analyst", state.get("news_report")),
+        ("Fundamentals Analyst", state.get("fundamentals_report")),
+    ]
+    analyst_parts = [
+        _agent_report_section(name, text)
+        for name, text in analysts
+        if isinstance(text, str) and text.strip()
+    ]
+    if analyst_parts:
+        sections.append("## I. Analyst Team Reports\n\n" + "\n\n".join(analyst_parts))
+
+    research = state.get("investment_debate_state") or {}
+    if isinstance(research, Mapping) and isinstance(research.get("judge_decision"), str):
+        text = research["judge_decision"].strip()
+        if text:
+            sections.append(
+                "## II. Research Team Decision\n\n"
+                + _agent_report_section("Research Manager", text)
+            )
+
+    trader = state.get("trader_investment_plan")
+    if isinstance(trader, str) and trader.strip():
+        sections.append(
+            "## III. Trading Team Plan\n\n"
+            + _agent_report_section("Trader", trader)
+        )
+
+    risk = state.get("risk_debate_state") or {}
+    if isinstance(risk, Mapping) and isinstance(risk.get("judge_decision"), str):
+        text = risk["judge_decision"].strip()
+        if text:
+            sections.append(
+                "## IV. Portfolio Manager Decision\n\n"
+                + _agent_report_section("Portfolio Manager", text)
+            )
+
+    return normalize_markdown_structure(
+        "\n\n".join(["\n".join(header), *sections])
+    )
+
+
+def _agent_report_section(name: str, text: str) -> str:
+    """Nest Agent headings below the deterministic report wrapper."""
+
+    def nested_heading(match: re.Match[str]) -> str:
+        level = len(match.group(1)) + 3
+        return (("#" * level + " ") if level <= 6 else "") + match.group(2)
+
+    nested = re.sub(r"(?m)^(#{1,6})\s+(.+)$", nested_heading, text.strip())
+    return f"### {name}\n{nested}"
 
 
 def require_canonical_final_state(state: Mapping[str, Any]) -> None:
@@ -368,11 +478,17 @@ def _clean_empty_markdown(text: str) -> str:
             )
             if heading is not None or lead_in or bold_heading:
                 next_index = next(
-                    (i for i in range(index + 1, len(kept)) if kept[i].strip()), len(kept)
+                    (
+                        i
+                        for i in range(index + 1, len(kept))
+                        if kept[i].strip()
+                        and _SEPARATOR.match(kept[i].strip()) is None
+                    ),
+                    len(kept),
                 )
                 following = kept[next_index] if next_index < len(kept) else ""
                 next_level = _heading_level(following)
-                boundary = not following or following.strip() in {"---", "***", "___"}
+                boundary = not following
                 if heading is not None:
                     boundary = boundary or (next_level is not None and next_level <= heading)
                 else:
@@ -692,10 +808,18 @@ def _remove_orphan_structures(lines: list[str]) -> list[str]:
             if heading is None and not lead_in:
                 output.append(line)
                 continue
-            next_index = next((i for i in range(index + 1, len(cleaned)) if cleaned[i].strip()), len(cleaned))
+            next_index = next(
+                (
+                    i
+                    for i in range(index + 1, len(cleaned))
+                    if cleaned[i].strip()
+                    and _SEPARATOR.match(cleaned[i].strip()) is None
+                ),
+                len(cleaned),
+            )
             following = cleaned[next_index] if next_index < len(cleaned) else ""
             next_level = _heading_level(following)
-            boundary = not following or _SEPARATOR.match(following.strip()) is not None
+            boundary = not following
             if heading is not None:
                 boundary = boundary or (next_level is not None and next_level <= heading)
             else:
@@ -876,13 +1000,20 @@ def _markdown_structure_issues(text: str) -> list[str]:
         heading = _heading_level(line)
         if heading is None:
             continue
-        next_index = next((i for i in range(index + 1, len(lines)) if lines[i].strip()), len(lines))
+        next_index = next(
+            (
+                i
+                for i in range(index + 1, len(lines))
+                if lines[i].strip() and _SEPARATOR.match(lines[i].strip()) is None
+            ),
+            len(lines),
+        )
         if next_index == len(lines):
             issues.append("ORPHAN_HEADING")
             break
         following = lines[next_index]
         next_level = _heading_level(following)
-        if _SEPARATOR.match(following.strip()) or (next_level is not None and next_level <= heading):
+        if next_level is not None and next_level <= heading:
             issues.append("ORPHAN_HEADING")
             break
     return list(dict.fromkeys(issues))
@@ -982,6 +1113,8 @@ def _withhold_unvalidated_execution(state: dict[str, Any]) -> dict[str, Any]:
 
 def _execution_violation(text: str) -> str | None:
     plain = text.replace("**", "").replace("`", "")
+    if _POSITION_DIRECTIVE.search(plain):
+        return "POSITION_SIZE_RECOMMENDATION"
     if _POSITION_RECOMMENDATION.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
     if _EXECUTION_INSTRUCTIONS.search(plain):
@@ -997,7 +1130,7 @@ def _execution_violation(text: str) -> str | None:
 def _prune_unapproved_execution(text: str) -> str:
     text = _filter_markdown_sections(
         text,
-        lambda heading: not any(word in heading.casefold() for word in _EXECUTION_HEADINGS),
+        lambda heading: not _is_execution_heading(heading),
     )
     lines = []
     for line in text.splitlines():
@@ -1065,6 +1198,9 @@ def _validated_execution_report(validation: Mapping[str, Any]) -> str:
 
 def _remove_jsf_agent_claims(text: str) -> str:
     """Keep JSF observable facts in its deterministic source section only."""
+    text = _filter_markdown_sections(
+        text, lambda heading: _JSF_CLAIM.search(heading) is None
+    )
     lines = []
     for line in text.splitlines():
         if _JSF_CLAIM.search(line) and not line.lstrip().startswith("#"):
@@ -1076,9 +1212,7 @@ def _remove_jsf_agent_claims(text: str) -> str:
 def _remove_execution_sections(text: str) -> str:
     text = _filter_markdown_sections(
         text,
-        lambda heading: not any(
-            token in heading.casefold() for token in _EXECUTION_HEADINGS
-        ),
+        lambda heading: not _is_execution_heading(heading),
     )
     lines = []
     for line in text.splitlines():
@@ -1086,6 +1220,16 @@ def _remove_execution_sections(text: str) -> str:
             continue
         lines.append(line)
     return _fold_empty_sections("\n".join(lines))
+
+
+def _is_execution_heading(heading: str) -> bool:
+    """Classify execution sections without treating valuation facts as plans."""
+    folded = heading.strip().casefold()
+    if folded in _WITHHELD_EXECUTION_HEADINGS:
+        return False
+    if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", folded):
+        return False
+    return _EXECUTION_HEADING.search(folded) is not None
 
 
 def _strip_execution_plan(text: str, *, include_target: bool) -> str:
@@ -1114,8 +1258,12 @@ def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
     def publicize(text: str) -> str:
         for internal, display in _PUBLIC_NEWS_TEXT.items():
             text = text.replace(internal, display)
-        for internal, display in _INTERNAL_STATUS.items():
-            text = text.replace(internal, display)
+        for internal in sorted(_INTERNAL_STATUS, key=len, reverse=True):
+            text = re.sub(
+                rf"(?<![A-Za-z0-9_]){re.escape(internal)}(?![A-Za-z0-9_])",
+                _INTERNAL_STATUS[internal],
+                text,
+            )
         text = text.replace("DATA UNAVAILABLE", "数据不可用")
         return _fold_empty_sections(text)
 
@@ -1137,7 +1285,12 @@ def _map_report_text(state: Mapping[str, Any], transform) -> dict[str, Any]:
     return result
 
 
-def _validate_final_artifact(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
+def _validate_final_artifact(
+    state: Mapping[str, Any],
+    execution_allowed: bool,
+    *,
+    accepted_report: str,
+) -> list[str]:
     parts: list[str] = []
     for field in _REPORT_FIELDS:
         value = state.get(field)
@@ -1148,7 +1301,13 @@ def _validate_final_artifact(state: Mapping[str, Any], execution_allowed: bool) 
         if isinstance(debate, Mapping):
             parts.extend(value for value in debate.values() if isinstance(value, str))
     issues = validate_final_report_text(
-        "\n".join(parts), execution_allowed=execution_allowed, check_structure=False
+        accepted_report, execution_allowed=execution_allowed, check_structure=True
+    )
+    # Omitted fragments cannot bypass the contract through a secondary view.
+    issues.extend(
+        validate_final_report_text(
+            "\n".join(parts), execution_allowed=execution_allowed, check_structure=False
+        )
     )
     for part in parts:
         issues.extend(_markdown_structure_issues(part))
@@ -1161,8 +1320,12 @@ def validate_final_report_text(
     """Detect violations in accepted text or a composed artifact; never edit it."""
     issues: list[str] = []
     for token in _INTERNAL_STATUS:
-        if token in text:
+        if re.search(
+            rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", text
+        ):
             issues.append(f"INTERNAL_STATUS_VISIBLE:{token}")
+    for token in _MACHINE_ENUM.findall(text):
+        issues.append(f"INTERNAL_MACHINE_ENUM_VISIBLE:{token}")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):
         issues.append("SHORT_MARKET_OVERCLAIM")
     for internal in _PUBLIC_NEWS_TEXT:
@@ -1172,7 +1335,7 @@ def validate_final_report_text(
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             continue
         if not execution_allowed:
-            if _heading_level(line) and any(word in line.casefold() for word in _EXECUTION_HEADINGS):
+            if _heading_level(line) and _is_execution_heading(line.lstrip("# ")):
                 issues.append("UNAPPROVED_EXECUTION_SECTION")
             violation = _execution_violation(line)
             if violation:

@@ -169,14 +169,21 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             raw_risk = raw_outputs.get("risk_debate_state") or {}
             agent_log_parts.append(f"## 投资组合经理原始决策\n\n{raw_risk.get('judge_decision', risk['judge_decision'])}")
 
-    # Write consolidated report
-    display_symbol = metadata["symbol"] or ticker
-    header = (
-        f"# Trading Analysis Report: {display_symbol}\n\n"
-        f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-    )
-    complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
+    # The JP final-output contract already owns and validates the exact user
+    # artifact. The writer only persists it; it must not become a second
+    # business-content composer. US report behavior remains unchanged.
+    if market == "JP":
+        complete_report = final_state.get("accepted_report_markdown")
+        if not isinstance(complete_report, str) or not complete_report.strip():
+            raise ValueError("Canonical Japan report artifact is unavailable")
+    else:
+        display_symbol = metadata["symbol"] or ticker
+        header = (
+            f"# Trading Analysis Report: {display_symbol}\n\n"
+            f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        )
+        complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
     (save_path / "complete_report.md").write_text(complete_report + "\n", encoding="utf-8")
     (save_path / "full_agent_log.md").write_text("\n\n".join(agent_log_parts) + "\n", encoding="utf-8")
     return save_path / "complete_report.md"

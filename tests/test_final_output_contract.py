@@ -405,7 +405,7 @@ def test_old_finalized_contract_is_reaccepted_instead_of_bypassing_execution_gat
     state["market_report"] = "方向偏空。激进者可小仓做空。"
     accepted = build_canonical_final_state(state)
     assert accepted["market_report"] == "方向偏空。"
-    assert accepted["final_output_contract"]["version"] == "v2"
+    assert accepted["final_output_contract"]["version"] == "v3"
     assert build_canonical_final_state(accepted) == accepted
 
 
@@ -507,8 +507,15 @@ def test_complete_report_structure_has_no_pruning_residue(tmp_path):
         "### 4. MACD\nMACD 有效。\n### 7. RSI\nRSI 有效。\n"
         "| 项目 | 数值 |\n|---|---|\n| 好行 | 1 |\n| 坏行 | 2 | 多余 |"
     )
+    state["market_report"] = raw_market
+    state["evidence_registry"].append(
+        {
+            "claim_type": "FACT",
+            "value": "6981 1 2 4 7",
+            "allowed_for_current_decision": True,
+        }
+    )
     accepted = build_canonical_final_state(state)
-    accepted["market_report"] = normalize_markdown_structure(raw_market)
     report = write_report_tree(accepted, "6981.T", tmp_path).read_text(encoding="utf-8")
 
     assert "##### 一、技术事实" in report
@@ -517,3 +524,76 @@ def test_complete_report_structure_has_no_pruning_residue(tmp_path):
     assert "###### 2. RSI" in report
     assert "坏行" not in report
     assert validate_final_report_text(report, execution_allowed=False) == []
+
+
+def test_exact_accepted_artifact_is_validated_and_persisted(tmp_path):
+    state = _jp_state()
+    state["market_report"] = (
+        "## 技术事实\n指标保持承压。\n\n"
+        "## 仓位建议\n仓位必须按此缩放。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+    written = write_report_tree(accepted, "6981.T", tmp_path).read_text().rstrip()
+
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert accepted["final_output_contract"]["artifact_issues"] == []
+    assert written == artifact
+    assert "仓位必须按此缩放" not in artifact
+    assert validate_final_report_text(artifact, execution_allowed=False) == []
+
+    accepted["market_report"] = "SHOULD NOT RECOMPOSE INTO USER ARTIFACT"
+    html = _render_report_html(accepted, auto_print=False)
+    assert "SHOULD NOT RECOMPOSE" not in html
+    assert "指标保持承压" in html
+
+
+def test_web_cover_renders_markdown_instead_of_leaking_raw_markers():
+    state = _jp_state()
+    state["final_trade_decision"] = "Rating: Hold\n\n**结论：继续观望。**"
+    accepted = build_canonical_final_state(state)
+
+    html = _render_report_html(accepted, auto_print=False)
+
+    assert "**结论：继续观望。**" not in html
+    assert "<strong>结论：继续观望。</strong>" in html
+
+
+def test_final_artifact_validation_blocks_unknown_machine_enum():
+    state = _jp_state()
+    state["news_report"] = "状态：FUTURE_INTERNAL_STATUS。"
+
+    accepted = build_canonical_final_state(state)
+
+    assert accepted["final_output_contract"]["status"] == "BLOCKED"
+    assert "INTERNAL_MACHINE_ENUM_VISIBLE:FUTURE_INTERNAL_STATUS" in accepted[
+        "final_output_contract"
+    ]["artifact_issues"]
+
+
+def test_jsf_agent_subsection_is_removed_as_one_semantic_unit():
+    state = _jp_state()
+    state["market_report"] = (
+        "## 技术面\n价格趋势偏弱。\n\n"
+        "## JSF 信用供需\n"
+        "| 项目 | 数值 |\n|---|---:|\n| 贷株余额 | 3000 |\n\n"
+        "由此可见强制平仓压力正在下降。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+
+    assert "价格趋势偏弱" in artifact
+    assert "强制平仓压力正在下降" not in artifact
+    assert "贷株余额 | 3000" not in artifact
+    assert "仅是 JSF 可观察余额" not in artifact  # fixture has no JSF bundle item
+
+
+def test_separator_below_agent_wrapper_does_not_delete_wrapper():
+    normalized = normalize_markdown_structure(
+        "## I. Analyst Team Reports\n\n### Market Analyst\n\n---\n\n正文。\n"
+    )
+    assert "## I. Analyst Team Reports" in normalized
+    assert "### Market Analyst" in normalized
+    assert "正文。" in normalized

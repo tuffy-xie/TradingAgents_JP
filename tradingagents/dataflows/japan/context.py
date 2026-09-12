@@ -384,6 +384,7 @@ def _public_financial_status(value: Any) -> str:
         "CURRENT_STRUCTURED_CONFIRMED": "截至分析日已确认最新",
         "CURRENT_OFFICIAL": "截至分析日最新官方数据",
         "LATEST_AVAILABLE": "来源当前最新可得",
+        "INCOMPLETE": "不完整",
         "NOT_APPLICABLE": "不适用",
         "NOT_PROVIDED": "公司未提供",
         "INSUFFICIENT_DATA": "证据不足",
@@ -555,7 +556,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
     return "\n\n".join(
         [
             "## 日本官方披露\n" + "\n".join(_official_report_lines(official)),
-            "## 信用与需给\n" + "\n".join(_supply_report_lines(supply)),
+            "## 信用与供需\n" + "\n".join(_supply_report_lines(supply)),
             "## 空卖与机构行为\n"
             + (
                 "\n".join(_short_report_lines(short))
@@ -563,7 +564,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
                 else "数据不可用：未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
             ),
             "## 日本市场情绪\n" + "\n".join(_sentiment_report_lines(items)),
-            "## 日股波段交易计划\n以上官方披露与需给数据作为补充上下文，最终交易计划由各 Agent 结合 Analyst 报告综合形成；若关键数据不可用，应降低结论置信度，不得补造事实。",
+            "## 日本市场补充资料\n以上官方披露与供需数据作为补充上下文，最终研究结论由各 Analyst 报告综合形成；若关键数据不可用，应降低结论置信度，不得补造事实。",
         ]
     )
 
@@ -587,7 +588,7 @@ def _official_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
 def _supply_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
     """Expose dated observable balances without raw metadata or short inference."""
     if not items:
-        return ["本次窗口没有可用的信用与需给数据。"]
+        return ["本次窗口没有可用的信用与供需数据。"]
     lines: list[str] = []
     for source in ("JSF", "JPX"):
         candidates = [item for item in items if item.get("source") == source]
@@ -623,7 +624,7 @@ def _supply_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
             )
         else:
             lines.append(f"- JPX：{date_text}，{item.get('title') or '公开数据'}")
-    return lines or ["本次窗口没有可用的信用与需给数据。"]
+    return lines or ["本次窗口没有可用的信用与供需数据。"]
 
 
 def _short_report_lines(items: list[Mapping[str, Any]]) -> list[str]:

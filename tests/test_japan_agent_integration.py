@@ -49,7 +49,7 @@ def test_japan_bundle_is_state_carried_and_us_gets_no_japan_prompt():
 def test_japan_report_sections_are_explicit_and_do_not_fabricate_sentiment(tmp_path):
     sections = render_japan_report_sections(_bundle())
     assert "## 日本官方披露" in sections
-    assert "## 信用与需给" in sections
+    assert "## 信用与供需" in sections
     assert "## 空卖与机构行为" in sections
     assert "## 日本市场情绪" in sections
     assert "数据不可用" in sections

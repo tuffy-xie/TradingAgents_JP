@@ -346,7 +346,6 @@ async def analyze(
                         if updates.get(report_key) and display_id not in done_agents:
                             done_agents.add(display_id)
                             put({"type": "agent_update", "id": display_id, "status": "completed"})
-                            put({"type": "section", "key": report_key, "content": updates[report_key]})
 
                     # ── Research debate ──────────────────────────────────────
                     debate = updates.get("investment_debate_state") or {}
@@ -363,13 +362,11 @@ async def analyze(
                     if judge and "Research Manager" not in done_agents:
                         done_agents.add("Research Manager")
                         put({"type": "agent_update", "id": "Research Manager", "status": "completed"})
-                        put({"type": "section", "key": "research_decision", "content": judge})
 
                     # ── Trader ───────────────────────────────────────────────
                     if updates.get("trader_investment_plan") and "Trader" not in done_agents:
                         done_agents.add("Trader")
                         put({"type": "agent_update", "id": "Trader", "status": "completed"})
-                        put({"type": "section", "key": "trader_plan", "content": updates["trader_investment_plan"]})
 
                     # ── Risk team — count comes from merged state ─────────────
                     risk_count = final_state["risk_debate_state"].get("count", 0)
@@ -387,10 +384,59 @@ async def analyze(
                     if updates.get("final_trade_decision") and "Portfolio Manager" not in done_agents:
                         done_agents.add("Portfolio Manager")
                         put({"type": "agent_update", "id": "Portfolio Manager", "status": "completed"})
-                        put({"type": "final", "content": updates["final_trade_decision"]})
 
             # Persist results.  The web path drives the graph directly, so it
-            # must explicitly write the same report tree as CLI/API runs.
+            # must establish the same canonical final state as CLI/API runs
+            # before any persisted or user-facing final artifact is created.
+            final_state = build_canonical_final_state(final_state)
+            if (final_state.get("final_output_contract") or {}).get("status") != "FINALIZED":
+                try:
+                    ta._log_state(date, final_state)
+                except Exception as log_exc:
+                    logger.warning("Blocked state logging failed (non-fatal): %s", log_exc)
+                put(
+                    {
+                        "type": "error",
+                        "message": "最终报告未通过证据与执行一致性校验。",
+                    }
+                )
+                return
+            # Agent text remains provisional until the complete artifact has
+            # passed the final contract. Publish only the accepted variants to
+            # the user-facing stream; raw prose remains in full_agent_log.md.
+            for report_key in (
+                "market_report",
+                "sentiment_report",
+                "news_report",
+                "fundamentals_report",
+            ):
+                if final_state.get(report_key):
+                    put(
+                        {
+                            "type": "section",
+                            "key": report_key,
+                            "content": final_state[report_key],
+                        }
+                    )
+            research = final_state.get("investment_debate_state") or {}
+            if research.get("judge_decision"):
+                put(
+                    {
+                        "type": "section",
+                        "key": "research_decision",
+                        "content": research["judge_decision"],
+                    }
+                )
+            if final_state.get("trader_investment_plan"):
+                put(
+                    {
+                        "type": "section",
+                        "key": "trader_plan",
+                        "content": final_state["trader_investment_plan"],
+                    }
+                )
+            if final_state.get("final_trade_decision"):
+                put({"type": "final", "content": final_state["final_trade_decision"]})
             try:
                 ta._log_state(date, final_state)
             except Exception as log_exc:
@@ -604,9 +650,12 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
         )
         return match.group(1).strip().strip("*") if match else default
 
-    rating = decision_field("Rating", "Hold")
+    rating = decision_field("Rating", "暂无评级")
     rating = {"Buy": "买入", "Overweight": "增持", "Hold": "持有", "Underweight": "减持", "Sell": "卖出"}.get(rating, rating)
-    target = decision_field("Price Target", "—")
+    execution_allowed = bool(
+        (data.get("final_output_contract") or {}).get("execution_allowed")
+    )
+    target = decision_field("Price Target", "—") if execution_allowed else "—"
     horizon = decision_field("Time Horizon", "—")
     summary_match = re.search(
         r"(?:\*\*)?Executive Summary(?:\*\*)?\s*[:：]\s*(.*?)(?=\n\s*\n(?:\*\*)?[A-Za-z ]+(?:\*\*)?\s*[:：]|\Z)",
@@ -614,14 +663,26 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     )
     summary = summary_match.group(1).strip() if summary_match else decision[:1200]
 
-    blocks = []
-    for json_key, _stem, label in REPORT_SECTIONS:
-        content = data.get(json_key, "")
-        if not content:
-            continue
-        blocks.append(f'<section class="report-section"><h2>{html.escape(label)}</h2>{_md(content)}</section>')
-
-    sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
+    if metadata["market"] == "JP":
+        accepted_report = data.get("accepted_report_markdown")
+        if not isinstance(accepted_report, str) or not accepted_report.strip():
+            raise ValueError("Canonical Japan report artifact is unavailable")
+        sections_html = (
+            '<section class="report-section canonical-report">'
+            + _md(accepted_report)
+            + "</section>"
+        )
+    else:
+        blocks = []
+        for json_key, _stem, label in REPORT_SECTIONS:
+            content = data.get(json_key, "")
+            if not content:
+                continue
+            blocks.append(
+                f'<section class="report-section"><h2>{html.escape(label)}</h2>'
+                f"{_md(content)}</section>"
+            )
+        sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
     auto = "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""
 
     return f"""<!DOCTYPE html>
@@ -665,7 +726,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     padding:20px 24px 24px; }}
   .cover-advice h2 {{ font-size:20px; margin:0 0 14px; padding:0 0 10px 10px;
     border-left:4px solid #1e3a6a; border-bottom:1px solid #cbd5e1; }}
-  .cover-advice p {{ margin:0; font-size:16px; line-height:1.8; }}
+  .cover-advice p {{ margin:0 0 8px; font-size:16px; line-height:1.8; }}
   .report-section {{ margin:0 0 28px; }}
   .report-section h2 {{ font-size:18px; border-left:4px solid var(--brand);
     padding-left:10px; margin:28px 0 12px; }}
@@ -700,7 +761,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
       <div class="cover-card"><small>投资期限</small><strong>{html.escape(horizon)}</strong></div>
       <div class="cover-card"><small>分析师覆盖</small><strong>{sum(bool(data.get(key)) for key, _, _ in REPORT_SECTIONS[:4])} 项</strong></div>
     </div>
-    <div class="cover-advice"><h2>投资建议</h2><p>{html.escape(summary)}</p></div>
+    <div class="cover-advice"><h2>投资建议</h2>{_md(summary)}</div>
   </section>
   {sections_html}
 </div>
