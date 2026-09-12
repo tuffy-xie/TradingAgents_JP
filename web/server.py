@@ -37,6 +37,7 @@ from tradingagents.final_output import (
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
 from tradingagents.report_consistency import canonical_report_metadata
+from tradingagents.secret_redaction import safe_exception_text, sanitize_data, sanitize_text
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -87,6 +88,11 @@ CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
 
 def detect_asset_type(ticker: str) -> str:
     return "crypto" if ticker.strip().upper().endswith(CRYPTO_SUFFIXES) else "stock"
+
+
+def _safe_web_event(data: dict) -> dict:
+    """Return an SSE/error payload safe for browser and network presentation."""
+    return sanitize_data(data)
 
 # Graph node name → {display, team}
 AGENT_INFO = {
@@ -224,7 +230,7 @@ async def analyze(
 
     def put(data: dict):
         if not stop_event.is_set():
-            asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+            asyncio.run_coroutine_threadsafe(queue.put(_safe_web_event(data)), loop)
 
     def run():
         try:
@@ -393,7 +399,10 @@ async def analyze(
                 try:
                     ta._log_state(date, final_state)
                 except Exception as log_exc:
-                    logger.warning("Blocked state logging failed (non-fatal): %s", log_exc)
+                    logger.warning(
+                        "Blocked state logging failed (non-fatal): %s",
+                        safe_exception_text(log_exc),
+                    )
                 put(
                     {
                         "type": "error",
@@ -440,13 +449,18 @@ async def analyze(
             try:
                 ta._log_state(date, final_state)
             except Exception as log_exc:
-                logger.warning("State logging failed (non-fatal): %s", log_exc)
+                logger.warning(
+                    "State logging failed (non-fatal): %s", safe_exception_text(log_exc)
+                )
 
             report_path = None
             try:
                 report_path = ta.save_reports(final_state, canonical_ticker)
             except Exception as report_exc:
-                logger.warning("Report archive failed (non-fatal): %s", report_exc)
+                logger.warning(
+                    "Report archive failed (non-fatal): %s",
+                    safe_exception_text(report_exc),
+                )
 
             if final_state.get("final_trade_decision"):
                 try:
@@ -455,13 +469,17 @@ async def analyze(
                         final_trade_decision=final_state["final_trade_decision"],
                     )
                 except Exception as mem_exc:
-                    logger.warning("Memory store failed (non-fatal): %s", mem_exc)
+                    logger.warning(
+                        "Memory store failed (non-fatal): %s",
+                        safe_exception_text(mem_exc),
+                    )
 
             put({"type": "done", "report_path": str(report_path) if report_path else None})
 
         except Exception as exc:
-            logger.exception("Analysis failed")
-            put({"type": "error", "message": str(exc)})
+            safe_error = safe_exception_text(exc)
+            logger.exception("Analysis failed: %s", safe_error)
+            put({"type": "error", "message": safe_error})
 
     loop.run_in_executor(executor, run)
 
@@ -579,7 +597,9 @@ def _load_run(dir_name: str, date: str) -> dict | None:
         try:
             return json.loads(json_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.warning("Skipping unreadable log %s: %s", json_path, exc)
+            logger.warning(
+                "Skipping unreadable log %s: %s", json_path, safe_exception_text(exc)
+            )
 
     rdir = _reports_dir(dir_name, date)
     if rdir.is_dir():
@@ -638,6 +658,7 @@ def list_history():
 
 def _render_report_html(data: dict, *, auto_print: bool) -> str:
     require_canonical_final_state(data)
+    data = sanitize_data(data)
     metadata = canonical_report_metadata(data)
     ticker = metadata["symbol"]
     date = data.get("trade_date", "")
@@ -669,7 +690,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
             raise ValueError("Canonical Japan report artifact is unavailable")
         sections_html = (
             '<section class="report-section canonical-report">'
-            + _md(accepted_report)
+            + _md(sanitize_text(accepted_report))
             + "</section>"
         )
     else:

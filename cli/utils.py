@@ -2,12 +2,14 @@ import os
 from pathlib import Path
 
 import questionary
+import requests
 from dotenv import find_dotenv, set_key
 from rich.console import Console
 
 from cli.models import AnalystType, AssetType
 from tradingagents.llm_clients.api_key_env import get_api_key_env
 from tradingagents.llm_clients.model_catalog import get_model_options
+from tradingagents.secret_redaction import safe_exception_text
 
 console = Console()
 
@@ -215,7 +217,6 @@ _OPENROUTER_MAINSTREAM = {
 
 def _fetch_openrouter_models() -> list[tuple[str, str]]:
     """Fetch available models from the OpenRouter API."""
-    import requests
     try:
         resp = requests.get("https://openrouter.ai/api/v1/models", timeout=10)
         resp.raise_for_status()
@@ -226,7 +227,9 @@ def _fetch_openrouter_models() -> list[tuple[str, str]]:
         models.sort(key=lambda m: m.get("created") or 0, reverse=True)
         return [(m.get("name") or m["id"], m["id"]) for m in models]
     except Exception as e:
-        console.print(f"\n[yellow]Could not fetch OpenRouter models: {e}[/yellow]")
+        console.print(
+            f"\n[yellow]Could not fetch OpenRouter models: {safe_exception_text(e)}[/yellow]"
+        )
         return []
 
 

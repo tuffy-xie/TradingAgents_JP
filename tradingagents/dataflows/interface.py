@@ -1,5 +1,7 @@
 import logging
 
+from tradingagents.secret_redaction import redacted_exception, safe_exception_text
+
 from .alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -215,7 +217,9 @@ def route_to_vendor(method: str, *args, **kwargs):
             # Don't let one vendor's failure crash the call when another can
             # serve it, but never swallow silently: a broken primary must be
             # visible in the logs (#989), not hidden behind a fallback's verdict.
-            logger.warning("Vendor %r failed for %s: %s", vendor, method, e)
+            logger.warning(
+                "Vendor %r failed for %s: %s", vendor, method, safe_exception_text(e)
+            )
             if first_error is None:
                 first_error = e
             continue
@@ -230,7 +234,7 @@ def route_to_vendor(method: str, *args, **kwargs):
             # verdict can't hide a broken primary (network/auth/etc.).
             logger.warning(
                 "Returning NO_DATA for %s, but a vendor errored earlier: %s",
-                method, first_error,
+                method, safe_exception_text(first_error),
             )
         sym = last_no_data.symbol
         canonical = last_no_data.canonical
@@ -252,11 +256,12 @@ def route_to_vendor(method: str, *args, **kwargs):
     # abort the run.
     if first_error is not None:
         if category in OPTIONAL_CATEGORIES:
-            logger.warning("Optional %s unavailable for %s: %s", category, method, first_error)
+            detail = safe_exception_text(first_error)
+            logger.warning("Optional %s unavailable for %s: %s", category, method, detail)
             return (
                 f"DATA_UNAVAILABLE: optional {category} could not be retrieved "
-                f"({first_error}). Proceed without it; do not fabricate values."
+                f"({detail}). Proceed without it; do not fabricate values."
             )
-        raise first_error
+        raise redacted_exception(first_error) from None
 
     raise RuntimeError(f"No available vendor for '{method}'")

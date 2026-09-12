@@ -31,6 +31,8 @@ from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from tradingagents.secret_redaction import safe_exception_text
+
 from .symbol_utils import crypto_base
 
 logger = logging.getLogger(__name__)
@@ -138,16 +140,31 @@ def _fetch_subreddit_rss_result(
             )
             time.sleep(wait)
             return _fetch_subreddit_rss_result(ticker, sub, limit, timeout, _retry=False)
-        logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
+        logger.warning(
+            "Reddit RSS fetch failed for r/%s · %s: %s",
+            sub,
+            ticker,
+            safe_exception_text(exc),
+        )
         status = "RATE_LIMITED" if exc.code == 429 else "FETCH_FAILED"
         return [], status, f"HTTP {exc.code}"
     except TimeoutError as exc:
-        logger.warning("Reddit RSS timed out for r/%s · %s: %s", sub, ticker, exc)
+        logger.warning(
+            "Reddit RSS timed out for r/%s · %s: %s",
+            sub,
+            ticker,
+            safe_exception_text(exc),
+        )
         return [], "TIMEOUT", type(exc).__name__
     except (OSError, http.client.HTTPException, ET.ParseError) as exc:
         # OSError covers URLError/TimeoutError/connection resets; HTTPException
         # covers chunked-transfer errors (IncompleteRead/BadStatusLine, #1024).
-        logger.warning("Reddit RSS fetch failed for r/%s · %s: %s", sub, ticker, exc)
+        logger.warning(
+            "Reddit RSS fetch failed for r/%s · %s: %s",
+            sub,
+            ticker,
+            safe_exception_text(exc),
+        )
         return [], "FETCH_FAILED", type(exc).__name__
 
     posts = []

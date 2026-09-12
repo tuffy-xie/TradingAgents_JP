@@ -50,6 +50,7 @@ from tradingagents.graph.analyst_execution import (
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.reporting import write_report_tree
+from tradingagents.secret_redaction import redacted_exception, safe_exception_text
 
 console = Console()
 
@@ -1279,7 +1280,7 @@ def run_analysis(checkpoint: bool | None = None):
             console.print(f"\n[green]✓ Report saved to:[/green] {save_path.resolve()}")
             console.print(f"  [dim]Complete report:[/dim] {report_file.name}")
         except Exception as e:
-            console.print(f"[red]Error saving report: {e}[/red]")
+            console.print(f"[red]Error saving report: {safe_exception_text(e)}[/red]")
 
     # Prompt to display full report
     display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
@@ -1318,6 +1319,13 @@ def analyze(
             err=True,
         )
         raise typer.Exit(code=1) from None
+    except Exception as exc:
+        # Typer's default uncaught-exception renderer would print the raw
+        # exception. Transport exceptions can embed prepared URLs, so preserve
+        # the original exception class and traceback but replace its display
+        # message before handing it to the CLI framework.
+        safe_exc = redacted_exception(exc)
+        raise safe_exc.with_traceback(exc.__traceback__) from None
 
 
 if __name__ == "__main__":

@@ -1,3 +1,5 @@
+from tradingagents.secret_redaction import safe_exception_text
+
 from .alpha_vantage_common import AlphaVantageNotConfiguredError, _make_api_request
 
 
@@ -211,5 +213,6 @@ def get_indicator(
         # successful-looking error string.
         raise
     except Exception as e:
-        print(f"Error getting Alpha Vantage indicator data for {indicator}: {e}")
-        return f"Error retrieving {indicator} data: {str(e)}"
+        detail = safe_exception_text(e)
+        print(f"Error getting Alpha Vantage indicator data for {indicator}: {detail}")
+        return f"Error retrieving {indicator} data: {detail}"

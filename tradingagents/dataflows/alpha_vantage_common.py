@@ -6,6 +6,8 @@ from io import StringIO
 import pandas as pd
 import requests
 
+from tradingagents.secret_redaction import safe_exception_text
+
 from .errors import VendorNotConfiguredError, VendorRateLimitError
 
 API_BASE_URL = "https://www.alphavantage.co/query"
@@ -147,5 +149,8 @@ def _filter_csv_by_date_range(csv_data: str, start_date: str, end_date: str) -> 
 
     except Exception as e:
         # If filtering fails, return original data with a warning
-        print(f"Warning: Failed to filter CSV data by date range: {e}")
+        print(
+            "Warning: Failed to filter CSV data by date range: "
+            f"{safe_exception_text(e)}"
+        )
         return csv_data

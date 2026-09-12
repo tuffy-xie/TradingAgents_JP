@@ -6,6 +6,8 @@ from datetime import datetime, timedelta, timezone
 import yfinance as yf
 from dateutil.relativedelta import relativedelta
 
+from tradingagents.secret_redaction import safe_exception_text
+
 from .config import get_config
 from .stockstats_utils import yf_retry
 from .symbol_utils import normalize_symbol
@@ -146,7 +148,7 @@ def get_news_yfinance(
         return f"## {ticker}{resolved} News, from {start_date} to {end_date}:\n\n{news_str}"
 
     except Exception as e:
-        return f"Error fetching news for {ticker}: {str(e)}"
+        return f"Error fetching news for {ticker}: {safe_exception_text(e)}"
 
 
 def get_global_news_yfinance(
@@ -234,4 +236,4 @@ def get_global_news_yfinance(
         return f"## Global Market News, from {start_date} to {curr_date}:\n\n{news_str}"
 
     except Exception as e:
-        return f"Error fetching global news: {str(e)}"
+        return f"Error fetching global news: {safe_exception_text(e)}"

@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 
 import requests
 
+from tradingagents.secret_redaction import safe_exception_text
+
 logger = logging.getLogger(__name__)
 
 GAMMA_BASE = "https://gamma-api.polymarket.com"
@@ -85,9 +87,10 @@ def get_prediction_markets(topic: str, limit: int | None = None) -> str:
     try:
         data = _request("public-search", {"q": topic, "limit_per_type": 20})
     except requests.RequestException as e:
-        logger.warning("Polymarket search failed for %r: %s", topic, e)
+        detail = safe_exception_text(e)
+        logger.warning("Polymarket search failed for %r: %s", topic, detail)
         return (
-            f"Polymarket data is currently unavailable (network error: {e}). "
+            f"Polymarket data is currently unavailable (network error: {detail}). "
             f"Proceed without prediction-market signal for '{topic}'."
         )
 

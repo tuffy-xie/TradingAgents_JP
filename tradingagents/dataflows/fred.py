@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 
 import requests
 
+from tradingagents.secret_redaction import safe_exception_text
+
 from .errors import VendorNotConfiguredError
 
 logger = logging.getLogger(__name__)
@@ -163,7 +165,7 @@ def get_macro_data(
     try:
         series_id = _resolve_series_id(indicator)
     except ValueError as e:
-        return f"FRED: {e}"
+        return f"FRED: {safe_exception_text(e)}"
 
     meta = _request("series", {"series_id": series_id}).get("seriess") or []
     if not meta:

@@ -1,6 +1,13 @@
 import contextlib
 import warnings
 
+from tradingagents.secret_redaction import install_secret_safe_logging
+
+# Redact at LogRecord creation rather than at one provider or one handler. This
+# also protects retry/third-party logging and exception tracebacks before they
+# reach a console, file, test capture, or Web server handler.
+install_secret_safe_logging()
+
 # Load .env files at package import so DEFAULT_CONFIG's env-var overlay
 # (and every llm_clients consumer) sees the user's keys regardless of
 # which entry point started the process. find_dotenv(usecwd=True) walks

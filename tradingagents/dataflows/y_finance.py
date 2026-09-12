@@ -5,6 +5,8 @@ import pandas as pd
 import yfinance as yf
 from dateutil.relativedelta import relativedelta
 
+from tradingagents.secret_redaction import safe_exception_text
+
 from .stockstats_utils import (
     StockstatsUtils,
     _assert_ohlcv_not_stale,
@@ -196,7 +198,7 @@ def get_stock_stats_indicators_window(
     except NoMarketDataError:
         raise  # Unknown/delisted symbol — let the router emit the sentinel
     except Exception as e:
-        print(f"Error getting bulk stockstats data: {e}")
+        print(f"Error getting bulk stockstats data: {safe_exception_text(e)}")
         # Fallback to original implementation if bulk method fails
         ind_string = ""
         indicator_data_date = None
@@ -274,7 +276,7 @@ def get_stockstats_indicator(
         raise  # Unknown/delisted symbol — let the router emit the sentinel
     except Exception as e:
         print(
-            f"Error getting stockstats indicator data for indicator {indicator} on {curr_date}: {e}"
+            f"Error getting stockstats indicator data for indicator {indicator} on {curr_date}: {safe_exception_text(e)}"
         )
         return ""
 
@@ -349,7 +351,7 @@ def get_fundamentals(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving fundamentals for {ticker}: {str(e)}"
+        return f"Error retrieving fundamentals for {ticker}: {safe_exception_text(e)}"
 
 
 def _get_etf_fundamentals(ticker_obj, ticker: str, canonical: str, info: dict) -> str:
@@ -428,7 +430,7 @@ def get_balance_sheet(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving balance sheet for {ticker}: {str(e)}"
+        return f"Error retrieving balance sheet for {ticker}: {safe_exception_text(e)}"
 
 
 def get_cashflow(
@@ -463,7 +465,7 @@ def get_cashflow(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving cash flow for {ticker}: {str(e)}"
+        return f"Error retrieving cash flow for {ticker}: {safe_exception_text(e)}"
 
 
 def get_income_statement(
@@ -498,7 +500,7 @@ def get_income_statement(
     except NoMarketDataError:
         raise
     except Exception as e:
-        return f"Error retrieving income statement for {ticker}: {str(e)}"
+        return f"Error retrieving income statement for {ticker}: {safe_exception_text(e)}"
 
 
 def get_insider_transactions(
@@ -525,4 +527,4 @@ def get_insider_transactions(
         return header + csv_string
 
     except Exception as e:
-        return f"Error retrieving insider transactions for {ticker}: {str(e)}"
+        return f"Error retrieving insider transactions for {ticker}: {safe_exception_text(e)}"

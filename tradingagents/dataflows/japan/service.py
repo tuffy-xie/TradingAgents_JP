@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import Market, MarketContext
+from tradingagents.secret_redaction import safe_exception_text
 
 from .cache import JapanDataCache
 from .models import (
@@ -198,7 +199,9 @@ class JapanDataService:
                 ),
             )
         except Exception as exc:  # provider errors must not fail the research bundle
-            logger.warning("[JapanData] %s failed: %s", provider.name, exc)
+            logger.warning(
+                "[JapanData] %s failed: %s", provider.name, safe_exception_text(exc)
+            )
             response = ProviderResponse(
                 status=SourceStatus(
                     provider.name, DataStatus.DATA_UNAVAILABLE, detail=type(exc).__name__

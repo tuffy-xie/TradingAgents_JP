@@ -37,6 +37,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.final_output import build_canonical_final_state
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
+from tradingagents.secret_redaction import sanitize_data
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -603,7 +604,7 @@ class TradingAgentsGraph:
 
         log_path = directory / f"full_states_log_{trade_date}.json"
         with open(log_path, "w", encoding="utf-8") as f:
-            json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
+            json.dump(sanitize_data(self.log_states_dict[str(trade_date)]), f, indent=4)
 
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""

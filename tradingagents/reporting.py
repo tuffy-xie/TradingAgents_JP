@@ -14,6 +14,7 @@ from pathlib import Path
 from tradingagents.dataflows.japan.context import render_japan_report_sections
 from tradingagents.final_output import normalize_markdown_structure, require_canonical_final_state
 from tradingagents.report_consistency import canonical_report_metadata
+from tradingagents.secret_redaction import sanitize_data, sanitize_text
 
 
 def _agent_section(name: str, text: str, market: str) -> str:
@@ -30,6 +31,12 @@ def _agent_section(name: str, text: str, market: str) -> str:
 def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
     """Save a completed run's reports to ``save_path``; return the complete-report path."""
     require_canonical_final_state(final_state)
+    # Persistence is a security boundary. Agent/tool diagnostics can contain a
+    # transport exception even when the accepted report is otherwise valid, so
+    # sanitize one detached copy before writing either the user artifact or the
+    # technical full-agent log.
+    final_state = sanitize_data(final_state)
+    ticker = sanitize_text(ticker)
     save_path = Path(save_path)
     save_path.mkdir(parents=True, exist_ok=True)
     sections = []
@@ -184,6 +191,10 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         )
         complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
-    (save_path / "complete_report.md").write_text(complete_report + "\n", encoding="utf-8")
-    (save_path / "full_agent_log.md").write_text("\n\n".join(agent_log_parts) + "\n", encoding="utf-8")
+    (save_path / "complete_report.md").write_text(
+        sanitize_text(complete_report) + "\n", encoding="utf-8"
+    )
+    (save_path / "full_agent_log.md").write_text(
+        sanitize_text("\n\n".join(agent_log_parts)) + "\n", encoding="utf-8"
+    )
     return save_path / "complete_report.md"
