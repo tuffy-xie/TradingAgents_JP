@@ -42,6 +42,10 @@ from cli.utils import (
     select_shallow_thinking_agent,
 )
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.final_output import (
+    build_canonical_final_state,
+    require_canonical_final_state,
+)
 from tradingagents.graph.analyst_execution import (
     AnalystWallTimeTracker,
     build_analyst_execution_plan,
@@ -768,6 +772,13 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
 
 def display_complete_report(final_state):
     """Display the complete analysis report sequentially (avoids truncation)."""
+    if (final_state.get("market_context") or {}).get("market") == "JP":
+        require_canonical_final_state(final_state)
+        console.print()
+        console.print(Rule("Complete Analysis Report", style="bold green"))
+        console.print(Markdown(final_state["accepted_report_markdown"]))
+        return
+
     console.print()
     console.print(Rule("Complete Analysis Report", style="bold green"))
 
@@ -1038,6 +1049,7 @@ def run_analysis(checkpoint: bool | None = None):
     report_dir.mkdir(parents=True, exist_ok=True)
     log_file = results_dir / "message_tool.log"
     log_file.touch(exist_ok=True)
+    report_persistence = {"market": None, "canonical_ready": False}
 
     def save_message_decorator(obj, func_name):
         func = getattr(obj, func_name)
@@ -1066,6 +1078,13 @@ def run_analysis(checkpoint: bool | None = None):
         @wraps(func)
         def wrapper(section_name, content):
             func(section_name, content)
+            if (
+                report_persistence["market"] == "JP"
+                and not report_persistence["canonical_ready"]
+            ):
+                # The live display may show provisional progress, but no JP
+                # report file is persisted until canonical acceptance closes.
+                return
             if section_name in obj.report_sections and obj.report_sections[section_name] is not None:
                 content = obj.report_sections[section_name]
                 if content:
@@ -1122,6 +1141,7 @@ def run_analysis(checkpoint: bool | None = None):
         from tradingagents.dataflows.market import resolve_market_context
 
         market_context = resolve_market_context(selections["ticker"])
+        report_persistence["market"] = market_context.market
         japan_data_bundle = collect_japan_data_bundle(market_context, selections["analysis_date"])
         init_agent_state = graph.propagator.create_initial_state(
             selections["ticker"],
@@ -1241,9 +1261,18 @@ def run_analysis(checkpoint: bool | None = None):
 
         # Streamed chunks are per-node deltas, not full state. Merge them
         # so every report field populated across the run is present.
-        final_state = {}
+        final_state = dict(init_agent_state)
         for chunk in trace:
             final_state.update(chunk)
+
+        # Match the Graph/Web/report writer contract: Japan users may only see
+        # the canonical accepted artifact, never streamed raw Agent prose.
+        final_state = build_canonical_final_state(final_state)
+        report_persistence["canonical_ready"] = (
+            (final_state.get("market_context") or {}).get("market") != "JP"
+            or (final_state.get("final_output_contract") or {}).get("status")
+            == "FINALIZED"
+        )
 
         # Update all agent statuses to completed
         for agent in message_buffer.agent_status:

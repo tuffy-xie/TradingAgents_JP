@@ -572,6 +572,72 @@ def test_final_artifact_validation_blocks_unknown_machine_enum():
     ]["artifact_issues"]
 
 
+def test_known_transport_status_is_localized_in_user_artifact():
+    state = _jp_state()
+    state["sentiment_report"] = "## 情绪数据\n状态：RATE_LIMITED，当前无可用样本。"
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert "RATE_LIMITED" not in artifact
+    assert "请求频率受限" in artifact
+
+
+def test_technical_debate_history_does_not_block_clean_user_artifact(tmp_path):
+    state = _jp_state()
+    state["risk_debate_state"].update(
+        {
+            "history": "风险讨论汇总。",
+            "neutral_history": "内部讨论状态：FUTURE_RISK_DRAFT。",
+            "current_neutral_response": "内部技术讨论。",
+        }
+    )
+
+    accepted = build_canonical_final_state(state)
+    user_text = accepted["accepted_report_markdown"]
+    write_report_tree(accepted, "6981.T", tmp_path)
+    debug_text = (tmp_path / "full_agent_log.md").read_text(encoding="utf-8")
+
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert "FUTURE_RISK_DRAFT" not in user_text
+    assert "FUTURE_RISK_DRAFT" in debug_text
+
+
+def test_reacceptance_recomputes_obsolete_final_artifact_violations():
+    state = _jp_state()
+    state["evidence_audit"].append(
+        {
+            "category": "FINAL_ARTIFACT_VIOLATION",
+            "detail": "INTERNAL_MACHINE_ENUM_VISIBLE:RATE_LIMITED",
+            "resolution": "UNRESOLVED",
+            "execution_blocking": True,
+        }
+    )
+
+    accepted = build_canonical_final_state(state)
+
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert not any(
+        item.get("category") == "FINAL_ARTIFACT_VIOLATION"
+        for item in accepted["evidence_audit"]
+    )
+
+
+def test_jsf_financing_language_cannot_bypass_observable_fact_boundary():
+    state = _jp_state()
+    state["market_report"] = (
+        "## 技术面\n价格走势承压。\n\n"
+        "## 融券供需\n融券大幅减少，空头力量衰竭。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+
+    assert "价格走势承压" in artifact
+    assert "空头力量衰竭" not in artifact
+
+
 def test_jsf_agent_subsection_is_removed_as_one_semantic_unit():
     state = _jp_state()
     state["market_report"] = (

@@ -5,9 +5,11 @@ checkpoint flag, must win over the interactive research-depth selection — the 
 must not clobber an env-configured value back to a prompt/flag default.
 """
 
+from io import StringIO
 from unittest import mock
 
 import pytest
+from rich.console import Console
 
 import cli.main as m
 
@@ -67,3 +69,33 @@ def test_checkpoint_flag_overrides_env(flag):
     with mock.patch.object(m, "DEFAULT_CONFIG", patched):
         cfg = m._build_run_config(SELECTIONS, checkpoint=flag)
     assert cfg["checkpoint_enabled"] is flag
+
+
+def test_japan_cli_displays_only_canonical_accepted_report(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr(m, "console", Console(file=output, force_terminal=False))
+    state = {
+        "market_context": {"market": "JP"},
+        "market_report": "RAW AGENT PROSE MUST NOT APPEAR",
+        "accepted_report_markdown": "# 日本株レポート\n\n正規化済み本文。",
+        "final_output_contract": {"version": "v3", "status": "FINALIZED"},
+    }
+
+    m.display_complete_report(state)
+
+    rendered = output.getvalue()
+    assert "正規化済み本文" in rendered
+    assert "RAW AGENT PROSE" not in rendered
+
+
+def test_japan_cli_rejects_noncanonical_report(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr(m, "console", Console(file=output, force_terminal=False))
+    state = {
+        "market_context": {"market": "JP"},
+        "market_report": "raw report",
+        "final_output_contract": {"version": "v3", "status": "BLOCKED"},
+    }
+
+    with pytest.raises(ValueError, match="not an accepted canonical"):
+        m.display_complete_report(state)

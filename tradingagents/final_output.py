@@ -64,7 +64,10 @@ _EXECUTION_LINE = re.compile(
     r"入场(?:价)?|建仓价|止损(?:价)?|止盈|目标价|仓位(?:上限)?)\s*[:：|]",
     re.I,
 )
-_JSF_CLAIM = re.compile(r"(?:\bJSF\b|日证金|日證金|貸株|贷株)", re.I)
+_JSF_CLAIM = re.compile(
+    r"(?:\bJSF\b|日证金|日證金|貸株|贷株|借券|融券|融資|融资|securities\s+finance)",
+    re.I,
+)
 _EXECUTION_INSTRUCTIONS = re.compile(
     r"(?:严守|严格|设置|设定|执行|触发|强制)?(?:止损|止盈)|强制离场|"
     r"(?:小|轻|重|试探|少量)[仓倉](?:位)?|"
@@ -122,6 +125,15 @@ _INTERNAL_STATUS = {
     "NO_CONFIRMED_TREND": "趋势未确认",
     "UNCONFIRMED": "未确认",
     "INCOMPLETE": "不完整",
+    "AUTH_REQUIRED": "需要认证",
+    "RATE_LIMITED": "请求频率受限",
+    "TIMEOUT": "请求超时",
+    "API_ERROR": "数据源请求失败",
+    "FETCH_FAILED": "数据获取失败",
+    "PARSE_FAILED": "数据解析失败",
+    "INVALID_RESPONSE": "数据源响应无效",
+    "LOW_SAMPLE": "样本量不足",
+    "DISABLED": "未启用",
     "VENDOR_FORWARD_ESTIMATE": "供应商远期估计",
     "COMPANY_GUIDANCE": "公司业绩指引",
     "ANALYST_CONSENSUS": "分析师一致预期",
@@ -149,7 +161,18 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
 
     raw_outputs = _snapshot_agent_outputs(result)
     result["raw_agent_outputs"] = raw_outputs
-    audit = list(result.get("evidence_audit") or [])
+    # Artifact violations describe one concrete rendered candidate.  Archived
+    # state can be re-accepted under a newer contract, so carry forward the
+    # evidence audit but recompute final-artifact findings from the new exact
+    # accepted_report_markdown below.
+    audit = [
+        item
+        for item in (result.get("evidence_audit") or [])
+        if not (
+            isinstance(item, Mapping)
+            and item.get("category") == "FINAL_ARTIFACT_VIOLATION"
+        )
+    ]
 
     for field in _REPORT_FIELDS:
         value = result.get(field)
@@ -1291,27 +1314,13 @@ def _validate_final_artifact(
     *,
     accepted_report: str,
 ) -> list[str]:
-    parts: list[str] = []
-    for field in _REPORT_FIELDS:
-        value = state.get(field)
-        if isinstance(value, str):
-            parts.append(value)
-    for field in _DEBATE_FIELDS:
-        debate = state.get(field)
-        if isinstance(debate, Mapping):
-            parts.extend(value for value in debate.values() if isinstance(value, str))
-    issues = validate_final_report_text(
+    # The accepted report is the sole user artifact.  Raw reports and debate
+    # histories remain available in full_agent_log for technical audit, but
+    # validating those omitted fragments here would let non-published prose
+    # falsely block a clean canonical artifact.
+    return validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
-    # Omitted fragments cannot bypass the contract through a secondary view.
-    issues.extend(
-        validate_final_report_text(
-            "\n".join(parts), execution_allowed=execution_allowed, check_structure=False
-        )
-    )
-    for part in parts:
-        issues.extend(_markdown_structure_issues(part))
-    return list(dict.fromkeys(issues))
 
 
 def validate_final_report_text(
