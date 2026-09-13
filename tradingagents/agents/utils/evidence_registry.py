@@ -65,10 +65,16 @@ def build_run_manifest(
         )
         if key in config
     }
+    llm_runtime = {
+        "provider": config.get("llm_provider"),
+        "deep_model": config.get("deep_think_llm"),
+        "quick_model": config.get("quick_think_llm"),
+    }
     digest_payload = {
         "market": market_context.get("market"),
         "symbol": market_context.get("symbol"),
         "config": safe_config,
+        "llm_runtime": llm_runtime,
     }
     return {
         "run_id": str(uuid.uuid4()),
@@ -76,6 +82,7 @@ def build_run_manifest(
         "git_branch": branch,
         "git_dirty": _git_dirty(repo),
         "analysis_as_of": str(analysis_as_of),
+        **llm_runtime,
         "runtime_timestamp_jst": datetime.now(_JST).isoformat(),
         "cache_contract_versions": {
             "japan_bundle": "stage8-v1",

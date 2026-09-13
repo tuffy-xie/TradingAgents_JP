@@ -223,11 +223,19 @@ def test_run_manifest_discloses_worktree_state_without_secrets():
     manifest = build_run_manifest(
         analysis_as_of="2026-08-31",
         market_context={"market": "JP", "symbol": "5801.T"},
-        config={"max_debate_rounds": 1},
+        config={
+            "max_debate_rounds": 1,
+            "llm_provider": "minimax",
+            "deep_think_llm": "MiniMax-M3",
+            "quick_think_llm": "MiniMax-M2.7-highspeed",
+        },
     )
 
     assert manifest["git_head"]
     assert manifest["git_dirty"] in {True, False}
+    assert manifest["provider"] == "minimax"
+    assert manifest["deep_model"] == "MiniMax-M3"
+    assert manifest["quick_model"] == "MiniMax-M2.7-highspeed"
     assert "api_key" not in str(manifest).lower()
 
 

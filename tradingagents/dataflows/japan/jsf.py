@@ -137,7 +137,10 @@ def _balance_freshness(items: list[MarketInformation], analysis_as_of: date):
     return assess_japan_session_data(
         max((item.timestamp.date() for item in items), default=None),
         analysis_as_of,
-        native_cadence="JSF_CONFIRMED_BALANCE_EACH_BUSINESS_DAY_11:30",
+        # Publication lifecycle is carried separately by publication_status.
+        # A fresh preliminary or unknown observation must not inherit a
+        # misleading "CONFIRMED" cadence label.
+        native_cadence="JSF_SECURITIES_FINANCE_BALANCE_BUSINESS_DAY",
     )
 
 

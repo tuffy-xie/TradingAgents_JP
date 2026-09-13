@@ -20,6 +20,7 @@ from tradingagents.dataflows.japan.jquants import (
     compare_daily_ohlcv,
 )
 from tradingagents.dataflows.japan.jsf import (
+    _balance_freshness,
     build_supply_demand_trend,
     normalise_balances,
     normalise_premium_charges,
@@ -585,6 +586,9 @@ def test_jsf_unknown_publication_status_is_not_promoted():
     ).encode("cp932")
     item = normalise_balances(balances, resolve_market_context("6981.T"))[0]
     assert item.metadata["publication_status"] == "UNKNOWN"
+    freshness = _balance_freshness([item], __import__("datetime").date(2026, 9, 1))
+    assert freshness.status == "LATEST_AVAILABLE"
+    assert "CONFIRMED" not in freshness.native_cadence
 
 
 @pytest.mark.unit

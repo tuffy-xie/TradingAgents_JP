@@ -37,7 +37,7 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.final_output import build_canonical_final_state
 from tradingagents.llm_clients import create_llm_client
 from tradingagents.reporting import write_report_tree
-from tradingagents.secret_redaction import sanitize_data
+from tradingagents.secret_redaction import safe_exception_text, sanitize_data
 
 from .checkpointer import checkpoint_step, clear_checkpoint, get_checkpointer, thread_id
 from .conditional_logic import ConditionalLogic
@@ -522,7 +522,7 @@ class TradingAgentsGraph:
                     trace.append(chunk)
             # Streamed chunks are per-node deltas. Merge them so the returned
             # state matches what graph.invoke() yields in the non-debug path.
-            final_state = {}
+            final_state = dict(init_agent_state)
             for chunk in trace:
                 final_state.update(chunk)
         else:
@@ -540,11 +540,20 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Store decision for deferred reflection on the next same-ticker run.
-        self.memory_log.store_decision(
-            ticker=company_name,
-            trade_date=trade_date,
-            final_trade_decision=final_state["final_trade_decision"],
-        )
+        try:
+            self.memory_log.store_decision(
+                ticker=company_name,
+                trade_date=trade_date,
+                final_trade_decision=final_state["final_trade_decision"],
+            )
+        except Exception as exc:
+            # Reflection memory is supplemental.  A read-only filesystem or
+            # other persistence failure must not turn a completed, canonical
+            # analysis into a failed run.
+            logger.warning(
+                "Decision memory persistence skipped: %s",
+                safe_exception_text(exc),
+            )
 
         # Clear checkpoint on successful completion to avoid stale state.
         if self.config.get("checkpoint_enabled"):

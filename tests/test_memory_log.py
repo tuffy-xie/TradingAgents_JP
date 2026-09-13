@@ -869,3 +869,55 @@ class TestLegacyRemoval:
         assert len(entries) == 1
         assert entries[0]["ticker"] == "NVDA"
         assert entries[0]["pending"] is True
+
+    def test_memory_persistence_failure_does_not_fail_completed_run(
+        self, tmp_path, caplog
+    ):
+        """Supplemental reflection storage cannot invalidate canonical output."""
+        import functools
+        import logging
+
+        fake_state = {
+            "final_trade_decision": "Rating: Hold\nObserve NVDA.",
+            "company_of_interest": "NVDA",
+            "trade_date": "2026-01-10",
+            "market_report": "",
+            "sentiment_report": "",
+            "news_report": "",
+            "fundamentals_report": "",
+            "investment_debate_state": {
+                "bull_history": "", "bear_history": "", "history": "",
+                "current_response": "", "judge_decision": "",
+            },
+            "investment_plan": "",
+            "trader_investment_plan": "",
+            "risk_debate_state": {
+                "aggressive_history": "", "conservative_history": "",
+                "neutral_history": "", "history": "", "judge_decision": "",
+                "current_aggressive_response": "", "current_conservative_response": "",
+                "current_neutral_response": "", "count": 1, "latest_speaker": "",
+            },
+        }
+        mock_graph = MagicMock()
+        mock_graph.memory_log.store_decision.side_effect = PermissionError(
+            "memory path is read-only"
+        )
+        mock_graph.log_states_dict = {}
+        mock_graph.debug = False
+        mock_graph.config = {"results_dir": str(tmp_path)}
+        mock_graph.graph.invoke.return_value = fake_state
+        mock_graph.propagator.create_initial_state.return_value = fake_state
+        mock_graph.propagator.get_graph_args.return_value = {}
+        mock_graph.process_signal.return_value = "Hold"
+        mock_graph._run_graph = functools.partial(
+            TradingAgentsGraph._run_graph, mock_graph
+        )
+
+        with caplog.at_level(logging.WARNING):
+            state, signal = TradingAgentsGraph.propagate(
+                mock_graph, "NVDA", "2026-01-10"
+            )
+
+        assert state["final_trade_decision"].startswith("Rating: Hold")
+        assert signal == "Hold"
+        assert "Decision memory persistence skipped" in caplog.text
