@@ -663,6 +663,81 @@ def _sentiment_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
     ]
 
 
+def render_japan_sentiment_report(bundle: Mapping[str, Any] | None) -> str:
+    """Render the sole user-facing JP sentiment aggregate from source data.
+
+    The Sentiment Analyst still reasons over the source context and its raw
+    narrative remains in ``full_agent_log``.  The published run-level band,
+    score, confidence and counts come only from the canonical investor/social
+    aggregate so an LLM cannot introduce a second authority.
+    """
+    items = [
+        item
+        for item in (bundle or {}).get("items", [])
+        if isinstance(item, Mapping)
+        and item.get("source_type") == "japan_investor_sentiment_aggregate"
+        and item.get("status") == "OK"
+        and isinstance(item.get("metadata"), Mapping)
+    ]
+    if not items:
+        return "## 日本投资者与社交情绪\n\n本次没有可用的投资者或社交情绪样本。"
+    latest = max(items, key=_item_timestamp_sort_key)
+    metadata = latest["metadata"]
+    sample_count = metadata.get("sample_count")
+    score = metadata.get("sentiment_score")
+    if not isinstance(sample_count, int) or sample_count <= 0 or not isinstance(
+        score, (int, float)
+    ):
+        return "## 日本投资者与社交情绪\n\n本次没有可用的投资者或社交情绪样本。"
+
+    lines = [
+        "## 日本投资者与社交情绪",
+        f"- 综合方向：{_sentiment_band(float(score))}",
+        f"- 来源原生分数：{float(score):.4g}",
+        f"- 置信度：{_sentiment_confidence(metadata.get('confidence'), sample_count)}",
+        f"- 样本：{sample_count} 条（正面 {metadata.get('positive_count', 0)} / "
+        f"中性 {metadata.get('neutral_count', 0)} / 负面 {metadata.get('negative_count', 0)}）",
+    ]
+    if metadata.get("latest_post_date"):
+        lines.append(f"- 最新样本日期：{metadata['latest_post_date']}")
+
+    windows = metadata.get("time_window")
+    if isinstance(windows, Mapping):
+        rows = []
+        for label in ("1D", "3D", "7D"):
+            value = windows.get(label)
+            if not isinstance(value, Mapping) or value.get("status") != "OK":
+                continue
+            count = value.get("sample_count")
+            window_score = value.get("sentiment_score")
+            if not isinstance(count, int) or not isinstance(window_score, (int, float)):
+                continue
+            rows.append(
+                f"| {label} | {count} | {value.get('positive_count', 0)} | "
+                f"{value.get('neutral_count', 0)} | {value.get('negative_count', 0)} | "
+                f"{float(window_score):.4g} |"
+            )
+        if rows:
+            lines.extend(
+                [
+                    "",
+                    "### 分析窗口",
+                    "",
+                    "| 窗口 | 样本数 | 正面 | 中性 | 负面 | 来源原生分数 |",
+                    "|---|---:|---:|---:|---:|---:|",
+                    *rows,
+                ]
+            )
+    lines.extend(
+        [
+            "",
+            "- 口径说明：只有投资者和社交样本参与方向与分数计算；"
+            "新闻及宏观数据仅作背景，不参与情绪聚合。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _sentiment_band(score: float) -> str:
     if score >= 0.5:
         return "偏多"

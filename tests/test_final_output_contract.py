@@ -162,7 +162,7 @@ def test_canonical_final_state_owns_financial_and_execution_output():
         for item in accepted["evidence_audit"]
         if item.get("category") == "UNSUPPORTED_CLAIM"
     )
-    assert violation["resolution"] == "RESOLVED_AFTER_FINAL_ARTIFACT_VALIDATION"
+    assert violation["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
     assert violation["execution_blocking"] is False
 
 
@@ -405,7 +405,7 @@ def test_old_finalized_contract_is_reaccepted_instead_of_bypassing_execution_gat
     state["market_report"] = "方向偏空。激进者可小仓做空。"
     accepted = build_canonical_final_state(state)
     assert accepted["market_report"] == "方向偏空。"
-    assert accepted["final_output_contract"]["version"] == "v3"
+    assert accepted["final_output_contract"]["version"] == "v4"
     assert build_canonical_final_state(accepted) == accepted
 
 
@@ -581,7 +581,7 @@ def test_known_transport_status_is_localized_in_user_artifact():
 
     assert accepted["final_output_contract"]["status"] == "FINALIZED"
     assert "RATE_LIMITED" not in artifact
-    assert "请求频率受限" in artifact
+    assert "本次没有可用的投资者或社交情绪样本" in artifact
 
 
 def test_technical_debate_history_does_not_block_clean_user_artifact(tmp_path):

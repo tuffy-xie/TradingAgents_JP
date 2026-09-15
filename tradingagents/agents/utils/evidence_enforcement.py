@@ -19,6 +19,12 @@ from typing import Any
 # second digit (``FY2`` + ``027``), which produced corrupt output such as
 # ``FY2DATA_UNAVAILABLE``.
 _NUMBER = re.compile(r"(?<![A-Za-z0-9_])[-+]?\d[\d,]*(?:\.\d+)?%?")
+_HEADING_ORDINAL = re.compile(
+    r"^(?P<heading>#{1,6}\s+)"
+    r"(?P<ordinal>(?:\d+(?:\.\d+)?[.)]?|[一二三四五六七八九十百千万]+[、.]|"
+    r"[IVXLCDM]+[.)])\s+)(?P<body>.*)$",
+    re.I,
+)
 _CURRENT_PRICE = re.compile(r"(?:current\s+price|spot\s+price|当前(?:股)?价|现价|株価)", re.I)
 _GUIDANCE = re.compile(r"(?:company\s+guidance|guidance|公司指引|业绩指引)", re.I)
 _CONSENSUS = re.compile(r"(?:analyst\s+(?:consensus|estimate)|consensus|分析师(?:一致预期|预测)|市场预期)", re.I)
@@ -385,6 +391,19 @@ def _enforce_unavailable_social_source(
 
 def _clean_line(line: str, clean_clause) -> str:
     """Apply a downgrade to complete sentences, never isolated number tokens."""
+    ending = "\n" if line.endswith("\n") else ""
+    content = line[:-1] if ending else line
+    heading = _HEADING_ORDINAL.match(content)
+    if heading:
+        # Structural ordinals such as ``3.1`` are not evidence values.  Keep
+        # validating dates and metrics in the heading body, but do not make a
+        # post-pruning renumber operation look like a new unsupported claim.
+        return (
+            heading.group("heading")
+            + heading.group("ordinal")
+            + clean_clause(heading.group("body"))
+            + ending
+        )
     parts = re.split(r"(?<=[。！？；;])", line)
     return "".join(clean_clause(part) for part in parts if part)
 
@@ -477,6 +496,12 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
     all_numbers.update(_numbers_in(state.get("trade_constraints") or {}))
     all_numbers.update(_numbers_in(state.get("decision_context") or {}))
     all_numbers.update(_numbers_in(state.get("validated_execution") or {}))
+    validation = state.get("validated_execution") or {}
+    if isinstance(validation, Mapping):
+        for key in ("risk_pct", "position_pct", "portfolio_stop_risk_pct"):
+            value = validation.get(key)
+            if isinstance(value, (int, float)):
+                all_numbers.add(f"{_normalise_number(str(value))}%")
     # A current Market Analyst tool report is a separate upstream observation;
     # stale Japan-bundle values with the same numeric token must not invalidate
     # the tool result passed to downstream agents.

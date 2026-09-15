@@ -577,6 +577,7 @@ class TradingAgentsGraph:
             "run_manifest": final_state.get("run_manifest", {}),
             "validated_execution": final_state.get("validated_execution", {}),
             "final_output_contract": final_state.get("final_output_contract", {}),
+            "accepted_report_markdown": final_state.get("accepted_report_markdown", ""),
             "raw_agent_outputs": final_state.get("raw_agent_outputs", {}),
             "market_report": final_state["market_report"],
             "sentiment_report": final_state["sentiment_report"],
@@ -594,6 +595,7 @@ class TradingAgentsGraph:
                 ],
             },
             "trader_investment_decision": final_state["trader_investment_plan"],
+            "trader_investment_plan": final_state["trader_investment_plan"],
             "risk_debate_state": {
                 "aggressive_history": final_state["risk_debate_state"]["aggressive_history"],
                 "conservative_history": final_state["risk_debate_state"]["conservative_history"],

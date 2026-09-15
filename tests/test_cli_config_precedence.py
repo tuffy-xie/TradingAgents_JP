@@ -5,6 +5,7 @@ checkpoint flag, must win over the interactive research-depth selection — the 
 must not clobber an env-configured value back to a prompt/flag default.
 """
 
+import hashlib
 from io import StringIO
 from unittest import mock
 
@@ -74,11 +75,16 @@ def test_checkpoint_flag_overrides_env(flag):
 def test_japan_cli_displays_only_canonical_accepted_report(monkeypatch):
     output = StringIO()
     monkeypatch.setattr(m, "console", Console(file=output, force_terminal=False))
+    report = "# 日本株レポート\n\n正規化済み本文。"
     state = {
         "market_context": {"market": "JP"},
         "market_report": "RAW AGENT PROSE MUST NOT APPEAR",
-        "accepted_report_markdown": "# 日本株レポート\n\n正規化済み本文。",
-        "final_output_contract": {"version": "v3", "status": "FINALIZED"},
+        "accepted_report_markdown": report,
+        "final_output_contract": {
+            "version": "v4",
+            "status": "FINALIZED",
+            "accepted_report_sha256": hashlib.sha256(report.encode()).hexdigest(),
+        },
     }
 
     m.display_complete_report(state)

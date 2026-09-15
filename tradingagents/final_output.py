@@ -9,16 +9,21 @@ original agent output is retained separately for the technical agent log.
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 from collections.abc import Mapping
 from typing import Any
 
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.utils.execution_validation import validate_execution_plan
 from tradingagents.dataflows.japan.context import (
     render_japan_financial_report,
     render_japan_report_sections,
+    render_japan_sentiment_report,
 )
+from tradingagents.report_artifacts import render_markdown_fragment, validate_rendered_html
 from tradingagents.report_consistency import canonical_report_metadata
+from tradingagents.secret_redaction import sanitize_text
 
 _REPORT_FIELDS = (
     "market_report",
@@ -30,7 +35,7 @@ _REPORT_FIELDS = (
     "final_trade_decision",
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
-_CONTRACT_VERSION = "v3"
+_CONTRACT_VERSION = "v4"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -40,6 +45,7 @@ _VIOLATION_CATEGORIES = {
     "ARITHMETIC_MISMATCH",
 }
 _CURRENT_FINANCIAL_HEADINGS = (
+    "current financial authority summary",
     "latest actual",
     "current company guidance",
     "japan financial authority assessment",
@@ -48,6 +54,7 @@ _CURRENT_FINANCIAL_HEADINGS = (
     "最新实绩",
     "管理层指引",
     "公司指引",
+    "当前财务权威摘要",
 )
 _EXECUTION_HEADING = re.compile(
     r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
@@ -60,8 +67,9 @@ _WITHHELD_EXECUTION_HEADINGS = {
     "执行许可",
 }
 _EXECUTION_LINE = re.compile(
-    r"(?:entry(?: price)?|stop(?:[ -]?loss)?|price target|position(?: sizing)?|"
-    r"入场(?:价)?|建仓价|止损(?:价)?|止盈|目标价|仓位(?:上限)?)\s*[:：|]",
+    r"(?:entry(?: price| condition)?|stop(?:[ -]?loss)?|price target|position(?: sizing)?|"
+    r"入场(?:价|条件)?|建仓价|止损(?:价)?|止盈|目标价|仓位(?:上限)?)"
+    r"(?:\*\*)?\s*[:：|]",
     re.I,
 )
 _JSF_CLAIM = re.compile(
@@ -86,8 +94,8 @@ _POSITION_RECOMMENDATION = re.compile(
 )
 _POSITION_DIRECTIVE = re.compile(
     r"(?:(?:仓位|倉位|敞口|净暴露|position|allocation)"
-    r"[^。；;\n]{0,32}(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制)|"
-    r"(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制)"
+    r"[^。；;\n]{0,32}(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制|降低|增加)|"
+    r"(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制|降低|增加)"
     r"[^。；;\n]{0,32}(?:仓位|倉位|敞口|净暴露|position|allocation))",
     re.I,
 )
@@ -192,12 +200,35 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 )
         result[debate_field] = accepted
 
+    # Replaying a pre-v4 persisted state must also upgrade the execution
+    # semantic contract. Earlier validators accepted numeric plans even when
+    # the Trader action was Hold (defined by the product prompts as no action).
+    if (
+        contract
+        and contract.get("version") != _CONTRACT_VERSION
+        and (result.get("validated_execution") or {}).get("status") == "OK"
+    ):
+        trader_text = result.get("trader_investment_plan")
+        if isinstance(trader_text, str):
+            upgraded = validate_execution_plan(trader_text)
+            # Contract upgrades may revoke an execution authorization (for
+            # example, Hold is explicitly non-executing), but never manufacture
+            # a new authorization that the persisted run did not already have.
+            if upgraded.get("status") != "OK":
+                result["validated_execution"] = upgraded
+
     financial = render_japan_financial_report(result)
     if financial:
         base = _remove_current_financial_sections(result.get("fundamentals_report", ""))
         result["fundamentals_report"] = _fold_empty_sections(
             (base.rstrip() + "\n\n" + financial).strip()
         )
+
+    # The source-native aggregate is the only published JP sentiment
+    # authority. Agent prose remains available in raw_agent_outputs/full log.
+    result["sentiment_report"] = render_japan_sentiment_report(
+        result.get("japan_data_bundle")
+    )
 
     execution_allowed = (result.get("validated_execution") or {}).get("status") == "OK"
     if execution_allowed:
@@ -216,11 +247,12 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     result = _publicize_state_text(result)
-    accepted_report = compose_user_report_markdown(result)
+    accepted_report = sanitize_text(compose_user_report_markdown(result))
     artifact_issues = _validate_final_artifact(
         result, execution_allowed, accepted_report=accepted_report
     )
-    audit = _finalize_audit(audit, artifact_ok=not artifact_issues)
+    audit, audit_issues = _finalize_audit(audit, result)
+    artifact_issues = list(dict.fromkeys([*artifact_issues, *audit_issues]))
     for issue in artifact_issues:
         audit.append(
             {
@@ -237,6 +269,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         # Archived web states use this historical key. Keep it as a display
         # alias of the accepted plan so raw legacy prose cannot bypass the gate.
         result["trader_investment_decision"] = result["trader_investment_plan"]
+    artifact_sha256 = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
     result["final_output_contract"] = {
         "version": _CONTRACT_VERSION,
         "status": "FINALIZED" if not artifact_issues else "BLOCKED",
@@ -244,6 +277,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "execution_allowed": execution_allowed,
         "audit_finalized_after_artifact_validation": True,
         "artifact_issues": artifact_issues,
+        "accepted_report_sha256": artifact_sha256,
+        "audit_closure_status": "CLOSED" if not audit_issues else "UNRESOLVED",
     }
     return result
 
@@ -266,13 +301,13 @@ def compose_user_report_markdown(
     manifest = state.get("run_manifest") or {}
     generated = manifest.get("runtime_timestamp_jst")
     header = [
-        f"# Trading Analysis Report: {display_symbol}",
+        f"# TradingAgents 日本股票分析报告：{display_symbol}",
         "",
-        f"Market: {metadata['market']} | Currency: {metadata['currency']} | "
-        f"Instrument type: {instrument_type}",
+        f"市场：{metadata['market']} | 货币：{metadata['currency']} | "
+        f"标的类型：{instrument_type}",
     ]
     if generated:
-        header.extend(["", f"Generated: {generated}"])
+        header.extend(["", f"生成时间：{generated}"])
 
     sections: list[str] = []
     japan_section = render_japan_report_sections(state.get("japan_data_bundle"))
@@ -280,10 +315,10 @@ def compose_user_report_markdown(
         sections.append(japan_section)
 
     analysts = [
-        ("Market Analyst", state.get("market_report")),
-        ("Sentiment Analyst", state.get("sentiment_report")),
-        ("News Analyst", state.get("news_report")),
-        ("Fundamentals Analyst", state.get("fundamentals_report")),
+        ("市场分析", state.get("market_report")),
+        ("情绪分析", state.get("sentiment_report")),
+        ("新闻分析", state.get("news_report")),
+        ("基本面分析", state.get("fundamentals_report")),
     ]
     analyst_parts = [
         _agent_report_section(name, text)
@@ -291,22 +326,22 @@ def compose_user_report_markdown(
         if isinstance(text, str) and text.strip()
     ]
     if analyst_parts:
-        sections.append("## I. Analyst Team Reports\n\n" + "\n\n".join(analyst_parts))
+        sections.append("## I. 分析师报告\n\n" + "\n\n".join(analyst_parts))
 
     research = state.get("investment_debate_state") or {}
     if isinstance(research, Mapping) and isinstance(research.get("judge_decision"), str):
         text = research["judge_decision"].strip()
         if text:
             sections.append(
-                "## II. Research Team Decision\n\n"
-                + _agent_report_section("Research Manager", text)
+                "## II. 研究团队结论\n\n"
+                + _agent_report_section("研究经理", text)
             )
 
     trader = state.get("trader_investment_plan")
     if isinstance(trader, str) and trader.strip():
         sections.append(
-            "## III. Trading Team Plan\n\n"
-            + _agent_report_section("Trader", trader)
+            "## III. 交易团队计划\n\n"
+            + _agent_report_section("交易员", trader)
         )
 
     risk = state.get("risk_debate_state") or {}
@@ -314,8 +349,8 @@ def compose_user_report_markdown(
         text = risk["judge_decision"].strip()
         if text:
             sections.append(
-                "## IV. Portfolio Manager Decision\n\n"
-                + _agent_report_section("Portfolio Manager", text)
+                "## IV. 投资组合经理结论\n\n"
+                + _agent_report_section("投资组合经理", text)
             )
 
     return normalize_markdown_structure(
@@ -341,6 +376,10 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
     contract = state.get("final_output_contract") or {}
     if contract.get("status") != "FINALIZED" or contract.get("version") != _CONTRACT_VERSION:
         raise ValueError("Japan report input is not an accepted canonical final state")
+    accepted = state.get("accepted_report_markdown")
+    expected_hash = contract.get("accepted_report_sha256")
+    if not isinstance(accepted, str) or hashlib.sha256(accepted.encode("utf-8")).hexdigest() != expected_hash:
+        raise ValueError("Japan accepted report does not match its canonical digest")
 
 
 def _snapshot_agent_outputs(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -365,7 +404,21 @@ def _accept_text(
                 "execution_blocking": True,
             }
         )
-    return _fold_empty_sections(_remove_jsf_agent_claims(checked.text)), audit
+    return _fold_empty_sections(
+        _remove_generation_process_prose(_remove_jsf_agent_claims(checked.text))
+    ), audit
+
+
+_GENERATION_PROCESS_PROSE = re.compile(
+    r"(?im)^\s*(?:based\s+on\s+the\s+(?:available|collected|comprehensive)[^\n]*,\s*)?"
+    r"(?:i(?:'ll|\s+will|\s+am\s+going\s+to)|we(?:'ll|\s+will))\s+"
+    r"(?:now\s+)?(?:compile|prepare|provide|write|generate)\b[^\n]*(?:report|analysis)[^\n]*\.?\s*$"
+)
+
+
+def _remove_generation_process_prose(text: str) -> str:
+    """Remove model process narration, not research content."""
+    return _GENERATION_PROCESS_PROSE.sub("", text)
 
 
 def _agent_for_field(field: str) -> str:
@@ -542,6 +595,9 @@ _NUMBERED_LIST = re.compile(
     r"^(?P<indent>\s*)(?P<number>\d+|[一二三四五六七八九十百千万]+)"
     r"(?P<punct>[.、)])(?P<space>\s+)(?P<body>.+?)\s*$"
 )
+_DECIMAL_HEADING = re.compile(
+    r"^(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<body>.+?)\s*$"
+)
 _SEPARATOR = re.compile(r"^\s*(?P<char>[-*_])(?:\s*(?P=char)){2,}\s*$")
 _CIRCLED_LIST = re.compile(r"^(?P<indent>\s*)(?P<number>[①②③④⑤⑥⑦⑧⑨⑩])(?P<space>\s+)(?P<body>.+?)\s*$")
 _HEADING_COUNT_CLAIM = re.compile(
@@ -620,7 +676,7 @@ def _is_ordinary_year(value: str) -> bool:
 def _normalize_heading_numbers(lines: list[str]) -> list[str]:
     """Renumber numbered sibling headings without touching ordinary numbers."""
     output = list(lines)
-    stack: list[tuple[int, str]] = []
+    stack: list[tuple[int, str, int | None]] = []
     counters: dict[tuple[int, tuple[str, ...], str], int] = {}
     for index, line in enumerate(output):
         level = _heading_level(line)
@@ -631,7 +687,24 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
             continue
         while stack and stack[-1][0] >= level:
             stack.pop()
-        parent = tuple(title for _, title in stack)
+        parent = tuple(title for _, title, _ in stack)
+        decimal = _DECIMAL_HEADING.match(match.group(2))
+        if decimal:
+            key = (level, parent, "decimal")
+            counters[key] = counters.get(key, 0) + 1
+            minor = counters[key]
+            parent_number = next(
+                (number for _, _, number in reversed(stack) if number is not None),
+                None,
+            )
+            major = parent_number or int(decimal.group("major"))
+            line_ending = "\n" if line.endswith("\n") else ""
+            output[index] = (
+                f"{match.group(1)} {major}.{minor} {decimal.group('body')}"
+                f"{line_ending}"
+            )
+            stack.append((level, f"{major}.{minor} {decimal.group('body')}", minor))
+            continue
         numbered = _NUMBERED_HEADING.match(match.group(2))
         kind = _heading_number_kind(numbered) if numbered else "plain"
         key = (level, parent, kind)
@@ -640,11 +713,13 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
             kind = "plain"
             key = (level, parent, kind)
         # A non-numbered sibling starts a new heading sequence.
+        heading_number: int | None = None
         if not numbered:
             _reset_heading_counters(counters, level, parent)
         else:
             counters[key] = counters.get(key, 0) + 1
             number = counters[key]
+            heading_number = number
             kind = _heading_number_kind(numbered)
             replacement = (
                 str(number)
@@ -671,7 +746,7 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
                 f"{match.group(1)} {replacement}{punctuation}"
                 f"{space}{body}{line_ending}"
             )
-        stack.append((level, match.group(2)))
+        stack.append((level, output[index].strip().lstrip("# "), heading_number))
     return output
 
 
@@ -799,7 +874,14 @@ def _normalize_markdown_tables(lines: list[str]) -> list[str]:
             if len(cells) == len(header) and any(cells):
                 valid.append(row)
         if len(valid) > 2:
+            if result and result[-1].strip():
+                result.append("\n")
             result.extend(valid)
+            # Python-Markdown's table extension continues a table across a
+            # nonblank line.  A hard block boundary is therefore part of the
+            # accepted Markdown contract, not cosmetic whitespace.
+            if index < len(lines) and lines[index].strip():
+                result.append("\n")
     return result
 
 
@@ -892,6 +974,16 @@ def _markdown_structure_issues(text: str) -> list[str]:
     """Return structural defects that must never reach a user artifact."""
     lines = text.splitlines()
     issues: list[str] = []
+
+    normalized_heading_lines = _normalize_heading_numbers(
+        [line + "\n" for line in lines]
+    )
+    if any(
+        original.strip() != normalized.strip()
+        for original, normalized in zip(lines, normalized_heading_lines, strict=True)
+        if _heading_level(original) is not None
+    ):
+        issues.append("HEADING_NUMBERING_DISCONTINUITY")
 
     # Heading sequence validation mirrors the renumbering state machine.
     stack: list[tuple[int, str]] = []
@@ -1160,6 +1252,11 @@ def _prune_unapproved_execution(text: str) -> str:
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             lines.append(line)
             continue
+        # A structured execution field is one logical unit. Splitting it at a
+        # sentence boundary can orphan the dependent trigger clause and make
+        # an unapproved plan appear without its label.
+        if _EXECUTION_LINE.search(line):
+            continue
         if line.lstrip().startswith("|"):
             if not _execution_violation(line):
                 lines.append(line)
@@ -1318,9 +1415,12 @@ def _validate_final_artifact(
     # histories remain available in full_agent_log for technical audit, but
     # validating those omitted fragments here would let non-published prose
     # falsely block a clean canonical artifact.
-    return validate_final_report_text(
+    issues = validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
+    rendered = render_markdown_fragment(accepted_report)
+    issues.extend(validate_rendered_html(rendered))
+    return list(dict.fromkeys(issues))
 
 
 def validate_final_report_text(
@@ -1346,6 +1446,8 @@ def validate_final_report_text(
         if not execution_allowed:
             if _heading_level(line) and _is_execution_heading(line.lstrip("# ")):
                 issues.append("UNAPPROVED_EXECUTION_SECTION")
+            if _EXECUTION_LINE.search(line):
+                issues.append("UNVALIDATED_EXECUTABLE_PLAN")
             violation = _execution_violation(line)
             if violation:
                 issues.append(violation)
@@ -1359,20 +1461,65 @@ def validate_final_report_text(
     return list(dict.fromkeys(issues))
 
 
+def _published_field_text(state: Mapping[str, Any], field: str) -> str | None:
+    if field in {"market_report", "sentiment_report", "news_report", "fundamentals_report"}:
+        value = state.get(field)
+        return value if isinstance(value, str) else None
+    if field == "trader_investment_plan":
+        value = state.get(field)
+        return value if isinstance(value, str) else None
+    if field in {"investment_debate_state.judge_decision", "risk_debate_state.judge_decision"}:
+        outer, inner = field.split(".", 1)
+        container = state.get(outer)
+        value = container.get(inner) if isinstance(container, Mapping) else None
+        return value if isinstance(value, str) else None
+    return None
+
+
 def _finalize_audit(
-    audit: list[dict[str, Any]], *, artifact_ok: bool
-) -> list[dict[str, Any]]:
+    audit: list[dict[str, Any]], state: Mapping[str, Any]
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Close findings only against the exact field that will be published."""
     finalized: list[dict[str, Any]] = []
+    issues: list[str] = []
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
         if entry.get("category") in _VIOLATION_CATEGORIES or entry.get("warning"):
-            entry["resolution"] = (
-                "RESOLVED_AFTER_FINAL_ARTIFACT_VALIDATION"
-                if artifact_ok
-                else "UNRESOLVED"
-            )
-            entry["execution_blocking"] = not artifact_ok
+            field = str(entry.get("field") or "")
+            published = _published_field_text(state, field)
+            if published is None:
+                entry["resolution"] = "NOT_PUBLISHED_IN_FINAL_ARTIFACT"
+                entry["resolution_basis"] = "FIELD_EXCLUDED_FROM_ACCEPTED_REPORT"
+                entry["execution_blocking"] = False
+            else:
+                warning = entry.get("warning")
+                inspection_text = (
+                    _remove_current_financial_sections(published)
+                    if field == "fundamentals_report"
+                    else published
+                )
+                remaining = enforce_agent_output(
+                    state, inspection_text, _agent_for_field(field)
+                ).warnings
+                entry["published_field_sha256"] = hashlib.sha256(
+                    published.encode("utf-8")
+                ).hexdigest()
+                if warning and warning not in remaining:
+                    entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
+                    entry["resolution_basis"] = (
+                        "EXACT_PUBLISHED_FIELD_REVALIDATED_WITHOUT_WARNING"
+                    )
+                    entry["execution_blocking"] = False
+                elif not warning and entry.get("category") == "ARITHMETIC_MISMATCH":
+                    entry["resolution"] = "REPLACED_BY_VALIDATED_EXECUTION"
+                    entry["resolution_basis"] = "DETERMINISTIC_EXECUTION_BLOCK"
+                    entry["execution_blocking"] = False
+                else:
+                    entry["resolution"] = "UNRESOLVED"
+                    entry["execution_blocking"] = True
+                    issue = f"UNRESOLVED_EVIDENCE:{field}:{warning or entry.get('category')}"
+                    issues.append(issue)
         key = (
             entry.get("category"),
             entry.get("agent"),
@@ -1383,4 +1530,4 @@ def _finalize_audit(
         if key not in seen:
             finalized.append(entry)
             seen.add(key)
-    return finalized
+    return finalized, list(dict.fromkeys(issues))

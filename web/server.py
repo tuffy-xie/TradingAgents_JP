@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-import markdown as md
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +35,7 @@ from tradingagents.final_output import (
 )
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.llm_clients.model_catalog import MODEL_OPTIONS, get_model_options
+from tradingagents.report_artifacts import render_markdown_fragment, validate_rendered_html
 from tradingagents.report_consistency import canonical_report_metadata
 from tradingagents.secret_redaction import safe_exception_text, sanitize_data, sanitize_text
 
@@ -554,7 +554,17 @@ def _derive_action(decision: str) -> str:
 
 
 def _md(text: str) -> str:
-    return md.markdown(text, extensions=["tables", "fenced_code", "sane_lists", "nl2br"])
+    return render_markdown_fragment(text)
+
+
+def _accepted_portfolio_text(accepted_report: str) -> str:
+    """Return the final published decision section from the accepted artifact."""
+    positions = [
+        accepted_report.rfind(marker)
+        for marker in ("### 投资组合经理", "### Portfolio Manager")
+    ]
+    start = max(positions)
+    return accepted_report[start:] if start >= 0 else accepted_report
 
 
 def _json_path(dir_name: str, date: str) -> Path:
@@ -662,7 +672,13 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     metadata = canonical_report_metadata(data)
     ticker = metadata["symbol"]
     date = data.get("trade_date", "")
-    decision = data.get("final_trade_decision", "") or ""
+    accepted_report = data.get("accepted_report_markdown")
+    if metadata["market"] == "JP":
+        if not isinstance(accepted_report, str) or not accepted_report.strip():
+            raise ValueError("Canonical Japan report artifact is unavailable")
+        decision = _accepted_portfolio_text(accepted_report)
+    else:
+        decision = data.get("final_trade_decision", "") or ""
 
     def decision_field(label: str, default: str) -> str:
         match = re.search(
@@ -685,9 +701,6 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     summary = summary_match.group(1).strip() if summary_match else decision[:1200]
 
     if metadata["market"] == "JP":
-        accepted_report = data.get("accepted_report_markdown")
-        if not isinstance(accepted_report, str) or not accepted_report.strip():
-            raise ValueError("Canonical Japan report artifact is unavailable")
         sections_html = (
             '<section class="report-section canonical-report">'
             + _md(sanitize_text(accepted_report))
@@ -706,7 +719,12 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
         sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
     auto = "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""
 
-    return f"""<!DOCTYPE html>
+    generated = (
+        (data.get("run_manifest") or {}).get("runtime_timestamp_jst")
+        if metadata["market"] == "JP"
+        else datetime.now().strftime("%Y-%m-%d %H:%M")
+    )
+    document = f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
@@ -759,9 +777,10 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
   code {{ background:#f3f4f6; padding:1px 5px; border-radius:4px; font-size:13px; }}
   pre {{ background:#f9fafb; padding:12px; border-radius:8px; overflow:auto; }}
   blockquote {{ border-left:3px solid var(--line); margin:12px 0; padding:4px 14px; color:var(--muted); }}
+  @page {{ size:auto; margin:0; }}
   @media print {{
     body {{ background:#fff; }}
-    .page {{ box-shadow:none; max-width:none; padding:0 12px; }}
+    .page {{ box-shadow:none; max-width:none; padding:12mm; }}
     .toolbar {{ display:none; }}
     .report-cover {{ min-height:0; break-after:page; page-break-after:always; }}
     .report-section {{ break-inside:avoid-page; }}
@@ -775,7 +794,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
   <section class="report-cover">
     <div class="cover-brand">TRADINGAGENTS 研究<span>证券研究报告</span></div>
     <h1 class="cover-title">{html.escape(ticker)} <span>多智能体分析报告</span></h1>
-    <div class="cover-meta">分析日期 {html.escape(str(date))} ｜ 生成于 {datetime.now().strftime('%Y-%m-%d %H:%M')}</div>
+    <div class="cover-meta">分析日期 {html.escape(str(date))} ｜ 生成于 {html.escape(str(generated or date))}</div>
     <div class="cover-cards">
       <div class="cover-card"><small>投资评级</small><strong class="rating">{html.escape(rating)}</strong></div>
       <div class="cover-card"><small>目标价</small><strong>{html.escape(target)}</strong></div>
@@ -788,6 +807,13 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
 </div>
 </body>
 </html>"""
+    rendered_issues = validate_rendered_html(document)
+    if rendered_issues:
+        raise ValueError(
+            "Rendered report failed structural validation: "
+            + ", ".join(rendered_issues)
+        )
+    return document
 
 
 @app.get("/api/report/{ticker}/{date}", response_class=HTMLResponse)

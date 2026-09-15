@@ -10,6 +10,20 @@ from typing import Any
 _ENTRY = re.compile(r"(?:\*\*Entry Price\*\*|entry(?: price)?|入场(?:价)?|建仓价)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _STOP = re.compile(r"(?:\*\*Stop Loss\*\*|stop(?:[ -]?loss)?|止损(?:价)?)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _POSITION = re.compile(r"(?:\*\*Maximum Position\*\*|\*\*Position Sizing\*\*|position(?: sizing)?|maximum position|仓位上限|仓位)\s*[:：=]?\s*([\d.]+)\s*%", re.I)
+_ACTION = re.compile(
+    r"(?:\*\*Action\*\*|action|最终交易建议|交易动作)\s*[:：=]?\s*"
+    r"(?:\*\*)?(Buy|Hold|Sell|买入|持有|卖出|賣出)(?:\*\*)?",
+    re.I,
+)
+_ACTION_CANONICAL = {
+    "buy": "Buy",
+    "hold": "Hold",
+    "sell": "Sell",
+    "买入": "Buy",
+    "持有": "Hold",
+    "卖出": "Sell",
+    "賣出": "Sell",
+}
 _RISK_CLAUSE = re.compile(
     r"[^\n。！？;；]*(?:止损距离|stop(?:[ -]?loss)?\s+(?:distance|risk)|risk\s*(?:pct|percentage|%)|组合(?:止损)?损失|portfolio\s+(?:stop\s+)?risk)[^\n。！？;；]*[。！？;；]?",
     re.I,
@@ -18,13 +32,31 @@ _RISK_CLAUSE = re.compile(
 
 def validate_execution_plan(text: str) -> dict[str, Any]:
     """Calculate plan risk from model-chosen entry, stop, and position inputs."""
+    action_match = _ACTION.search(text or "")
+    action = (
+        _ACTION_CANONICAL[action_match.group(1).casefold()]
+        if action_match
+        else None
+    )
     entry = _first_decimal(_ENTRY, text)
     stop = _first_decimal(_STOP, text)
     position = _first_decimal(_POSITION, text)
+    if action == "Hold":
+        return {
+            "version": "v2",
+            "status": "DATA_UNAVAILABLE",
+            "detail": "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION",
+            "action": action,
+            "entry": _float(entry),
+            "stop": _float(stop),
+            "position_pct": _float(position),
+        }
     if entry is None or stop is None or entry <= 0:
         return {
+            "version": "v2",
             "status": "DATA_UNAVAILABLE",
             "detail": "ENTRY_OR_STOP_UNAVAILABLE",
+            "action": action,
             "entry": _float(entry),
             "stop": _float(stop),
             "position_pct": _float(position),
@@ -35,7 +67,9 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
         position * risk_pct / Decimal("100") if position is not None else None
     )
     return {
+        "version": "v2",
         "status": "OK",
+        "action": action,
         "entry": _float(entry),
         "stop": _float(stop),
         "distance": _float(distance),
