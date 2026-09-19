@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
-from .trading_calendar import latest_japan_trading_day, shift_japan_trading_days
+from .trading_calendar import latest_completed_japan_session, shift_japan_trading_days
 
 LATEST_AVAILABLE = "LATEST_AVAILABLE"
 STALE_SOURCE = "STALE_SOURCE"
@@ -44,6 +44,7 @@ def assess_japan_session_data(
     *,
     publication_lag_sessions: int = 0,
     native_cadence: str = "JPX_TRADING_SESSION",
+    now: datetime | None = None,
 ) -> FreshnessAssessment:
     """Assess a source whose expected observation is tied to TSE sessions.
 
@@ -53,7 +54,8 @@ def assess_japan_session_data(
     never inferred from the age of a returned record.
     """
     expected = shift_japan_trading_days(
-        latest_japan_trading_day(analysis_as_of), publication_lag_sessions
+        latest_completed_japan_session(analysis_as_of, now=now),
+        publication_lag_sessions,
     )
     if data_date is None:
         return FreshnessAssessment(

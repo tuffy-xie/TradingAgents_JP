@@ -10,6 +10,7 @@ from tradingagents.secret_redaction import safe_exception_text
 from .stockstats_utils import (
     StockstatsUtils,
     _assert_ohlcv_not_stale,
+    _filter_complete_ohlc_rows,
     _filter_japan_completed_sessions,
     filter_financials_by_date,
     load_ohlcv,
@@ -50,9 +51,12 @@ def get_YFin_data_online(
         data.index = data.index.tz_localize(None)
 
     data = _filter_japan_completed_sessions(data, end_date, symbol, canonical)
+    data = _filter_complete_ohlc_rows(data)
     if data.empty:
         raise NoMarketDataError(
-            symbol, canonical, "no completed daily bar is available as of the requested time"
+            symbol,
+            canonical,
+            "no complete daily OHLC bar is available as of the requested time",
         )
 
     # Reject a stale frame (e.g. a year-old partial response) before it is

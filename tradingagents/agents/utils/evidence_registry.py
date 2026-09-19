@@ -160,10 +160,11 @@ def capture_agent_evidence(
         if not content:
             continue
         numeric_tokens = sorted(_numeric_tokens(content))
+        unavailable = content.lstrip().startswith("NO_DATA_AVAILABLE")
         new_entries.append(
             _make_entry(
                 domain=_TOOL_DOMAINS.get(tool_name, _AGENT_DOMAINS.get(agent_name, "OTHER")),
-                claim_type="FACT",
+                claim_type="UNAVAILABLE" if unavailable else "FACT",
                 metric="tool_output",
                 value=content[:12000],
                 semantic_basis="TOOL_FACT",
@@ -171,9 +172,9 @@ def capture_agent_evidence(
                 source_type="TOOL_OUTPUT",
                 source_record_id=str(getattr(message, "tool_call_id", "") or "") or None,
                 analysis_as_of=analysis_as_of,
-                freshness="AS_OF_FILTERED",
+                freshness="DATA_UNAVAILABLE" if unavailable else "AS_OF_FILTERED",
                 verification_status="VERIFIED_TOOL_OUTPUT",
-                allowed=True,
+                allowed=not unavailable,
                 derivation={"numeric_tokens": numeric_tokens},
             )
         )

@@ -60,17 +60,31 @@ def _ensure_date_column(data: pd.DataFrame) -> pd.DataFrame:
 
 
 def _clean_dataframe(data: pd.DataFrame) -> pd.DataFrame:
-    """Normalize a stock DataFrame for stockstats: parse dates, drop invalid rows, fill price gaps."""
+    """Normalize a stock DataFrame without manufacturing missing OHLC values."""
     data = _ensure_date_column(data)
     data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
     data = data.dropna(subset=["Date"])
 
     price_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in data.columns]
     data[price_cols] = data[price_cols].apply(pd.to_numeric, errors="coerce")
-    data = data.dropna(subset=["Close"])
-    data[price_cols] = data[price_cols].ffill().bfill()
+    return _filter_complete_ohlc_rows(data)
 
-    return data
+
+def _filter_complete_ohlc_rows(data: pd.DataFrame) -> pd.DataFrame:
+    """Drop vendor placeholders which do not contain a complete price bar.
+
+    Some Yahoo responses include a new date with only ``Volume`` populated.
+    That date is not a completed candle and must not advance either freshness
+    or indicator authority.  For narrow fixtures/legacy frames containing only
+    ``Close``, the available price columns still define completeness.
+    """
+    if data is None or data.empty:
+        return data
+    required = [name for name in ("Open", "High", "Low", "Close") if name in data.columns]
+    if "Close" not in required:
+        return data.iloc[0:0]
+    numeric = data[required].apply(pd.to_numeric, errors="coerce")
+    return data.loc[numeric.notna().all(axis=1)].copy()
 
 
 def _coerce_ohlcv_dates(data: pd.DataFrame) -> pd.Series:
@@ -113,9 +127,15 @@ def _assert_ohlcv_not_stale(
     if pd.isna(requested):
         return
     requested = requested.normalize()
-    dates = _coerce_ohlcv_dates(data)
+    complete = _filter_complete_ohlc_rows(data)
+    dates = _coerce_ohlcv_dates(complete)
     if dates.empty:
-        return
+        resolved = canonical or normalize_symbol(symbol)
+        raise NoMarketDataError(
+            symbol,
+            resolved,
+            "no complete OHLC row is available — refusing to use a placeholder row",
+        )
     latest = dates.max().normalize()
     resolved = canonical or normalize_symbol(symbol)
     if resolved.upper().endswith(".T"):
@@ -258,6 +278,7 @@ def load_ohlcv(symbol: str, curr_date: str) -> pd.DataFrame:
     # Filter to curr_date to prevent look-ahead bias in backtesting
     data = data[data["Date"] <= curr_date_dt]
     data = _filter_japan_completed_sessions(data, curr_date, symbol, canonical)
+    data = _filter_complete_ohlc_rows(data)
 
     # Reject a stale frame (latest row far older than curr_date) rather than
     # feeding year-old prices into indicators (#1021).

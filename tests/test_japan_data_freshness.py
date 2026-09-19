@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -106,6 +107,41 @@ def test_japan_ohlcv_requires_exact_latest_tse_session_and_rejects_future():
             "2026-08-30",
             "5016.T",
         )
+
+
+def test_volume_only_placeholder_does_not_advance_latest_complete_ohlc():
+    frame = pd.DataFrame(
+        {
+            "Date": ["2026-09-14", "2026-09-15"],
+            "Open": [100.0, None],
+            "High": [103.0, None],
+            "Low": [99.0, None],
+            "Close": [102.0, None],
+            "Volume": [1000, 1200],
+        }
+    )
+
+    with pytest.raises(NoMarketDataError, match="latest row is 2026-09-14"):
+        _assert_ohlcv_not_stale(frame, "2026-09-16", "6981.T")
+
+
+def test_jsf_pre_session_uses_previous_completed_session_as_expected_latest():
+    jst = ZoneInfo("Asia/Tokyo")
+    pre_open = _balance_freshness(
+        [_item("JSF", "securities_finance_balance", date(2026, 9, 15))],
+        date(2026, 9, 16),
+        now=datetime(2026, 9, 16, 0, 59, tzinfo=jst),
+    )
+    after_close = _balance_freshness(
+        [_item("JSF", "securities_finance_balance", date(2026, 9, 15))],
+        date(2026, 9, 16),
+        now=datetime(2026, 9, 16, 16, 0, tzinfo=jst),
+    )
+
+    assert pre_open.status == LATEST_AVAILABLE
+    assert pre_open.expected_latest == date(2026, 9, 15)
+    assert after_close.status == STALE_SOURCE
+    assert after_close.expected_latest == date(2026, 9, 16)
 
 
 def test_configured_market_fallback_runs_after_stale_primary(monkeypatch):

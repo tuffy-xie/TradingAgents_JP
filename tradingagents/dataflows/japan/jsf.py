@@ -33,14 +33,15 @@ class JSFProvider:
 
     name = "JSF"
     category = "supply_demand"
-    cache_version = "public-history-trend-freshness-v6-publication-status"
+    cache_version = "public-history-trend-freshness-v7-session-phase"
     cache_requires_completed_window = True
 
-    def __init__(self):
+    def __init__(self, *, clock=None):
         config = get_config().get("markets", {}).get("jp", {})
         self.timeout = float(config.get("request_timeout_seconds", 10))
         self.enabled = bool(config.get("datasources", {}).get("jsf", True))
         self.history_calendar_days = int(config.get("jsf_history_calendar_days", 45))
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def fetch(self, context: MarketContext, *, start_date: str, end_date: str) -> ProviderResponse:
         if not self.enabled:
@@ -64,7 +65,9 @@ class JSFProvider:
             balance_items = [
                 item for item in balance_items if item.timestamp.date() <= analysis_as_of
             ]
-            freshness = _balance_freshness(balance_items, analysis_as_of)
+            freshness = _balance_freshness(
+                balance_items, analysis_as_of, now=self._clock()
+            )
             metadata["balances_freshness"] = freshness.to_dict()
             if balance_items and freshness.usable:
                 latest_balance_date = max(item.timestamp.date() for item in balance_items)
@@ -101,7 +104,9 @@ class JSFProvider:
                     )
                     if item.timestamp.date() <= analysis_as_of
                 ]
-                freshness = _balance_freshness(balance_items, analysis_as_of)
+                freshness = _balance_freshness(
+                    balance_items, analysis_as_of, now=self._clock()
+                )
                 metadata["balances_freshness"] = freshness.to_dict()
                 if freshness.usable:
                     items.extend(_with_freshness(item, freshness) for item in balance_items)
@@ -133,7 +138,9 @@ class JSFProvider:
         )
 
 
-def _balance_freshness(items: list[MarketInformation], analysis_as_of: date):
+def _balance_freshness(
+    items: list[MarketInformation], analysis_as_of: date, *, now: datetime | None = None
+):
     return assess_japan_session_data(
         max((item.timestamp.date() for item in items), default=None),
         analysis_as_of,
@@ -141,6 +148,7 @@ def _balance_freshness(items: list[MarketInformation], analysis_as_of: date):
         # A fresh preliminary or unknown observation must not inherit a
         # misleading "CONFIRMED" cadence label.
         native_cadence="JSF_SECURITIES_FINANCE_BALANCE_BUSINESS_DAY",
+        now=now,
     )
 
 
