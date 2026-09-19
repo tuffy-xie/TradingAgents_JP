@@ -191,8 +191,11 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
         )
         complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
+    published_report = sanitize_text(complete_report)
+    if market != "JP":
+        published_report += "\n"
     (save_path / "complete_report.md").write_text(
-        sanitize_text(complete_report) + "\n", encoding="utf-8"
+        published_report, encoding="utf-8"
     )
     (save_path / "full_agent_log.md").write_text(
         sanitize_text("\n\n".join(agent_log_parts)) + "\n", encoding="utf-8"

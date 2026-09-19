@@ -9,9 +9,12 @@ original agent output is retained separately for the technical agent log.
 from __future__ import annotations
 
 import copy
+import csv
 import hashlib
+import io
 import re
 from collections.abc import Mapping
+from datetime import date, datetime
 from typing import Any
 
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
@@ -20,6 +23,9 @@ from tradingagents.dataflows.japan.context import (
     render_japan_financial_report,
     render_japan_report_sections,
     render_japan_sentiment_report,
+)
+from tradingagents.dataflows.japan.trading_calendar import (
+    latest_completed_japan_session,
 )
 from tradingagents.report_artifacts import render_markdown_fragment, validate_rendered_html
 from tradingagents.report_consistency import canonical_report_metadata
@@ -35,7 +41,7 @@ _REPORT_FIELDS = (
     "final_trade_decision",
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
-_CONTRACT_VERSION = "v4"
+_CONTRACT_VERSION = "v5"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -86,6 +92,36 @@ _EXECUTION_INSTRUCTIONS = re.compile(
     r"\b(?:stop[ -]?loss|small position|forced exit)\b",
     re.I,
 )
+_EXECUTION_ACTION = re.compile(
+    r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
+    r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
+    r"逢低布局|逢高减码|逢高減碼|调整仓位|調整倉位|调整敞口|調整敞口|"
+    r"open\s+(?:a\s+)?position|increase\s+(?:the\s+)?position|"
+    r"reduce\s+(?:the\s+)?position|close\s+(?:the\s+)?position)",
+    re.I,
+)
+_EXECUTION_DIRECTIVE_CONTEXT = re.compile(
+    r"(?:建议|建議|应|應|应该|應該|宜|可(?:以)?|考虑|考慮|等待[^。；;\n]{0,20}后|"
+    r"确认[^。；;\n]{0,20}后|突破[^。；;\n]{0,20}后|跌破[^。；;\n]{0,20}后|"
+    r"逢低|逢高|分批|积极|積極|现有持仓|現有持倉|未投资者|未投資者|"
+    r"目标水平|目標水平|策略|操作|计划|計畫|plan|recommend|should|consider|if\b)",
+    re.I,
+)
+_SENTIMENT_AUTHORITY = re.compile(
+    r"(?:投资者|投資者|社交|市场|市場)?情绪[^。；;\n|]{0,40}"
+    r"(?:\d+(?:\.\d+)?\s*/\s*10|分数|分數|评分|評分|偏多|偏空|中性|"
+    r"温和偏多|溫和偏多|温和偏空|溫和偏空|bullish|bearish|neutral)|"
+    r"(?:sentiment\s+(?:score|band|sample|confidence)|overall_band)",
+    re.I,
+)
+_PRESENTATION_HEADING_TRANSLATIONS = {
+    "final transaction proposal": "最终研究结论",
+    "recommendation": "研究建议",
+    "strategic actions": "策略说明",
+    "rating": "评级",
+    "investment thesis": "投资逻辑",
+    "time horizon": "研究周期",
+}
 _POSITION_RECOMMENDATION = re.compile(
     r"(?:仓位|倉位|净敞口|净暴露|组合总值|position(?: size| sizing)?|net exposure|allocation)"
     r"[^。；;\n]*(?:\d|%|≤|≥|上限|不超过)|"
@@ -178,7 +214,10 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         for item in (result.get("evidence_audit") or [])
         if not (
             isinstance(item, Mapping)
-            and item.get("category") == "FINAL_ARTIFACT_VIOLATION"
+            and (
+                item.get("category") in {"FINAL_ARTIFACT_VIOLATION", "EXECUTION_GATE"}
+                or item.get("warning")
+            )
         )
     ]
 
@@ -229,6 +268,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     result["sentiment_report"] = render_japan_sentiment_report(
         result.get("japan_data_bundle")
     )
+    result["market_report"] = _canonicalize_market_report(result)
+    result = _enforce_domain_authority_ownership(result)
 
     execution_allowed = (result.get("validated_execution") or {}).get("status") == "OK"
     if execution_allowed:
@@ -241,8 +282,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 "agent": "Canonical Final State",
                 "field": "executable_plan",
                 "detail": "Execution inputs were not approved by the deterministic validator.",
-                "resolution": "EXECUTABLE_PLAN_WITHHELD",
-                "execution_blocking": False,
+                "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                "execution_blocking": True,
             }
         )
 
@@ -251,7 +292,12 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     artifact_issues = _validate_final_artifact(
         result, execution_allowed, accepted_report=accepted_report
     )
-    audit, audit_issues = _finalize_audit(audit, result)
+    audit, audit_issues = _finalize_audit(
+        audit,
+        result,
+        accepted_report=accepted_report,
+        execution_allowed=execution_allowed,
+    )
     artifact_issues = list(dict.fromkeys([*artifact_issues, *audit_issues]))
     for issue in artifact_issues:
         audit.append(
@@ -279,6 +325,25 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "artifact_issues": artifact_issues,
         "accepted_report_sha256": artifact_sha256,
         "audit_closure_status": "CLOSED" if not audit_issues else "UNRESOLVED",
+        "validation_dimensions": {
+            "structural_artifact_valid": not any(
+                issue.startswith(("HEADING_", "NUMBERED_", "CIRCLED_", "EMPTY_", "MALFORMED_", "RAW_MARKDOWN", "MARKDOWN_SWALLOWED"))
+                for issue in artifact_issues
+            ),
+            "evidence_closure": not audit_issues,
+            "domain_authority_consistent": not any(
+                issue.startswith("CROSS_DOMAIN_AUTHORITY") for issue in artifact_issues
+            ),
+            "execution_consistent": not any(
+                issue.startswith(("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_"))
+                for issue in artifact_issues
+            ),
+            "presentation_valid": not any(
+                issue.startswith(("PROCESS_PROSE", "UNLOCALIZED_", "EMPTY_"))
+                for issue in artifact_issues
+            ),
+            "persistence_byte_contract": "UTF8_EXACT_NO_APPENDED_BYTES",
+        },
     }
     return result
 
@@ -393,13 +458,17 @@ def _accept_text(
 ) -> tuple[str, list[dict[str, Any]]]:
     agent = _agent_for_field(field)
     checked = enforce_agent_output(state, text, agent)
-    for warning in checked.warnings:
+    for finding in checked.findings:
         audit.append(
             {
-                "category": _category_for_warning(warning),
+                "category": _category_for_warning(finding.warning),
                 "agent": agent,
                 "field": field,
-                "warning": warning,
+                "warning": finding.warning,
+                "claim_sha256": finding.claim_sha256,
+                "original_claim": finding.original_claim,
+                "replacement_claim": finding.replacement_claim,
+                "enforcement_action": finding.action,
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             }
@@ -414,11 +483,149 @@ _GENERATION_PROCESS_PROSE = re.compile(
     r"(?:i(?:'ll|\s+will|\s+am\s+going\s+to)|we(?:'ll|\s+will))\s+"
     r"(?:now\s+)?(?:compile|prepare|provide|write|generate)\b[^\n]*(?:report|analysis)[^\n]*\.?\s*$"
 )
+_ZH_GENERATION_PROCESS_PROSE = re.compile(
+    r"(?im)^\s*(?:现在|接下来|下面)?(?:让(?:我|我们)|我(?:将|来))"
+    r"[^\n]{0,40}(?:基于|根据)[^\n]{0,80}(?:提供|生成|撰写|整理)"
+    r"[^\n]{0,30}(?:报告|分析)[。.!]?\s*$"
+)
 
 
 def _remove_generation_process_prose(text: str) -> str:
     """Remove model process narration, not research content."""
-    return _GENERATION_PROCESS_PROSE.sub("", text)
+    text = _GENERATION_PROCESS_PROSE.sub("", text)
+    text = _ZH_GENERATION_PROCESS_PROSE.sub("", text)
+    process_clause = re.compile(
+        r"(?:现在|接下来|下面)?(?:让(?:我|我们)|我(?:将|来))"
+        r"[^。！？\n]{0,60}(?:基于|根据)[^。！？\n]{0,100}"
+        r"(?:提供|生成|撰写|整理)[^。！？\n]{0,40}(?:报告|分析)[。！？]?"
+    )
+    return process_clause.sub("", text)
+
+
+def _canonicalize_market_report(state: Mapping[str, Any]) -> str:
+    """Publish current Market prose only when its OHLC authority is current.
+
+    An analyst can reason over historical bars, but a stale or incomplete tool
+    window cannot be promoted to a current technical assessment.  The raw prose
+    remains in ``raw_agent_outputs`` for audit.
+    """
+    report = str(state.get("market_report") or "")
+    tool_values = [
+        str(item.get("value") or "")
+        for item in state.get("evidence_registry") or []
+        if isinstance(item, Mapping)
+        and item.get("domain") == "MARKET"
+        and item.get("source") == "get_stock_data"
+        and item.get("source_type") == "TOOL_OUTPUT"
+    ]
+    if not tool_values:
+        return report
+    manifest = state.get("run_manifest") or {}
+    analysis_text = str(manifest.get("analysis_as_of") or state.get("trade_date") or "")
+    try:
+        analysis_as_of = date.fromisoformat(analysis_text)
+    except ValueError:
+        return report
+    observed_at = _manifest_timestamp(manifest)
+    expected = latest_completed_japan_session(analysis_as_of, now=observed_at)
+    latest = max(
+        (
+            value
+            for content in tool_values
+            if not content.lstrip().startswith("NO_DATA_AVAILABLE")
+            for value in [_latest_complete_ohlcv_date(content, analysis_as_of)]
+            if value is not None
+        ),
+        default=None,
+    )
+    if latest == expected:
+        return report
+    latest_text = latest.isoformat() if latest else "未取得"
+    return (
+        "## 当前市场数据状态\n\n"
+        f"截至 {analysis_as_of.isoformat()}，最近完整 OHLCV 日期为 {latest_text}；"
+        f"预期最近已完成交易日为 {expected.isoformat()}。"
+        "当前行情与技术指标证据不足，因此不发布当前技术方向、指标分数或交易含义。"
+        "历史行情仍保留在技术审计日志中。"
+    )
+
+
+def _manifest_timestamp(manifest: Mapping[str, Any]) -> datetime | None:
+    value = manifest.get("runtime_timestamp_jst")
+    try:
+        observed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return observed if observed.tzinfo is not None and observed.utcoffset() is not None else None
+
+
+def _latest_complete_ohlcv_date(content: str, analysis_as_of: date) -> date | None:
+    lines = content.splitlines()
+    header_index = next(
+        (index for index, line in enumerate(lines) if line.startswith("Date,")),
+        None,
+    )
+    if header_index is None:
+        return None
+    latest: date | None = None
+    for row in csv.DictReader(io.StringIO("\n".join(lines[header_index:]))):
+        try:
+            observed = date.fromisoformat(str(row.get("Date") or "")[:10])
+        except ValueError:
+            continue
+        if observed > analysis_as_of or not all(
+            _present_number(row.get(name)) for name in ("Open", "High", "Low", "Close")
+        ):
+            continue
+        latest = max(latest, observed) if latest else observed
+    return latest
+
+
+def _present_number(value: Any) -> bool:
+    normalized = str(value or "").strip().casefold()
+    if normalized in {"", "nan", "none", "null"}:
+        return False
+    try:
+        float(normalized.replace(",", ""))
+    except ValueError:
+        return False
+    return True
+
+
+def _enforce_domain_authority_ownership(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep source-native sentiment aggregates in their one canonical field."""
+    result = dict(state)
+    for field in _REPORT_FIELDS:
+        if field == "sentiment_report" or not isinstance(result.get(field), str):
+            continue
+        result[field] = _remove_cross_domain_sentiment_authority(result[field])
+    for field in _DEBATE_FIELDS:
+        debate = result.get(field)
+        if not isinstance(debate, Mapping):
+            continue
+        result[field] = {
+            key: _remove_cross_domain_sentiment_authority(value)
+            if isinstance(value, str)
+            else value
+            for key, value in debate.items()
+        }
+    return result
+
+
+def _remove_cross_domain_sentiment_authority(text: str) -> str:
+    text = _filter_markdown_sections(
+        text,
+        lambda heading: not _SENTIMENT_AUTHORITY.search(heading),
+    )
+    kept: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("|"):
+            if not _SENTIMENT_AUTHORITY.search(line):
+                kept.append(line)
+            continue
+        clauses = re.split(r"(?<=[。！？；;])", line)
+        kept.append("".join(part for part in clauses if not _SENTIMENT_AUTHORITY.search(part)))
+    return _fold_empty_sections("\n".join(kept))
 
 
 def _agent_for_field(field: str) -> str:
@@ -805,7 +1012,7 @@ def _normalize_circled_lists(lines: list[str]) -> list[str]:
 
 
 def _normalize_numbered_lists(lines: list[str]) -> list[str]:
-    """Renumber contiguous numbered lists, leaving prose numbers untouched."""
+    """Renumber list items across their indented continuation paragraphs."""
     output = list(lines)
     index = 0
     while index < len(output):
@@ -834,16 +1041,10 @@ def _normalize_numbered_lists(lines: list[str]) -> list[str]:
                 number += 1
                 current += 1
                 continue
-            if not output[current].strip() and current + 1 < len(output):
-                next_item = _NUMBERED_LIST.match(output[current + 1])
-                if (
-                    next_item
-                    and not _is_ordinary_year(next_item.group("number"))
-                    and next_item.group("indent") == indent
-                    and next_item.group("number").isdigit() == style
-                ):
-                    current += 1
-                    continue
+            stripped = output[current].strip()
+            if not stripped or len(output[current]) - len(output[current].lstrip()) > len(indent):
+                current += 1
+                continue
             break
         index = max(current, index + 1)
     return output
@@ -871,8 +1072,15 @@ def _normalize_markdown_tables(lines: list[str]) -> list[str]:
         valid = block[:2]
         for row in block[2:]:
             cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
-            if len(cells) == len(header) and any(cells):
+            minimum_content = 1 if len(header) == 1 else 2
+            if len(cells) == len(header) and sum(bool(cell) for cell in cells) >= minimum_content:
                 valid.append(row)
+        if len(valid) > 2 and _table_has_sequence_column(header, valid[2:]):
+            for sequence, row_index in enumerate(range(2, len(valid)), start=1):
+                cells = [cell.strip() for cell in valid[row_index].strip().strip("|").split("|")]
+                cells[0] = str(sequence)
+                ending = "\n" if valid[row_index].endswith("\n") else ""
+                valid[row_index] = "| " + " | ".join(cells) + " |" + ending
         if len(valid) > 2:
             if result and result[-1].strip():
                 result.append("\n")
@@ -1046,16 +1254,10 @@ def _markdown_structure_issues(text: str) -> list[str]:
                 expected += 1
                 current += 1
                 continue
-            if not lines[current].strip() and current + 1 < len(lines):
-                next_item = _NUMBERED_LIST.match(lines[current + 1])
-                if (
-                    next_item
-                    and not _is_ordinary_year(next_item.group("number"))
-                    and next_item.group("indent") == indent
-                    and next_item.group("number").isdigit() == style
-                ):
-                    current += 1
-                    continue
+            stripped = lines[current].strip()
+            if not stripped or len(lines[current]) - len(lines[current].lstrip()) > len(indent):
+                current += 1
+                continue
             break
         index = max(current, index + 1)
 
@@ -1098,9 +1300,20 @@ def _markdown_structure_issues(text: str) -> list[str]:
             issues.append("MALFORMED_MARKDOWN_TABLE")
             continue
         for row in block[2:]:
-            if len(row.strip().strip("|").split("|")) != header_count:
+            cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
+            minimum_content = 1 if header_count == 1 else 2
+            if len(cells) != header_count:
                 issues.append("MALFORMED_MARKDOWN_TABLE")
                 break
+            if sum(bool(cell) for cell in cells) < minimum_content:
+                issues.append("EMPTY_MARKDOWN_TABLE_ROW")
+                break
+        header = [cell.strip() for cell in block[0].strip().strip("|").split("|")]
+        rows = block[2:]
+        if _table_has_sequence_column(header, rows):
+            values = [int(row.strip().strip("|").split("|")[0].strip()) for row in rows]
+            if values != list(range(1, len(values) + 1)):
+                issues.append("NUMBERED_TABLE_DISCONTINUITY")
 
     meaningful = [line.strip() for line in lines if line.strip()]
     for previous, current in zip(meaningful, meaningful[1:], strict=False):
@@ -1199,9 +1412,17 @@ def _table_has_data_row(lines: list[str]) -> bool:
         if _is_table_separator(line):
             separator_seen = True
             continue
-        if separator_seen and any(cell for cell in cells):
+        minimum_content = 1 if len(cells) == 1 else 2
+        if separator_seen and sum(bool(cell) for cell in cells) >= minimum_content:
             return True
     return False
+
+
+def _table_has_sequence_column(header: list[str], rows: list[str]) -> bool:
+    if not header or not re.fullmatch(r"(?:序号|編號|编号|no\.?|#)", header[0], re.I):
+        return False
+    values = [row.strip().strip("|").split("|")[0].strip() for row in rows]
+    return bool(values) and all(value.isdigit() for value in values)
 
 
 def _is_table_separator(line: str) -> bool:
@@ -1233,6 +1454,8 @@ def _execution_violation(text: str) -> str | None:
     if _POSITION_RECOMMENDATION.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
     if _EXECUTION_INSTRUCTIONS.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _EXECUTION_ACTION.search(plain) and _EXECUTION_DIRECTIVE_CONTEXT.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
         # A sourced valuation target is an analytical fact, not a trade exit.
@@ -1385,9 +1608,28 @@ def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
                 text,
             )
         text = text.replace("DATA UNAVAILABLE", "数据不可用")
+        text = _localize_presentation_labels(text)
         return _fold_empty_sections(text)
 
     return _map_report_text(state, publicize)
+
+
+def _localize_presentation_labels(text: str) -> str:
+    """Translate standard report labels without rewriting business prose."""
+    output: list[str] = []
+    labels = "|".join(re.escape(label) for label in _PRESENTATION_HEADING_TRANSLATIONS)
+    pattern = re.compile(
+        rf"(?i)(?P<prefix>^(?:#{{1,6}}\s+)?|^\*\*)"
+        rf"(?P<label>{labels})(?P<suffix>\*\*)?(?P<colon>\s*[:：])?"
+    )
+    for line in text.splitlines():
+        match = pattern.search(line)
+        if match:
+            source = match.group("label").casefold()
+            translated = _PRESENTATION_HEADING_TRANSLATIONS[source]
+            line = line[: match.start("label")] + translated + line[match.end("label") :]
+        output.append(line)
+    return "\n".join(output)
 
 
 def _map_report_text(state: Mapping[str, Any], transform) -> dict[str, Any]:
@@ -1418,6 +1660,7 @@ def _validate_final_artifact(
     issues = validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
+    issues.extend(_domain_authority_issues(state))
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
@@ -1437,6 +1680,10 @@ def validate_final_report_text(
         issues.append(f"INTERNAL_MACHINE_ENUM_VISIBLE:{token}")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):
         issues.append("SHORT_MARKET_OVERCLAIM")
+    if _remove_generation_process_prose(text) != text:
+        issues.append("PROCESS_PROSE_VISIBLE")
+    if _unlocalized_presentation_label(text):
+        issues.append("UNLOCALIZED_PRESENTATION_LABEL")
     for internal in _PUBLIC_NEWS_TEXT:
         if internal in text:
             issues.append("UNLOCALIZED_NEWS_AUTHORITY")
@@ -1461,6 +1708,33 @@ def validate_final_report_text(
     return list(dict.fromkeys(issues))
 
 
+def _domain_authority_issues(state: Mapping[str, Any]) -> list[str]:
+    """Ensure an authoritative aggregate is published in exactly one domain."""
+    issues: list[str] = []
+    for field in _REPORT_FIELDS:
+        if field == "sentiment_report":
+            continue
+        value = state.get(field)
+        if isinstance(value, str) and _SENTIMENT_AUTHORITY.search(value):
+            issues.append(f"CROSS_DOMAIN_AUTHORITY:SENTIMENT:{field}")
+    for outer in _DEBATE_FIELDS:
+        value = state.get(outer)
+        if not isinstance(value, Mapping):
+            continue
+        for inner, text in value.items():
+            if isinstance(text, str) and _SENTIMENT_AUTHORITY.search(text):
+                issues.append(f"CROSS_DOMAIN_AUTHORITY:SENTIMENT:{outer}.{inner}")
+    return issues
+
+
+def _unlocalized_presentation_label(text: str) -> bool:
+    labels = "|".join(re.escape(label) for label in _PRESENTATION_HEADING_TRANSLATIONS)
+    return re.search(
+        rf"(?im)^(?:#{{1,6}}\s+|\*\*)?(?:{labels})(?:\*\*)?\s*(?::|$)",
+        text,
+    ) is not None
+
+
 def _published_field_text(state: Mapping[str, Any], field: str) -> str | None:
     if field in {"market_report", "sentiment_report", "news_report", "fundamentals_report"}:
         value = state.get(field)
@@ -1477,15 +1751,49 @@ def _published_field_text(state: Mapping[str, Any], field: str) -> str | None:
 
 
 def _finalize_audit(
-    audit: list[dict[str, Any]], state: Mapping[str, Any]
+    audit: list[dict[str, Any]],
+    state: Mapping[str, Any],
+    *,
+    accepted_report: str,
+    execution_allowed: bool,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Close findings only against the exact field that will be published."""
+    """Close findings only when their concrete claim is absent or supported.
+
+    A warning code identifies a rule, not a claim.  Re-running that rule over a
+    whole report field can therefore falsely close one finding after a sibling
+    clause was removed.  Closure follows the recorded original/replacement
+    claim identity and the exact accepted artifact instead.
+    """
     finalized: list[dict[str, Any]] = []
     issues: list[str] = []
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
-        if entry.get("category") in _VIOLATION_CATEGORIES or entry.get("warning"):
+        if entry.get("category") == "EXECUTION_GATE":
+            execution_issues = (
+                []
+                if execution_allowed
+                else [
+                    issue
+                    for issue in validate_final_report_text(
+                        accepted_report,
+                        execution_allowed=False,
+                        check_structure=False,
+                    )
+                    if issue.startswith(
+                        ("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_")
+                    )
+                ]
+            )
+            if execution_issues:
+                entry["resolution"] = "UNRESOLVED"
+                entry["execution_blocking"] = True
+                issues.extend(f"UNRESOLVED_EXECUTION:{issue}" for issue in execution_issues)
+            else:
+                entry["resolution"] = "EXECUTABLE_PLAN_WITHHELD"
+                entry["resolution_basis"] = "EXACT_ACCEPTED_ARTIFACT_HAS_NO_EXECUTABLE_PLAN"
+                entry["execution_blocking"] = False
+        elif entry.get("category") in _VIOLATION_CATEGORIES or entry.get("warning"):
             field = str(entry.get("field") or "")
             published = _published_field_text(state, field)
             if published is None:
@@ -1494,21 +1802,36 @@ def _finalize_audit(
                 entry["execution_blocking"] = False
             else:
                 warning = entry.get("warning")
-                inspection_text = (
-                    _remove_current_financial_sections(published)
-                    if field == "fundamentals_report"
-                    else published
-                )
-                remaining = enforce_agent_output(
-                    state, inspection_text, _agent_for_field(field)
-                ).warnings
                 entry["published_field_sha256"] = hashlib.sha256(
                     published.encode("utf-8")
                 ).hexdigest()
-                if warning and warning not in remaining:
+                entry["accepted_artifact_sha256"] = hashlib.sha256(
+                    accepted_report.encode("utf-8")
+                ).hexdigest()
+                original = str(entry.get("original_claim") or "").strip()
+                replacement = str(entry.get("replacement_claim") or "").strip()
+                original_published = bool(
+                    original and _claim_is_published(original, accepted_report)
+                )
+                replacement_published = bool(
+                    replacement and _claim_is_published(replacement, accepted_report)
+                )
+                replacement_supported = bool(
+                    replacement_published
+                    and warning
+                    and warning
+                    not in enforce_agent_output(
+                        state, replacement, _agent_for_field(field)
+                    ).warnings
+                )
+                if warning and original and not original_published and (
+                    not replacement_published or replacement_supported
+                ):
                     entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
                     entry["resolution_basis"] = (
-                        "EXACT_PUBLISHED_FIELD_REVALIDATED_WITHOUT_WARNING"
+                        "ORIGINAL_CLAIM_ABSENT_FROM_EXACT_ACCEPTED_ARTIFACT"
+                        if not replacement_published
+                        else "SUPPORTED_REPLACEMENT_PRESENT_IN_EXACT_ACCEPTED_ARTIFACT"
                     )
                     entry["execution_blocking"] = False
                 elif not warning and entry.get("category") == "ARITHMETIC_MISMATCH":
@@ -1525,9 +1848,28 @@ def _finalize_audit(
             entry.get("agent"),
             entry.get("field"),
             entry.get("warning"),
+            entry.get("claim_sha256"),
             entry.get("detail"),
         )
         if key not in seen:
             finalized.append(entry)
             seen.add(key)
     return finalized, list(dict.fromkeys(issues))
+
+
+def _claim_is_published(claim: str, accepted_report: str) -> bool:
+    """Match one whole published claim, never a substring of another claim."""
+    normalized_claim = re.sub(r"\s+", " ", claim).strip()
+    if not normalized_claim:
+        return False
+    candidates: list[str] = []
+    for line in accepted_report.splitlines():
+        normalized_line = re.sub(r"\s+", " ", line).strip()
+        if normalized_line:
+            candidates.append(normalized_line)
+        candidates.extend(
+            re.sub(r"\s+", " ", clause).strip()
+            for clause in re.split(r"(?<=[。！？；;.!?])", line)
+            if clause.strip()
+        )
+    return normalized_claim in candidates

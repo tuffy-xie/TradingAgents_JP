@@ -8,6 +8,7 @@ US behaviour untouched.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -110,6 +111,22 @@ _FINANCIAL_METRIC_PATTERNS = {
 class EvidenceEnforcementResult:
     text: str
     warnings: tuple[str, ...] = ()
+    findings: tuple[EvidenceFinding, ...] = ()
+
+
+@dataclass(frozen=True)
+class EvidenceFinding:
+    """One concrete claim changed by evidence enforcement.
+
+    Audit closure must follow this identity rather than treating a warning code
+    as if it identified every claim in an entire report field.
+    """
+
+    warning: str
+    claim_sha256: str
+    original_claim: str
+    replacement_claim: str
+    action: str
 
 
 @dataclass(frozen=True)
@@ -136,57 +153,108 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
 
     catalog = _catalog_from_state(state)
     warnings: list[str] = []
+    findings: list[EvidenceFinding] = []
+
+    def resolve_claim(claim: str, warning: str, replacement: str) -> str:
+        warnings.append(warning)
+        original = claim.strip()
+        accepted = replacement.strip()
+        findings.append(
+            EvidenceFinding(
+                warning=warning,
+                claim_sha256=hashlib.sha256(original.encode("utf-8")).hexdigest(),
+                original_claim=original,
+                replacement_claim=accepted,
+                action="REPLACED" if accepted else "REMOVED",
+            )
+        )
+        return replacement
 
     def clean_clause(clause: str) -> str:
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
-            warnings.append("financial_provenance_collapsed")
-            return clause.replace(
-                "VERIFIED_TOOL_OUTPUT", "VERIFIED_FINANCIAL_AUTHORITY"
+            return resolve_claim(
+                clause,
+                "financial_provenance_collapsed",
+                clause.replace(
+                    "VERIFIED_TOOL_OUTPUT", "VERIFIED_FINANCIAL_AUTHORITY"
+                ),
             )
         if _COLLAPSED_PROVENANCE.search(clause):
-            warnings.append("collapsed_provenance_types")
-            return (
+            return resolve_claim(
+                clause,
+                "collapsed_provenance_types",
                 "【来源约束：各事实保留 Evidence Registry 中各自的来源类型；行情/新闻工具事实为 "
-                "VERIFIED_TOOL_OUTPUT，财务事实为 VERIFIED_FINANCIAL_AUTHORITY，不得合并改写。】"
+                "VERIFIED_TOOL_OUTPUT，财务事实为 VERIFIED_FINANCIAL_AUTHORITY，不得合并改写。】",
             )
         if _UNVERIFIED_MARKET.search(clause) and _has_verified_domain(state, "MARKET"):
-            warnings.append("verified_market_fact_downgraded")
-            return "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】"
+            return resolve_claim(
+                clause,
+                "verified_market_fact_downgraded",
+                "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】",
+            )
         if _UNVERIFIED_NEWS.search(clause) and _has_verified_domain(state, "NEWS"):
-            warnings.append("verified_news_fact_downgraded")
-            return "【证据连续性：本轮 News 工具事实保留其来源与验证状态；未验证部分不得作为硬证据。】"
+            return resolve_claim(
+                clause,
+                "verified_news_fact_downgraded",
+                "【证据连续性：本轮 News 工具事实保留其来源与验证状态；未验证部分不得作为硬证据。】",
+            )
         if _SHORT_ABSENCE_OVERCLAIM.search(clause):
-            warnings.append("short_absence_overclaim")
-            return "【语义约束：仅能陈述可观察的借券余额或官方可申报仓位；无申报记录不代表不存在空头。】"
+            return resolve_claim(
+                clause,
+                "short_absence_overclaim",
+                "【语义约束：仅能陈述可观察的借券余额或官方可申报仓位；无申报记录不代表不存在空头。】",
+            )
         if _SHORT_PRESSURE_OVERCLAIM.search(clause):
-            warnings.append("short_pressure_overclaim")
-            return (
+            return resolve_claim(
+                clause,
+                "short_pressure_overclaim",
                 "JSF 可观察贷株余额较低；该指标不代表全市场空头总量、"
-                "机构空头立场或不存在其他做空压力。"
+                "机构空头立场或不存在其他做空压力。",
             )
         if _HISTORY_AS_SIGNAL.search(clause):
-            warnings.append("historical_outcome_as_current_evidence")
-            return "【历史隔离：既往交易结果仅用于风险与信心校准，不构成本轮方向性证据。】"
+            return resolve_claim(
+                clause,
+                "historical_outcome_as_current_evidence",
+                "【历史隔离：既往交易结果仅用于风险与信心校准，不构成本轮方向性证据。】",
+            )
         if _CURRENT_QUARTER_CONVICTION.search(clause) and not _actual_gate_ok(state):
-            warnings.append("critical_gate_bypassed")
-            return "【关键数据门控：当前季度证据不足，不能声称最新季度已被全面确认。】"
+            return resolve_claim(
+                clause,
+                "critical_gate_bypassed",
+                "【关键数据门控：当前季度证据不足，不能声称最新季度已被全面确认。】",
+            )
         if _unit_mismatch(clause, state):
-            warnings.append("unit_mismatch")
-            return "【单位校验：该换算与来源原始单位不一致，已从判断中移除。】"
+            return resolve_claim(
+                clause,
+                "unit_mismatch",
+                "【单位校验：该换算与来源原始单位不一致，已从判断中移除。】",
+            )
         if _PERIOD_MIX.search(clause):
-            warnings.append("period_mismatch")
-            return "【证据约束：FY、季度与 TTM 不可混算；相关数值已降级为数据不可用】"
+            return resolve_claim(
+                clause,
+                "period_mismatch",
+                "【证据约束：FY、季度与 TTM 不可混算；相关数值已降级为数据不可用】",
+            )
 
         if _FACT_LABEL.search(clause) and _NON_FACT_SOURCE.search(clause):
-            warnings.append("source_type_confusion")
-            return "【证据约束：社区情绪与分析师预期不可表述为已验证官方事实】"
+            return resolve_claim(
+                clause,
+                "source_type_confusion",
+                "【证据约束：社区情绪与分析师预期不可表述为已验证官方事实】",
+            )
 
         if _GUIDANCE.search(clause) and _CONSENSUS.search(clause):
-            warnings.append("guidance_consensus_mixed")
-            return "【证据约束：公司指引与分析师一致预期属于不同口径，不能合并或互相替代】"
+            return resolve_claim(
+                clause,
+                "guidance_consensus_mixed",
+                "【证据约束：公司指引与分析师一致预期属于不同口径，不能合并或互相替代】",
+            )
         if _GUIDANCE.search(clause) and _VENDOR_FORWARD.search(clause):
-            warnings.append("guidance_vendor_forward_mixed")
-            return "【证据约束：公司指引与供应商远期估计属于不同语义，不能互相替代】"
+            return resolve_claim(
+                clause,
+                "guidance_vendor_forward_mixed",
+                "【证据约束：公司指引与供应商远期估计属于不同语义，不能互相替代】",
+            )
 
         tokens = _number_tokens(clause)
         if not tokens:
@@ -198,8 +266,9 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             None if "|" in clause else _financial_authority_replacement(clause, state)
         )
         if financial_replacement is not None:
-            warnings.append("financial_authority_replaced")
-            return financial_replacement
+            return resolve_claim(
+                clause, "financial_authority_replaced", financial_replacement
+            )
         if (
             agent_name == "Trader"
             and _EXECUTION_INPUT.search(clause)
@@ -210,26 +279,41 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return clause
         current_price_numbers = catalog.snapshot_numbers | catalog.market_report_numbers
         if _CURRENT_PRICE.search(clause) and any(token not in current_price_numbers for token in tokens):
-            warnings.append("non_snapshot_current_price")
-            return _replace_unsupported(clause, current_price_numbers)
+            return resolve_claim(
+                clause,
+                "non_snapshot_current_price",
+                _replace_unsupported(clause, current_price_numbers),
+            )
         if _GUIDANCE.search(clause) and any(
             (token in catalog.analyst_numbers or token in catalog.vendor_forward_numbers)
             and token not in catalog.guidance_numbers
             for token in tokens
         ):
-            warnings.append("analyst_estimate_as_guidance")
-            return _replace_unsupported(clause, catalog.guidance_numbers)
+            return resolve_claim(
+                clause,
+                "analyst_estimate_as_guidance",
+                _replace_unsupported(clause, catalog.guidance_numbers),
+            )
         if _CONSENSUS.search(clause) and any(
             token in catalog.guidance_numbers and token not in catalog.analyst_numbers for token in tokens
         ):
-            warnings.append("guidance_as_analyst_consensus")
-            return _replace_unsupported(clause, catalog.analyst_numbers)
+            return resolve_claim(
+                clause,
+                "guidance_as_analyst_consensus",
+                _replace_unsupported(clause, catalog.analyst_numbers),
+            )
         if _CURRENT_WORD.search(clause) and any(token in catalog.stale_numbers for token in tokens):
-            warnings.append("stale_data_as_current")
-            return _replace_unsupported(clause, catalog.all_numbers - catalog.stale_numbers)
+            return resolve_claim(
+                clause,
+                "stale_data_as_current",
+                _replace_unsupported(clause, catalog.all_numbers - catalog.stale_numbers),
+            )
         if any(token not in catalog.all_numbers for token in tokens):
-            warnings.append("unsupported_precise_number")
-            return _replace_unsupported(clause, catalog.all_numbers)
+            return resolve_claim(
+                clause,
+                "unsupported_precise_number",
+                _replace_unsupported(clause, catalog.all_numbers),
+            )
         return clause
 
     # Preserve markdown structure.  One line is a deliberately small enough
@@ -239,7 +323,7 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     if not warnings:
         return EvidenceEnforcementResult(cleaned)
     unique_warnings = tuple(dict.fromkeys(warnings))
-    return EvidenceEnforcementResult(cleaned, unique_warnings)
+    return EvidenceEnforcementResult(cleaned, unique_warnings, tuple(findings))
 
 
 def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent_name: str) -> dict[str, Any]:
@@ -260,16 +344,20 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
 
     def clean_value(key: str, value: str) -> str:
         checked = enforce_agent_output(state, value, agent_name)
-        if checked.warnings:
-            for warning in checked.warnings:
+        if checked.findings:
+            for finding in checked.findings:
                 audit.append(
                     {
-                        "category": _audit_category(warning),
+                        "category": _audit_category(finding.warning),
                         "agent": agent_name,
                         "field": key,
-                        "warning": warning,
-                        "resolution": "CLAIM_REMOVED_OR_REPLACED",
-                        "execution_blocking": False,
+                        "warning": finding.warning,
+                        "claim_sha256": finding.claim_sha256,
+                        "original_claim": finding.original_claim,
+                        "replacement_claim": finding.replacement_claim,
+                        "enforcement_action": finding.action,
+                        "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                        "execution_blocking": True,
                     }
                 )
         return checked.text
@@ -307,13 +395,17 @@ def audit_agent_result(
 
     def inspect(key: str, value: str) -> None:
         checked = enforce_agent_output(state, value, agent_name)
-        for warning in checked.warnings:
+        for finding in checked.findings:
             audit.append(
                 {
-                    "category": _audit_category(warning),
+                    "category": _audit_category(finding.warning),
                     "agent": agent_name,
                     "field": key,
-                    "warning": warning,
+                    "warning": finding.warning,
+                    "claim_sha256": finding.claim_sha256,
+                    "original_claim": finding.original_claim,
+                    "replacement_claim": finding.replacement_claim,
+                    "enforcement_action": finding.action,
                     "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                     "execution_blocking": True,
                 }
@@ -522,6 +614,7 @@ def _has_verified_domain(state: Mapping[str, Any], domain: str) -> bool:
         isinstance(item, Mapping)
         and item.get("domain") == domain
         and str(item.get("verification_status", "")).startswith("VERIFIED")
+        and item.get("allowed_for_current_decision") is True
         for item in state.get("evidence_registry") or []
     )
 

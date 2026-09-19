@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -86,7 +87,12 @@ def test_audit_resolution_requires_the_same_published_field_to_be_clean():
         "warning": "unsupported_precise_number",
     }]
 
-    finalized, issues = _finalize_audit(audit, state)
+    finalized, issues = _finalize_audit(
+        audit,
+        state,
+        accepted_report=state["news_report"],
+        execution_allowed=False,
+    )
 
     assert finalized[0]["resolution"] == "UNRESOLVED"
     assert finalized[0]["execution_blocking"] is True
@@ -103,11 +109,83 @@ def test_audit_finding_for_nonpublished_debate_is_not_falsely_called_validated()
         "warning": "unsupported_precise_number",
     }]
 
-    finalized, issues = _finalize_audit(audit, state)
+    finalized, issues = _finalize_audit(
+        audit,
+        state,
+        accepted_report="",
+        execution_allowed=False,
+    )
 
     assert finalized[0]["resolution"] == "NOT_PUBLISHED_IN_FINAL_ARTIFACT"
     assert finalized[0]["resolution_basis"] == "FIELD_EXCLUDED_FROM_ACCEPTED_REPORT"
     assert issues == []
+
+
+def test_claim_level_audit_does_not_close_when_original_claim_survives():
+    state = _jp_state()
+    original = "Unsupported exact value 999999."
+    state["news_report"] = original + "\nA sibling claim was removed."
+    audit = [{
+        "category": "UNSUPPORTED_CLAIM",
+        "agent": "News Analyst",
+        "field": "news_report",
+        "warning": "unsupported_precise_number",
+        "claim_sha256": hashlib.sha256(original.encode()).hexdigest(),
+        "original_claim": original,
+        "replacement_claim": "",
+        "enforcement_action": "REMOVED",
+    }]
+
+    finalized, issues = _finalize_audit(
+        audit,
+        state,
+        accepted_report=state["news_report"],
+        execution_allowed=False,
+    )
+
+    assert finalized[0]["resolution"] == "UNRESOLVED"
+    assert issues == ["UNRESOLVED_EVIDENCE:news_report:unsupported_precise_number"]
+
+
+def test_stale_market_tool_window_cannot_publish_current_technical_prose():
+    state = _jp_state()
+    state["run_manifest"] = {
+        "analysis_as_of": "2026-09-16",
+        "runtime_timestamp_jst": "2026-09-16T00:59:00+09:00",
+    }
+    state["market_report"] = "已取得完整OHLCV，当前技术面偏多。"
+    state["evidence_registry"] = [{
+        "domain": "MARKET",
+        "source": "get_stock_data",
+        "source_type": "TOOL_OUTPUT",
+        "value": (
+            "Date,Open,High,Low,Close,Volume\n"
+            "2026-09-14,100,103,99,102,1000\n"
+            "2026-09-15,,,,,1200\n"
+        ),
+        "verification_status": "VERIFIED_TOOL_OUTPUT",
+        "allowed_for_current_decision": True,
+    }]
+
+    accepted = build_canonical_final_state(state)
+
+    assert "最近完整 OHLCV 日期为 2026-09-14" in accepted["market_report"]
+    assert "预期最近已完成交易日为 2026-09-15" in accepted["market_report"]
+    assert "当前技术面偏多" not in accepted["accepted_report_markdown"]
+
+
+def test_cross_domain_sentiment_authority_is_removed_from_market_report():
+    state = _jp_state()
+    state["japan_data_bundle"]["items"] = [_sentiment_item()]
+    state["market_report"] = "价格仍承压。市场情绪 3/10，偏空。"
+
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+
+    assert "价格仍承压" in report
+    assert "市场情绪 3/10" not in report
+    assert report.count("综合方向：温和偏多") == 1
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
 
 
 def test_markdown_table_is_terminated_before_following_report_content():
@@ -121,6 +199,34 @@ def test_markdown_table_is_terminated_before_following_report_content():
     assert validate_rendered_html(rendered) == []
     assert "<td>###### Conclusion</td>" not in rendered
     assert "<h6>Conclusion</h6>" in rendered
+
+
+def test_structural_normalizer_drops_semantic_empty_rows_and_renumbers_lists():
+    markdown = normalize_markdown_structure(
+        "## Data\n| kind | metric | value |\n|---|---|---|\n"
+        "| Valuation | | |\n| Profit | EPS | 10 |\n\n"
+        "1. First\n   - detail\n\n1. Second\n"
+    )
+
+    assert "| Valuation | | |" not in markdown
+    assert "1. First" in markdown
+    assert "2. Second" in markdown
+
+
+def test_process_narration_and_standard_english_labels_are_not_user_visible():
+    state = _jp_state()
+    state["news_report"] = (
+        "已完成资料核验。现在让我基于这些数据为您提供详细的分析报告。\n"
+        "**Recommendation**: Hold\n**Investment Thesis**: 证据仍不足。"
+    )
+
+    report = build_canonical_final_state(state)["accepted_report_markdown"]
+
+    assert "现在让我" not in report
+    assert "Recommendation" not in report
+    assert "Investment Thesis" not in report
+    assert "**研究建议**: Hold" in report
+    assert "**投资逻辑**: 证据仍不足" in report
 
 
 def test_decimal_child_headings_follow_their_surviving_parent_number():
@@ -203,6 +309,31 @@ def test_hold_gate_removes_conditional_entry_and_exposure_prose():
     assert "没有获准的入场、止损、目标价或仓位计划" in report
 
 
+@pytest.mark.parametrize(
+    "field,prose",
+    [
+        ("market_report", "确认后应积极减持至目标水平。"),
+        ("news_report", "事件落地后可以逢低买入。"),
+        ("fundamentals_report", "估值回落后建议长期逢低布局。"),
+    ],
+)
+def test_hold_gate_applies_to_every_user_facing_analyst_section(field, prose):
+    state = _jp_state()
+    state[field] = "方向性研究仍保留。" + prose
+    state["validated_execution"] = validate_execution_plan(
+        "**Action**: Hold\n**Entry Price**: 7200\n**Stop Loss**: 6800\n"
+        "**Maximum Position**: 3%"
+    )
+
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+
+    assert accepted["final_output_contract"]["execution_allowed"] is False
+    assert prose not in report
+    assert "方向性研究仍保留" in report
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+
+
 def test_exact_accepted_artifact_and_digest_are_persisted(tmp_path: Path):
     state = _jp_state()
     state["run_manifest"] = {"run_id": "test-run"}
@@ -234,7 +365,11 @@ def test_exact_accepted_artifact_and_digest_are_persisted(tmp_path: Path):
     ]["accepted_report_sha256"]
     assert persisted["trader_investment_plan"] == accepted["trader_investment_plan"]
     report = write_report_tree(persisted, "6981.T", tmp_path / "report")
-    assert report.read_text(encoding="utf-8").rstrip() == accepted["accepted_report_markdown"]
+    published = report.read_bytes()
+    assert published == accepted["accepted_report_markdown"].encode("utf-8")
+    assert hashlib.sha256(published).hexdigest() == accepted[
+        "final_output_contract"
+    ]["accepted_report_sha256"]
 
 
 def test_tampered_accepted_artifact_fails_digest_gate():

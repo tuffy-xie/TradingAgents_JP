@@ -81,7 +81,7 @@ def test_japan_cli_displays_only_canonical_accepted_report(monkeypatch):
         "market_report": "RAW AGENT PROSE MUST NOT APPEAR",
         "accepted_report_markdown": report,
         "final_output_contract": {
-            "version": "v4",
+            "version": "v5",
             "status": "FINALIZED",
             "accepted_report_sha256": hashlib.sha256(report.encode()).hexdigest(),
         },

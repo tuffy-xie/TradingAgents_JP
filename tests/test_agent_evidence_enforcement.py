@@ -148,16 +148,15 @@ def test_evidence_audit_is_internal_not_appended_to_agent_prose():
         _state(), {"trader_investment_plan": "目标价9999。"}, "Trader"
     )
     assert "Evidence enforcement" not in result["trader_investment_plan"]
-    assert result["evidence_audit"] == [
-        {
-            "category": "UNSUPPORTED_CLAIM",
-            "agent": "Trader",
-            "field": "trader_investment_plan",
-            "warning": "unsupported_precise_number",
-            "resolution": "CLAIM_REMOVED_OR_REPLACED",
-            "execution_blocking": False,
-        }
-    ]
+    [finding] = result["evidence_audit"]
+    assert finding["category"] == "UNSUPPORTED_CLAIM"
+    assert finding["agent"] == "Trader"
+    assert finding["field"] == "trader_investment_plan"
+    assert finding["warning"] == "unsupported_precise_number"
+    assert finding["original_claim"] == "目标价9999。"
+    assert finding["replacement_claim"] == ""
+    assert finding["resolution"] == "PENDING_FINAL_ARTIFACT_VALIDATION"
+    assert finding["execution_blocking"] is True
 
 
 def test_graph_observer_preserves_prose_and_captures_evidence_metadata():

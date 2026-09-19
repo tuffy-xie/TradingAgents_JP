@@ -405,7 +405,7 @@ def test_old_finalized_contract_is_reaccepted_instead_of_bypassing_execution_gat
     state["market_report"] = "方向偏空。激进者可小仓做空。"
     accepted = build_canonical_final_state(state)
     assert accepted["market_report"] == "方向偏空。"
-    assert accepted["final_output_contract"]["version"] == "v4"
+    assert accepted["final_output_contract"]["version"] == "v5"
     assert build_canonical_final_state(accepted) == accepted
 
 
