@@ -217,7 +217,8 @@ def test_process_narration_and_standard_english_labels_are_not_user_visible():
     state = _jp_state()
     state["news_report"] = (
         "已完成资料核验。现在让我基于这些数据为您提供详细的分析报告。\n"
-        "**Recommendation**: Hold\n**Investment Thesis**: 证据仍不足。"
+        "**Recommendation**: Hold\n**Investment Thesis**: 证据仍不足。\n"
+        "**Strategic Actions**: ## 后续观察计划"
     )
 
     report = build_canonical_final_state(state)["accepted_report_markdown"]
@@ -227,6 +228,8 @@ def test_process_narration_and_standard_english_labels_are_not_user_visible():
     assert "Investment Thesis" not in report
     assert "**研究建议**: Hold" in report
     assert "**投资逻辑**: 证据仍不足" in report
+    assert "**策略说明**: 后续观察计划" in report
+    assert ": ##" not in report
 
 
 def test_decimal_child_headings_follow_their_surviving_parent_number():

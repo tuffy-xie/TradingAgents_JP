@@ -1628,6 +1628,10 @@ def _localize_presentation_labels(text: str) -> str:
             source = match.group("label").casefold()
             translated = _PRESENTATION_HEADING_TRANSLATIONS[source]
             line = line[: match.start("label")] + translated + line[match.end("label") :]
+        # A model may put a Markdown heading in the value of a labelled field,
+        # e.g. ``**Strategic Actions**: ## Plan``.  Once it is inline the
+        # heading marker has no structural meaning and would be printed raw.
+        line = re.sub(r"([:：])\s*#{1,6}\s+", r"\1 ", line)
         output.append(line)
     return "\n".join(output)
 
@@ -1684,6 +1688,8 @@ def validate_final_report_text(
         issues.append("PROCESS_PROSE_VISIBLE")
     if _unlocalized_presentation_label(text):
         issues.append("UNLOCALIZED_PRESENTATION_LABEL")
+    if re.search(r"[:：]\s*#{1,6}\s+", text):
+        issues.append("INLINE_MARKDOWN_HEADING_VISIBLE")
     for internal in _PUBLIC_NEWS_TEXT:
         if internal in text:
             issues.append("UNLOCALIZED_NEWS_AUTHORITY")
