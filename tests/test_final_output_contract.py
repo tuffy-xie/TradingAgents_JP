@@ -9,6 +9,7 @@ from tradingagents.dataflows.japan.context import (
     render_japan_report_sections,
 )
 from tradingagents.final_output import (
+    _execution_violation,
     build_canonical_final_state,
     normalize_markdown_structure,
     validate_final_report_text,
@@ -420,6 +421,163 @@ def test_final_artifact_validation_detects_leakage_without_editing(claim, catego
     assert category in validate_final_report_text(claim, execution_allowed=False)
 
 
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "在7000买入",
+        "跌破6800止损",
+        "加仓至5%",
+        "减仓至一半",
+        "持仓周期控制在10日",
+        "持仓10个交易日",
+        "7500以下逐步建仓",
+        "收盘跌破止损位即执行，无例外。",
+        "**Time Horizon**: 5-15个交易日",
+        "持仓者继续持有并享受股息收益。",
+        "Hold并设置明确触发条件是纪律性选择。",
+        "若基本面证伪则核心仓提前了结。",
+        "Buy at 7000.",
+        "Reduce the position to 5%.",
+    ],
+)
+def test_execution_semantics_block_action_authorization(claim):
+    assert _execution_violation(claim) is not None
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "当前不建议建仓",
+        "不追高",
+        "暂不加仓",
+        "空仓者禁止建仓",
+        "没有获准交易计划",
+        "7500是技术阻力位",
+        "未来两周事件风险较高",
+        "等待确认后再评估",
+        "Do not open a position.",
+        "No approved trading plan is available.",
+    ],
+)
+def test_execution_semantics_allow_withholding_and_research_facts(claim):
+    assert _execution_violation(claim) is None
+    assert validate_final_report_text(
+        claim, execution_allowed=False, check_structure=False
+    ) == []
+
+
+def test_execution_gate_records_claim_identity_before_pruning():
+    state = _jp_state()
+    state["investment_debate_state"]["judge_decision"] = (
+        "方向性风险偏高。激进者可小仓做空。空仓者禁止建仓。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+    finding = next(
+        item
+        for item in accepted["evidence_audit"]
+        if item.get("category") == "UNAPPROVED_EXECUTION_CLAIM"
+        and item.get("original_claim") == "激进者可小仓做空。"
+    )
+
+    assert "激进者可小仓做空" not in report
+    assert "空仓者禁止建仓" in report
+    assert finding["original_claim"] == "激进者可小仓做空。"
+    assert len(finding["claim_sha256"]) == 64
+    assert finding["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert finding["execution_blocking"] is False
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+
+
+def test_live_style_mixed_execution_claim_is_pruned_clause_by_clause():
+    state = _jp_state()
+    state["investment_debate_state"]["judge_decision"] = (
+        "风险偏高。不在7,500上方加仓；"
+        "持仓周期严格控制在5-15个交易日，下一次事件前重新评估。"
+        "空仓者禁止建仓。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+
+    assert "7,500上方加仓" not in report
+    assert "持仓周期严格控制" not in report
+    assert "空仓者禁止建仓" in report
+    assert accepted["final_output_contract"]["artifact_issues"] == []
+
+
+def test_japan_html_cover_uses_canonical_localized_fields_without_execution_plan():
+    state = _jp_state()
+    state["final_trade_decision"] = (
+        "**Rating**: Hold\n\n"
+        "**Executive Summary**: 维持观望，空仓者禁止建仓。\n\n"
+        "**Time Horizon**: 5-15个交易日\n\n"
+        "收盘跌破止损位即执行，无例外。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    html = _render_report_html(accepted, auto_print=False)
+
+    assert "暂无评级" not in html
+    assert '<strong class="rating">持有</strong>' in html
+    assert "空仓者禁止建仓" in html
+    assert "5-15个交易日" not in html
+    assert "止损位即执行" not in html
+
+
+@pytest.mark.parametrize(
+    "heading",
+    [
+        "交易策略建议",
+        "交易建议",
+        "操作策略",
+        "取引レコメンデーション",
+    ],
+)
+def test_execution_strategy_subsections_are_removed_as_semantic_units(heading):
+    state = _jp_state()
+    state["news_report"] = (
+        "## 事实背景\n宏观风险仍高。\n\n"
+        f"### {heading}\n"
+        "#### 策略一\n7500以下逐步建仓。\n\n"
+        "### 风险背景\n未来两周事件风险较高。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+
+    assert heading not in report
+    assert "7500以下逐步建仓" not in report
+    assert "宏观风险仍高" in report
+    assert "未来两周事件风险较高" in report
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+
+
+@pytest.mark.parametrize(
+    ("label", "translated"),
+    [
+        ("Executive Summary", "研究摘要"),
+        ("Recommendation", "研究建议"),
+        ("Strategic Actions", "策略说明"),
+        ("Rating", "评级"),
+        ("Investment Thesis", "投资逻辑"),
+        ("Time Horizon", "研究周期"),
+        ("Final Transaction Proposal", "最终研究结论"),
+    ],
+)
+def test_standard_report_labels_are_localized_in_japanese_market_output(
+    label, translated
+):
+    state = _jp_state()
+    state["news_report"] = f"**{label}**: 正文。"
+
+    accepted = build_canonical_final_state(state)
+
+    assert label not in accepted["accepted_report_markdown"]
+    assert translated in accepted["accepted_report_markdown"]
+
+
 def test_post_pruning_structural_normalization_is_generic_and_value_preserving():
     text = """## 三、保留的事实
 6981.T 的收入为 502264 百万円。
@@ -558,6 +716,22 @@ def test_web_cover_renders_markdown_instead_of_leaking_raw_markers():
 
     assert "**结论：继续观望。**" not in html
     assert "<strong>结论：继续观望。</strong>" in html
+
+
+def test_fenced_report_diagram_does_not_print_inert_emphasis_markers():
+    state = _jp_state()
+    state["market_report"] = (
+        "## 技术图示\n```text\n"
+        "趋势改善，暗示**波动率窗口临近**。\n"
+        "```"
+    )
+
+    accepted = build_canonical_final_state(state)
+    html = _render_report_html(accepted, auto_print=False)
+
+    assert "**" not in accepted["accepted_report_markdown"]
+    assert "**" not in html
+    assert "波动率窗口临近" in html
 
 
 def test_final_artifact_validation_blocks_unknown_machine_enum():

@@ -680,25 +680,33 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     else:
         decision = data.get("final_trade_decision", "") or ""
 
-    def decision_field(label: str, default: str) -> str:
+    def decision_field(label: str | tuple[str, ...], default: str) -> str:
+        labels = (label,) if isinstance(label, str) else label
+        label_pattern = "|".join(re.escape(item) for item in labels)
         match = re.search(
-            rf"(?:\*\*)?{label}(?:\*\*)?\s*[:：]\s*([^\n*]+)",
+            rf"(?:\*\*)?(?:{label_pattern})(?:\*\*)?\s*[:：]\s*([^\n*]+)",
             decision, flags=re.IGNORECASE,
         )
         return match.group(1).strip().strip("*") if match else default
 
-    rating = decision_field("Rating", "暂无评级")
+    rating = decision_field(("Rating", "评级"), "暂无评级")
     rating = {"Buy": "买入", "Overweight": "增持", "Hold": "持有", "Underweight": "减持", "Sell": "卖出"}.get(rating, rating)
     execution_allowed = bool(
         (data.get("final_output_contract") or {}).get("execution_allowed")
     )
-    target = decision_field("Price Target", "—") if execution_allowed else "—"
-    horizon = decision_field("Time Horizon", "—")
-    summary_match = re.search(
-        r"(?:\*\*)?Executive Summary(?:\*\*)?\s*[:：]\s*(.*?)(?=\n\s*\n(?:\*\*)?[A-Za-z ]+(?:\*\*)?\s*[:：]|\Z)",
-        decision, flags=re.IGNORECASE | re.DOTALL,
+    target = (
+        decision_field(("Price Target", "目标价"), "—")
+        if execution_allowed
+        else "—"
     )
-    summary = summary_match.group(1).strip() if summary_match else decision[:1200]
+    horizon = (
+        decision_field(("Time Horizon", "研究周期"), "—")
+        if execution_allowed or metadata["market"] != "JP"
+        else "—"
+    )
+    summary = decision_field(
+        ("Executive Summary", "研究摘要"), decision[:1200]
+    )
 
     if metadata["market"] == "JP":
         sections_html = (

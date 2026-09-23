@@ -64,7 +64,9 @@ _CURRENT_FINANCIAL_HEADINGS = (
 )
 _EXECUTION_HEADING = re.compile(
     r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
-    r"可操作|执行|行动建议|交易者|交易计划|交易参数|入场|止损|止盈|仓位)",
+    r"可操作|执行|行动建议|交易者|交易(?:建议|策略|计划|参数|执行)|"
+    r"操作(?:建议|策略|计划)|取引(?:レコメンデーション|戦略|計画)|"
+    r"入场|止损|止盈|仓位)",
     re.I,
 )
 _WITHHELD_EXECUTION_HEADINGS = {
@@ -83,7 +85,7 @@ _JSF_CLAIM = re.compile(
     re.I,
 )
 _EXECUTION_INSTRUCTIONS = re.compile(
-    r"(?:严守|严格|设置|设定|执行|触发|强制)?(?:止损|止盈)|强制离场|"
+    r"(?:严守|严格|设置|设定|执行|触发|强制)(?:止损|止盈)|强制离场|"
     r"(?:小|轻|重|试探|少量)[仓倉](?:位)?|"
     r"(?:建议|可以|可|应|宜|考虑|评估|确认后|破位后|逢高|择机|伺机|开始|建立)[^。；;\n]{0,80}(?:做空|试空|试多|开空|开多|建仓|入场|介入|进场|加仓|减仓|买入|卖出)|"
     r"(?:做空|建仓|入场|开空|开多)[^。；;\n]{0,80}(?:条件|触发|执行|建议)|"
@@ -95,7 +97,8 @@ _EXECUTION_INSTRUCTIONS = re.compile(
 _EXECUTION_ACTION = re.compile(
     r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
     r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
-    r"逢低布局|逢高减码|逢高減碼|调整仓位|調整倉位|调整敞口|調整敞口|"
+    r"了结|了結|退出|逢低布局|逢高减码|逢高減碼|"
+    r"调整仓位|調整倉位|调整敞口|調整敞口|"
     r"open\s+(?:a\s+)?position|increase\s+(?:the\s+)?position|"
     r"reduce\s+(?:the\s+)?position|close\s+(?:the\s+)?position)",
     re.I,
@@ -107,6 +110,79 @@ _EXECUTION_DIRECTIVE_CONTEXT = re.compile(
     r"目标水平|目標水平|策略|操作|计划|計畫|plan|recommend|should|consider|if\b)",
     re.I,
 )
+_EXECUTION_PROHIBITION = re.compile(
+    r"(?:不(?:建议|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
+    r"加仓|加倉|建仓|建倉|减仓|減倉|做空|执行|提供)|"
+    r"暂不|暫不|禁止|不得|避免|没有获准|未获批准|尚未获准|"
+    r"\b(?:do not|don't|must not|should not|not recommended|not authorized|"
+    r"no approved|avoid)\b)",
+    re.I,
+)
+_CONDITIONAL_EXECUTION = re.compile(
+    r"(?:除非|否则|则|則|隨後|随后|之后|之後|确认后|確認後|突破后|跌破后|"
+    r"\b(?:unless|after confirmation|then|if)\b)",
+    re.I,
+)
+_ACTIONABLE_PRICE = re.compile(
+    r"(?:\b(?:at|above|below|under|over)\s*|[在于於低高破超]\s*|"
+    r"(?:跌破|突破|低于|高于|以下|以上|以内|以內)\s*)"
+    r"[¥￥]?\s*\d[\d,]*(?:\.\d+)?|"
+    r"\d[\d,]*(?:\.\d+)?\s*(?:以下|以上|以内|以內|附近|円|元)",
+    re.I,
+)
+_ACTIONABLE_HOLDING_PERIOD = re.compile(
+    r"(?:持仓|持倉|持有|仓位|倉位|\b(?:hold|holding|position)\b)"
+    r"[^。；;\n]{0,24}(?:周期|週期|期限|时间|時間|\b(?:period|duration|for)\b)"
+    r"[^。；;\n]{0,24}\d[\d-]*\s*(?:个?交易日|天|日(?!元|均线)|周|週|月|\b(?:days?|weeks?|months?)\b)|"
+    r"(?:持仓|持倉|持有)\s*(?:严格|嚴格|控制|為|为|至|约|約)?\s*"
+    r"\d[\d-]*\s*(?:个?交易日|天|日(?!元|均线)|周|週|月)|"
+    r"\bhold\s+(?:for|until)\s+\d[\d-]*\s*(?:days?|weeks?|months?)",
+    re.I,
+)
+_ENGLISH_TRADE_ACTION = re.compile(
+    r"\b(?:buy|sell|short|add\s+to|reduce|trim|close|open|enter)\b",
+    re.I,
+)
+_ACTION_AMOUNT = re.compile(
+    r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
+    r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空)"
+    r"[^。；;\n]{0,16}(?:至|到|为|為|成|\bto\b)\s*"
+    r"(?:[¥￥]?\d[\d,]*(?:\.\d+)?\s*%?|一半|半仓|半倉)",
+    re.I,
+)
+_STOP_TRIGGER = re.compile(
+    r"(?:跌破|突破|低于|高于|低於|高於)\s*[¥￥]?\d[\d,]*(?:\.\d+)?"
+    r"[^。；;\n]{0,24}(?:止损|止盈)|"
+    r"(?:止损|止盈)(?:价|位|设在|設在|设置在|設置在|于|於)?\s*"
+    r"[¥￥]?\d[\d,]*(?:\.\d+)?",
+    re.I,
+)
+_EXECUTION_TRIGGER_ACTION = re.compile(
+    r"(?:触发|跌破|突破|达到|到达|命中)[^。；;\n]{0,24}"
+    r"(?:止损|止盈|离场|離場|平仓|平倉)[^。；;\n]{0,16}"
+    r"(?:执行|執行|离场|離場|平仓|平倉|卖出|賣出)|"
+    r"(?:止损|止盈)(?:位|条件|條件)?[^。；;\n]{0,16}"
+    r"(?:即|必须|必須|应当|應當|应该|應該)?\s*"
+    r"(?:执行|執行|离场|離場|平仓|平倉|卖出|賣出)",
+    re.I,
+)
+_ACTIONABLE_HORIZON_FIELD = re.compile(
+    r"^\s*(?:\*\*)?(?:time\s+horizon|持仓周期|持倉週期|交易周期|交易週期)"
+    r"(?:\*\*)?\s*[:：][^。；;\n]*\d[\d-]*\s*"
+    r"(?:个?交易日|天|日(?!元|均线)|周|週|月|days?|weeks?|months?)",
+    re.I,
+)
+_POSITION_MAINTENANCE = re.compile(
+    r"(?:持仓者|持倉者|现有持仓|現有持倉|existing\s+(?:holder|position))"
+    r"[^。；;\n]{0,24}(?:继续持有|繼續持有|维持持有|維持持有|维持仓位|維持倉位|"
+    r"hold|maintain\s+(?:the\s+)?position)",
+    re.I,
+)
+_EXECUTION_TRIGGER_SETUP = re.compile(
+    r"(?:设置|設置|设定|設定|建立)[^。；;\n]{0,16}"
+    r"(?:触发条件|觸發條件|交易条件|交易條件|执行条件|執行條件)",
+    re.I,
+)
 _SENTIMENT_AUTHORITY = re.compile(
     r"(?:投资者|投資者|社交|市场|市場)?情绪[^。；;\n|]{0,40}"
     r"(?:\d+(?:\.\d+)?\s*/\s*10|分数|分數|评分|評分|偏多|偏空|中性|"
@@ -116,11 +192,20 @@ _SENTIMENT_AUTHORITY = re.compile(
 )
 _PRESENTATION_HEADING_TRANSLATIONS = {
     "final transaction proposal": "最终研究结论",
+    "executive summary": "研究摘要",
+    "final decision": "最终研究结论",
     "recommendation": "研究建议",
     "strategic actions": "策略说明",
     "rating": "评级",
     "investment thesis": "投资逻辑",
     "time horizon": "研究周期",
+    "action": "交易动作",
+    "trading plan": "交易计划",
+    "price target": "目标价",
+    "entry price": "入场价",
+    "stop loss": "止损价",
+    "position sizing": "仓位规模",
+    "maximum position": "仓位上限",
 }
 _POSITION_RECOMMENDATION = re.compile(
     r"(?:仓位|倉位|净敞口|净暴露|组合总值|position(?: size| sizing)?|net exposure|allocation)"
@@ -275,6 +360,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     if execution_allowed:
         result = _apply_validated_execution(result)
     else:
+        audit.extend(_collect_unapproved_execution_claims(result))
         result = _withhold_unvalidated_execution(result)
         audit.append(
             {
@@ -1154,6 +1240,7 @@ def normalize_markdown_structure(text: str) -> str:
     if not text:
         return ""
     lines = [line + "\n" for line in text.splitlines()]
+    lines = _strip_inert_markdown_inside_fences(lines)
     lines = _normalize_markdown_tables(lines)
     lines = _normalize_heading_numbers(lines)
     lines = _normalize_heading_count_claims(lines)
@@ -1176,6 +1263,26 @@ def normalize_markdown_structure(text: str) -> str:
             if line.strip():
                 last_nonblank_separator = False
     return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
+def _strip_inert_markdown_inside_fences(lines: list[str]) -> list[str]:
+    """Remove presentation markers that a fenced block would print literally."""
+    output: list[str] = []
+    fence: str | None = None
+    for line in lines:
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if marker:
+            token = marker.group(1)[0]
+            if fence is None:
+                fence = token
+            elif fence == token:
+                fence = None
+            output.append(line)
+            continue
+        if fence is not None:
+            line = line.replace("**", "").replace("__", "")
+        output.append(line)
+    return output
 
 
 def _markdown_structure_issues(text: str) -> list[str]:
@@ -1447,15 +1554,107 @@ def _withhold_unvalidated_execution(state: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _collect_unapproved_execution_claims(
+    state: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Record each unauthorized published claim before deterministic pruning.
+
+    The execution gate still validates the exact final artifact.  These entries
+    preserve the identity of every removed clause so audit closure can prove
+    that the original claim, rather than merely a sibling line, disappeared.
+    """
+    findings: list[dict[str, Any]] = []
+    fields = (
+        "market_report",
+        "sentiment_report",
+        "news_report",
+        "fundamentals_report",
+        "trader_investment_plan",
+        "investment_debate_state.judge_decision",
+        "risk_debate_state.judge_decision",
+    )
+    for field in fields:
+        text = _published_field_text(state, field)
+        if not text:
+            continue
+        for line in text.splitlines():
+            for clause in re.split(r"(?<=[。！？；;])", line):
+                claim = clause.strip()
+                warning = (
+                    "UNAPPROVED_EXECUTION_SECTION"
+                    if _heading_level(claim)
+                    and _is_execution_heading(claim.lstrip("# "))
+                    else _execution_violation(claim)
+                )
+                if not claim or not warning:
+                    continue
+                findings.append(
+                    {
+                        "category": "UNAPPROVED_EXECUTION_CLAIM",
+                        "agent": _agent_for_field(field),
+                        "field": field,
+                        "warning": warning,
+                        "claim_sha256": hashlib.sha256(claim.encode("utf-8")).hexdigest(),
+                        "original_claim": claim,
+                        "replacement_claim": _EXECUTION_WITHHELD,
+                        "enforcement_action": "REMOVED_BY_EXECUTION_GATE",
+                        "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                        "execution_blocking": True,
+                    }
+                )
+    return findings
+
+
 def _execution_violation(text: str) -> str | None:
-    plain = text.replace("**", "").replace("`", "")
+    # A line may contain an independent prohibition after an analytical
+    # sentence.  Never let a directive in one clause lend authority to an
+    # action in another clause (or vice versa).
+    for clause in re.split(r"(?<=[。！？；;])", text):
+        violation = _execution_clause_violation(clause)
+        if violation:
+            return violation
+    return None
+
+
+def _execution_clause_violation(text: str) -> str | None:
+    plain = text.replace("**", "").replace("`", "").strip()
+    if not plain:
+        return None
+    action = _EXECUTION_ACTION.search(plain) or _ENGLISH_TRADE_ACTION.search(plain)
     if _POSITION_DIRECTIVE.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
     if _POSITION_RECOMMENDATION.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
+    if _ACTIONABLE_HOLDING_PERIOD.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _ACTIONABLE_HORIZON_FIELD.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _POSITION_MAINTENANCE.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _EXECUTION_TRIGGER_SETUP.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if (
+        _ACTION_AMOUNT.search(plain)
+        or _STOP_TRIGGER.search(plain)
+        or _EXECUTION_TRIGGER_ACTION.search(plain)
+    ):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    # A prohibition with no actionable level, size, duration, trigger or later
+    # authorization withholds permission; it does not authorize a trade.  Run
+    # this only after explicit plan constructs so an unrelated "不可..." phrase
+    # cannot hide an actionable instruction elsewhere in the same claim.
+    if _EXECUTION_PROHIBITION.search(plain) and not (
+        (action and _ACTIONABLE_PRICE.search(plain))
+        or (action and _CONDITIONAL_EXECUTION.search(plain))
+    ):
+        return None
     if _EXECUTION_INSTRUCTIONS.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
-    if _EXECUTION_ACTION.search(plain) and _EXECUTION_DIRECTIVE_CONTEXT.search(plain):
+    if action and (
+        _EXECUTION_DIRECTIVE_CONTEXT.search(plain)
+        or _CONDITIONAL_EXECUTION.search(plain)
+        or _ACTIONABLE_PRICE.search(plain)
+    ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
         # A sourced valuation target is an analytical fact, not a trade exit.
@@ -1775,7 +1974,24 @@ def _finalize_audit(
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
-        if entry.get("category") == "EXECUTION_GATE":
+        if entry.get("category") == "UNAPPROVED_EXECUTION_CLAIM":
+            original = str(entry.get("original_claim") or "").strip()
+            entry["accepted_artifact_sha256"] = hashlib.sha256(
+                accepted_report.encode("utf-8")
+            ).hexdigest()
+            if original and not _claim_is_published(original, accepted_report):
+                entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
+                entry["resolution_basis"] = (
+                    "ORIGINAL_EXECUTION_CLAIM_ABSENT_FROM_EXACT_ACCEPTED_ARTIFACT"
+                )
+                entry["execution_blocking"] = False
+            else:
+                entry["resolution"] = "UNRESOLVED"
+                entry["execution_blocking"] = True
+                issues.append(
+                    f"UNRESOLVED_EXECUTION_CLAIM:{entry.get('field')}:{entry.get('claim_sha256')}"
+                )
+        elif entry.get("category") == "EXECUTION_GATE":
             execution_issues = (
                 []
                 if execution_allowed

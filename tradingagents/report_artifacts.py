@@ -18,6 +18,7 @@ MARKDOWN_EXTENSIONS = ("tables", "fenced_code", "sane_lists", "nl2br")
 _RAW_MARKDOWN = re.compile(
     r"(?m)^\s*(?:#{1,6}\s+\S|[-*_]{3,}\s*$|\|[^\n]*\|\s*$)"
 )
+_RAW_INLINE_MARKDOWN = re.compile(r"(?:\*\*|(?<!`)`(?!`))")
 
 
 def render_markdown_fragment(text: str) -> str:
@@ -86,6 +87,8 @@ def validate_rendered_html(html_text: str) -> list[str]:
     visible = "\n".join(parser.visible)
     if _RAW_MARKDOWN.search(visible):
         issues.append("RAW_MARKDOWN_VISIBLE_AFTER_RENDER")
+    if _RAW_INLINE_MARKDOWN.search(visible):
+        issues.append("RAW_INLINE_MARKDOWN_VISIBLE_AFTER_RENDER")
     for table in parser.tables:
         widths = [len(row) for row in table if row]
         if not widths or len(set(widths)) != 1:
