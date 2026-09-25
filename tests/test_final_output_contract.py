@@ -4,11 +4,13 @@ import re
 
 import pytest
 
+from tradingagents.agents.utils.execution_validation import validate_execution_plan
 from tradingagents.dataflows.japan.context import (
     render_japan_audience_context,
     render_japan_report_sections,
 )
 from tradingagents.final_output import (
+    _execution_cross_state_issues,
     _execution_violation,
     build_canonical_final_state,
     normalize_markdown_structure,
@@ -247,6 +249,7 @@ def test_validated_execution_is_the_only_user_visible_numeric_plan():
     state = _jp_state()
     state["validated_execution"] = {
         "status": "OK",
+        "action": "Buy",
         "entry": 4120.0,
         "stop": 3585.0,
         "distance": 535.0,
@@ -255,10 +258,11 @@ def test_validated_execution_is_the_only_user_visible_numeric_plan():
         "portfolio_stop_risk_pct": 0.65,
     }
     state["trader_investment_plan"] = (
-        "Entry: 4120\nStop: 3585\nPosition: 5%\n错误风险 8.8%，错误组合风险 0.44%。"
+        "Action: Buy\nEntry: 4120\nStop: 3585\nPosition: 5%\n"
+        "错误风险 8.8%，错误组合风险 0.44%。"
     )
     state["final_trade_decision"] = (
-        "Rating: Hold\nEntry: 4200\nStop: 3900\n错误风险 8.8%。"
+        "Rating: Buy\nEntry: 4200\nStop: 3900\n错误风险 8.8%。"
     )
 
     accepted = build_canonical_final_state(state)
@@ -274,6 +278,120 @@ def test_validated_execution_is_the_only_user_visible_numeric_plan():
     assert "3900" not in plan
     assert "8.8" not in plan
     assert "0.44" not in plan
+
+
+def test_portfolio_hold_revokes_legacy_actionless_numeric_authorization():
+    state = _jp_state()
+    state["trader_investment_plan"] = (
+        "| 项目 | 具体设定 |\n"
+        "|---|---|\n"
+        "| **建议** | **Hold（观望）** |\n"
+        "| **入场价** | 7300 |\n"
+        "| **止损价** | 6800 |"
+    )
+    state["final_trade_decision"] = "**评级**: Hold\n维持观望。"
+    state["risk_debate_state"]["judge_decision"] = state["final_trade_decision"]
+    # This is the precise invalid state persisted by the old parser: complete
+    # numbers were accepted even though the action was unknown.
+    state["validated_execution"] = {
+        "version": "v2",
+        "status": "OK",
+        "action": None,
+        "entry": 7300.0,
+        "stop": 6800.0,
+        "distance": 500.0,
+        "risk_pct": 6.85,
+    }
+
+    accepted = build_canonical_final_state(state)
+    validation = accepted["validated_execution"]
+    report = accepted["accepted_report_markdown"]
+
+    assert validation["status"] == "DATA_UNAVAILABLE"
+    assert validation["detail"] == "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION"
+    assert validation["action"] == "Hold"
+    assert accepted["final_output_contract"]["execution_allowed"] is False
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert "已验证交易执行参数" not in report
+    assert "| 入场价 | 7300" not in report
+    assert "| 止损价 | 6800" not in report
+    consistency = next(
+        item
+        for item in accepted["evidence_audit"]
+        if item.get("category") == "EXECUTION_ACTION_CONSISTENCY"
+    )
+    assert consistency["resolution"] == "EXECUTABLE_PLAN_WITHHELD"
+    assert consistency["execution_blocking"] is False
+
+
+def test_final_contract_independently_rejects_hold_execution_conflict():
+    state = _jp_state()
+    state["final_trade_decision"] = "**Rating**: Hold"
+    state["validated_execution"] = {
+        "status": "OK",
+        "action": "Buy",
+        "portfolio_rating": "Hold",
+    }
+
+    assert _execution_cross_state_issues(state, True) == [
+        "EXECUTION_PORTFOLIO_RATING_CONFLICT"
+    ]
+
+
+def test_current_finalized_contract_is_reopened_when_hold_execution_conflicts():
+    state = _jp_state()
+    state["trader_investment_plan"] = (
+        "Action: Buy\nEntry: 7300\nStop: 6800\nPosition: 3%"
+    )
+    state["validated_execution"] = validate_execution_plan(
+        state["trader_investment_plan"]
+    )
+    state["final_trade_decision"] = "Rating: Buy\n方向已确认。"
+    state["risk_debate_state"]["judge_decision"] = state["final_trade_decision"]
+    finalized = build_canonical_final_state(state)
+
+    finalized["raw_agent_outputs"]["trader_investment_plan"] = (
+        "| 项目 | 具体设定 |\n|---|---|\n"
+        "| 建议 | Hold（观望） |\n| 入场价 | 7300 |\n| 止损价 | 6800 |"
+    )
+    finalized["raw_agent_outputs"]["final_trade_decision"] = "评级：Hold"
+    finalized["final_trade_decision"] = "评级：Hold\n\n## 已验证交易执行参数"
+    finalized["validated_execution"].update(
+        {"status": "OK", "action": None, "portfolio_rating": "Hold"}
+    )
+    finalized["final_output_contract"].update(
+        {"status": "FINALIZED", "execution_allowed": True}
+    )
+
+    reaccepted = build_canonical_final_state(finalized)
+
+    assert reaccepted["validated_execution"]["detail"] == (
+        "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION"
+    )
+    assert reaccepted["final_output_contract"]["execution_allowed"] is False
+    assert "已验证交易执行参数" not in reaccepted["accepted_report_markdown"]
+
+
+@pytest.mark.parametrize(
+    "action,rating",
+    [("Buy", "Buy"), ("Buy", "Overweight"), ("Sell", "Sell"), ("Sell", "Underweight")],
+)
+def test_compatible_directional_decisions_keep_valid_execution(action, rating):
+    state = _jp_state()
+    state["trader_investment_plan"] = (
+        f"Action: {action}\nEntry: 7300\nStop: 6800\nPosition: 3%"
+    )
+    state["validated_execution"] = validate_execution_plan(
+        state["trader_investment_plan"]
+    )
+    state["final_trade_decision"] = f"Rating: {rating}\n方向已确认。"
+    state["risk_debate_state"]["judge_decision"] = state["final_trade_decision"]
+
+    accepted = build_canonical_final_state(state)
+
+    assert accepted["validated_execution"]["status"] == "OK"
+    assert accepted["final_output_contract"]["execution_allowed"] is True
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
 
 
 def test_execution_gate_folds_empty_nested_table_and_orphan_conclusion():

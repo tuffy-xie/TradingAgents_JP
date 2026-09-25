@@ -9,7 +9,10 @@ import pytest
 
 from tests.test_final_output_contract import _jp_state
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
-from tradingagents.agents.utils.execution_validation import validate_execution_plan
+from tradingagents.agents.utils.execution_validation import (
+    parse_execution_action,
+    validate_execution_plan,
+)
 from tradingagents.final_output import (
     _finalize_audit,
     build_canonical_final_state,
@@ -284,6 +287,53 @@ def test_hold_is_nonexecuting_even_when_model_supplies_prices(action):
     assert validation["status"] == "DATA_UNAVAILABLE"
     assert validation["detail"] == "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION"
     assert validation["action"] == "Hold"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Hold",
+        "HOLD",
+        "Hold（观望）",
+        "建议：Hold",
+        "建议：HOLD（持有）",
+        "**建议**: **Hold（观望）**",
+        "| **建议** | **Hold（观望）** | 等待更清晰信号 |",
+    ],
+)
+def test_free_text_trader_hold_variants_are_nonexecuting(text):
+    plan = (
+        text
+        if "：" in text or ":" in text or text.startswith("|")
+        else f"Action: {text}"
+    )
+    plan += "\nEntry: 7300\nStop: 6800\nPosition: 3%"
+
+    validation = validate_execution_plan(plan)
+
+    assert parse_execution_action(plan) == "Hold"
+    assert validation["status"] == "DATA_UNAVAILABLE"
+    assert validation["detail"] == "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION"
+
+
+def test_numeric_plan_without_explicit_action_fails_closed():
+    validation = validate_execution_plan(
+        "Entry: 7300\nStop: 6800\nPosition: 3%"
+    )
+
+    assert validation["status"] == "DATA_UNAVAILABLE"
+    assert validation["detail"] == "ACTION_UNAVAILABLE"
+    assert validation["action"] is None
+
+
+@pytest.mark.parametrize("action", ["Buy", "Sell"])
+def test_explicit_buy_and_sell_still_authorize_complete_numeric_plan(action):
+    validation = validate_execution_plan(
+        f"Action: {action}\nEntry: 7300\nStop: 6800\nPosition: 3%"
+    )
+
+    assert validation["status"] == "OK"
+    assert validation["action"] == action
 
 
 def test_hold_gate_removes_conditional_entry_and_exposure_prose():

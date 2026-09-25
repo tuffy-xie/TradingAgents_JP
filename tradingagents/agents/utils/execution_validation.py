@@ -10,9 +10,32 @@ from typing import Any
 _ENTRY = re.compile(r"(?:\*\*Entry Price\*\*|entry(?: price)?|入场(?:价)?|建仓价)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _STOP = re.compile(r"(?:\*\*Stop Loss\*\*|stop(?:[ -]?loss)?|止损(?:价)?)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _POSITION = re.compile(r"(?:\*\*Maximum Position\*\*|\*\*Position Sizing\*\*|position(?: sizing)?|maximum position|仓位上限|仓位)\s*[:：=]?\s*([\d.]+)\s*%", re.I)
-_ACTION = re.compile(
-    r"(?:\*\*Action\*\*|action|最终交易建议|交易动作)\s*[:：=]?\s*"
-    r"(?:\*\*)?(Buy|Hold|Sell|买入|持有|卖出|賣出)(?:\*\*)?",
+_ACTION_LABELS = {
+    "action",
+    "recommendation",
+    "final recommendation",
+    "final trading recommendation",
+    "final transaction proposal",
+    "建议",
+    "建議",
+    "交易建议",
+    "交易建議",
+    "最终建议",
+    "最終建議",
+    "最终交易建议",
+    "最終交易建議",
+    "交易动作",
+    "交易動作",
+    "操作建议",
+    "操作建議",
+    "推奨",
+    "取引推奨",
+    "売買判断",
+    "アクション",
+}
+_ACTION_VALUE = re.compile(
+    r"^\s*(Buy|Hold|Sell|买入|持有|卖出|賣出|观望|觀望)"
+    r"(?=$|[\s*`（(：:|])",
     re.I,
 )
 _ACTION_CANONICAL = {
@@ -23,6 +46,8 @@ _ACTION_CANONICAL = {
     "持有": "Hold",
     "卖出": "Sell",
     "賣出": "Sell",
+    "观望": "Hold",
+    "觀望": "Hold",
 }
 _RISK_CLAUSE = re.compile(
     r"[^\n。！？;；]*(?:止损距离|stop(?:[ -]?loss)?\s+(?:distance|risk)|risk\s*(?:pct|percentage|%)|组合(?:止损)?损失|portfolio\s+(?:stop\s+)?risk)[^\n。！？;；]*[。！？;；]?",
@@ -32,12 +57,7 @@ _RISK_CLAUSE = re.compile(
 
 def validate_execution_plan(text: str) -> dict[str, Any]:
     """Calculate plan risk from model-chosen entry, stop, and position inputs."""
-    action_match = _ACTION.search(text or "")
-    action = (
-        _ACTION_CANONICAL[action_match.group(1).casefold()]
-        if action_match
-        else None
-    )
+    action = parse_execution_action(text)
     entry = _first_decimal(_ENTRY, text)
     stop = _first_decimal(_STOP, text)
     position = _first_decimal(_POSITION, text)
@@ -47,6 +67,16 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
             "status": "DATA_UNAVAILABLE",
             "detail": "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION",
             "action": action,
+            "entry": _float(entry),
+            "stop": _float(stop),
+            "position_pct": _float(position),
+        }
+    if action is None:
+        return {
+            "version": "v2",
+            "status": "DATA_UNAVAILABLE",
+            "detail": "ACTION_UNAVAILABLE",
+            "action": None,
             "entry": _float(entry),
             "stop": _float(stop),
             "position_pct": _float(position),
@@ -82,6 +112,91 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
             "portfolio_risk_formula": "position_pct*risk_pct/100",
         },
     }
+
+
+def parse_execution_action(text: str) -> str | None:
+    """Read an explicitly labelled Trader action from prose or Markdown.
+
+    Free-text provider fallbacks are allowed to localize labels and to use a
+    Markdown table.  Only a labelled field is authoritative: an incidental
+    ``Hold`` in the reasoning never grants or revokes execution permission.
+    """
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("|") and line.endswith("|"):
+            cells = [_plain_field(cell) for cell in line.strip("|").split("|")]
+            for index, cell in enumerate(cells[:-1]):
+                if _normal_label(cell) in _ACTION_LABELS:
+                    action = _canonical_action(cells[index + 1])
+                    if action:
+                        return action
+        plain = _plain_field(line)
+        match = re.match(r"^(.+?)\s*[:：=]\s*(.+)$", plain)
+        if not match or _normal_label(match.group(1)) not in _ACTION_LABELS:
+            continue
+        action = _canonical_action(match.group(2))
+        if action:
+            return action
+    return None
+
+
+def reconcile_execution_authority(
+    validation: Mapping[str, Any] | None,
+    *,
+    trader_action: str | None,
+    portfolio_rating: str | None,
+) -> dict[str, Any]:
+    """Require compatible explicit Trader and Portfolio decisions.
+
+    Numeric completeness is necessary but not sufficient for a new execution
+    plan.  The Trader must explicitly authorize Buy/Sell and the Portfolio
+    rating must agree with that direction.  Hold and unknown decisions always
+    fail closed, independently of any parsed entry or stop values.
+    """
+    result = dict(validation or {})
+    action = trader_action or result.get("action")
+    result["action"] = action
+    result["portfolio_rating"] = portfolio_rating
+
+    detail: str | None = None
+    if portfolio_rating == "Hold" or action == "Hold":
+        detail = "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION"
+    elif action not in {"Buy", "Sell"}:
+        detail = "ACTION_UNAVAILABLE"
+    elif portfolio_rating is None:
+        detail = "FINAL_RATING_UNAVAILABLE"
+    elif (
+        action == "Buy" and portfolio_rating not in {"Buy", "Overweight"}
+    ) or (
+        action == "Sell" and portfolio_rating not in {"Sell", "Underweight"}
+    ):
+        detail = "TRADER_PORTFOLIO_ACTION_CONFLICT"
+
+    if detail:
+        result.update(
+            {
+                "version": result.get("version", "v2"),
+                "status": "DATA_UNAVAILABLE",
+                "detail": detail,
+            }
+        )
+    return result
+
+
+def _plain_field(value: str) -> str:
+    value = re.sub(r"^\s*(?:#{1,6}|[-*+] |\d+[.)]\s+)", "", value)
+    return value.replace("**", "").replace("__", "").replace("`", "").strip()
+
+
+def _normal_label(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _canonical_action(value: str) -> str | None:
+    match = _ACTION_VALUE.match(value)
+    return _ACTION_CANONICAL.get(match.group(1).casefold()) if match else None
 
 
 def authoritative_execution_context(value: Mapping[str, Any] | None) -> str:

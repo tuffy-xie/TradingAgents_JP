@@ -376,7 +376,7 @@ def test_wrong_capex_oku_conversion_is_removed():
 
 def test_execution_math_and_portfolio_risk_are_authoritative():
     plan = (
-        "**Entry Price**: 4120\n\n**Stop Loss**: 3585\n\n"
+        "**Action**: Buy\n\n**Entry Price**: 4120\n\n**Stop Loss**: 3585\n\n"
         "**Position Sizing**: 5% of portfolio"
     )
     validation = validate_execution_plan(plan)

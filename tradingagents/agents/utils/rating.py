@@ -37,10 +37,9 @@ def parse_rating(text: str, default: str = "Hold") -> str:
 
     Returns a Title-cased rating string, or ``default`` if no rating word appears.
     """
-    for line in text.splitlines():
-        m = _RATING_LABEL_RE.search(line)
-        if m and m.group(1).lower() in _RATING_SET:
-            return m.group(1).capitalize()
+    explicit = parse_explicit_rating(text)
+    if explicit:
+        return explicit
 
     for line in text.splitlines():
         for word in line.lower().split():
@@ -49,3 +48,17 @@ def parse_rating(text: str, default: str = "Hold") -> str:
                 return clean.capitalize()
 
     return default
+
+
+def parse_explicit_rating(text: str) -> str | None:
+    """Return only an explicitly labelled portfolio rating.
+
+    Unlike :func:`parse_rating`, this helper never invents a default and never
+    treats a rating word embedded in narrative prose as final authority.  It is
+    intended for execution authorization and other fail-closed boundaries.
+    """
+    for line in text.splitlines():
+        match = _RATING_LABEL_RE.search(line)
+        if match and match.group(1).lower() in _RATING_SET:
+            return match.group(1).capitalize()
+    return None

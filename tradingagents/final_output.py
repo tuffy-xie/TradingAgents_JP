@@ -18,7 +18,12 @@ from datetime import date, datetime
 from typing import Any
 
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
-from tradingagents.agents.utils.execution_validation import validate_execution_plan
+from tradingagents.agents.utils.execution_validation import (
+    parse_execution_action,
+    reconcile_execution_authority,
+    validate_execution_plan,
+)
+from tradingagents.agents.utils.rating import parse_explicit_rating
 from tradingagents.dataflows.japan.context import (
     render_japan_financial_report,
     render_japan_report_sections,
@@ -278,7 +283,13 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     if (result.get("market_context") or {}).get("market") != "JP":
         return result
     contract = result.get("final_output_contract") or {}
-    if contract.get("status") == "FINALIZED" and contract.get("version") == _CONTRACT_VERSION:
+    if (
+        contract.get("status") == "FINALIZED"
+        and contract.get("version") == _CONTRACT_VERSION
+        and not _execution_cross_state_issues(
+            result, bool(contract.get("execution_allowed"))
+        )
+    ):
         return result
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
         # Re-accept archived v1 state under the current output contract.
@@ -300,7 +311,12 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         if not (
             isinstance(item, Mapping)
             and (
-                item.get("category") in {"FINAL_ARTIFACT_VIOLATION", "EXECUTION_GATE"}
+                item.get("category")
+                in {
+                    "FINAL_ARTIFACT_VIOLATION",
+                    "EXECUTION_ACTION_CONSISTENCY",
+                    "EXECUTION_GATE",
+                }
                 or item.get("warning")
             )
         )
@@ -324,23 +340,6 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 )
         result[debate_field] = accepted
 
-    # Replaying a pre-v4 persisted state must also upgrade the execution
-    # semantic contract. Earlier validators accepted numeric plans even when
-    # the Trader action was Hold (defined by the product prompts as no action).
-    if (
-        contract
-        and contract.get("version") != _CONTRACT_VERSION
-        and (result.get("validated_execution") or {}).get("status") == "OK"
-    ):
-        trader_text = result.get("trader_investment_plan")
-        if isinstance(trader_text, str):
-            upgraded = validate_execution_plan(trader_text)
-            # Contract upgrades may revoke an execution authorization (for
-            # example, Hold is explicitly non-executing), but never manufacture
-            # a new authorization that the persisted run did not already have.
-            if upgraded.get("status") != "OK":
-                result["validated_execution"] = upgraded
-
     financial = render_japan_financial_report(result)
     if financial:
         base = _remove_current_financial_sections(result.get("fundamentals_report", ""))
@@ -355,6 +354,45 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     )
     result["market_report"] = _canonicalize_market_report(result)
     result = _enforce_domain_authority_ownership(result)
+
+    raw_trader = raw_outputs.get("trader_investment_plan")
+    raw_portfolio = raw_outputs.get("final_trade_decision")
+    trader_action = (
+        parse_execution_action(raw_trader) if isinstance(raw_trader, str) else None
+    )
+    portfolio_rating = (
+        parse_explicit_rating(raw_portfolio)
+        if isinstance(raw_portfolio, str)
+        else None
+    )
+    prior_validation = dict(result.get("validated_execution") or {})
+    # Revalidate an already-authorized plan from its raw Trader output. This may
+    # revoke old permission after a parser/contract upgrade, but an archived
+    # unavailable plan is never promoted into a new authorization during replay.
+    if prior_validation.get("status") == "OK" and isinstance(raw_trader, str):
+        prior_validation = validate_execution_plan(raw_trader)
+    reconciled = reconcile_execution_authority(
+        prior_validation,
+        trader_action=trader_action,
+        portfolio_rating=portfolio_rating,
+    )
+    result["validated_execution"] = reconciled
+    if (
+        (state.get("validated_execution") or {}).get("status") == "OK"
+        and reconciled.get("status") != "OK"
+    ):
+        audit.append(
+            {
+                "category": "EXECUTION_ACTION_CONSISTENCY",
+                "agent": "Canonical Final State",
+                "field": "validated_execution",
+                "detail": reconciled.get("detail"),
+                "trader_action": trader_action,
+                "portfolio_rating": portfolio_rating,
+                "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                "execution_blocking": True,
+            }
+        )
 
     execution_allowed = (result.get("validated_execution") or {}).get("status") == "OK"
     if execution_allowed:
@@ -421,7 +459,14 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 issue.startswith("CROSS_DOMAIN_AUTHORITY") for issue in artifact_issues
             ),
             "execution_consistent": not any(
-                issue.startswith(("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_"))
+                issue.startswith(
+                    (
+                        "EXECUTION_",
+                        "UNAPPROVED_",
+                        "UNVALIDATED_",
+                        "POSITION_SIZE_",
+                    )
+                )
                 for issue in artifact_issues
             ),
             "presentation_valid": not any(
@@ -527,6 +572,8 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
     contract = state.get("final_output_contract") or {}
     if contract.get("status") != "FINALIZED" or contract.get("version") != _CONTRACT_VERSION:
         raise ValueError("Japan report input is not an accepted canonical final state")
+    if _execution_cross_state_issues(state, bool(contract.get("execution_allowed"))):
+        raise ValueError("Japan report execution authority is internally inconsistent")
     accepted = state.get("accepted_report_markdown")
     expected_hash = contract.get("accepted_report_sha256")
     if not isinstance(accepted, str) or hashlib.sha256(accepted.encode("utf-8")).hexdigest() != expected_hash:
@@ -1863,10 +1910,32 @@ def _validate_final_artifact(
     issues = validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
+    issues.extend(_execution_cross_state_issues(state, execution_allowed))
     issues.extend(_domain_authority_issues(state))
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
+
+
+def _execution_cross_state_issues(
+    state: Mapping[str, Any], execution_allowed: bool
+) -> list[str]:
+    """Reject executable plans without two compatible decision authorities."""
+    if not execution_allowed:
+        return []
+    validation = state.get("validated_execution") or {}
+    action = validation.get("action")
+    rating = validation.get("portfolio_rating") or parse_explicit_rating(
+        str(state.get("final_trade_decision") or "")
+    )
+    if action not in {"Buy", "Sell"}:
+        return ["EXECUTION_ACTION_NOT_AUTHORIZED"]
+    compatible = (
+        action == "Buy" and rating in {"Buy", "Overweight"}
+    ) or (
+        action == "Sell" and rating in {"Sell", "Underweight"}
+    )
+    return [] if compatible else ["EXECUTION_PORTFOLIO_RATING_CONFLICT"]
 
 
 def validate_final_report_text(
@@ -1991,7 +2060,10 @@ def _finalize_audit(
                 issues.append(
                     f"UNRESOLVED_EXECUTION_CLAIM:{entry.get('field')}:{entry.get('claim_sha256')}"
                 )
-        elif entry.get("category") == "EXECUTION_GATE":
+        elif entry.get("category") in {
+            "EXECUTION_ACTION_CONSISTENCY",
+            "EXECUTION_GATE",
+        }:
             execution_issues = (
                 []
                 if execution_allowed
