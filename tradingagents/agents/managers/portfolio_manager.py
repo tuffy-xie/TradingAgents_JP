@@ -72,7 +72,7 @@ def create_portfolio_manager(llm):
 
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts. The final output must explicitly cover the requested horizon, entry condition, stop-loss, take-profit/trim condition, and maximum position. If the data cannot support a safe setup within the mandate, select Hold.
+Be decisive and ground every conclusion in specific evidence from the analysts. Any explicitly supplied execution/risk constraints above are binding. If the evidence cannot support a safe setup, select Hold.
 
 {NO_EXTERNAL_TOOLS}{get_language_instruction()}"""
 

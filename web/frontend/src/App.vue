@@ -11,7 +11,6 @@ const form = reactive({
   deepModel: '',
   analysts: ['market', 'social', 'news', 'fundamentals'],
   depth: 1,
-  tradingHorizon: 'multi_day',
   entryCondition: '',
   stopLossCondition: '',
   takeProfitCondition: '',
@@ -204,7 +203,6 @@ function startAnalysis() {
     quick_model:     form.quickModel,
     analysts:        form.analysts.join(','),
     research_depth:  form.depth,
-    trading_horizon: form.tradingHorizon,
     output_language: form.language,
     checkpoint:      form.checkpoint ? 'true' : 'false',
   })
@@ -570,15 +568,6 @@ function toggleSection(key) {
 
           <section class="form-section">
             <h4 class="section-title">交易计划 <span class="label-hint">约束会进入研究与最终决策</span></h4>
-            <div class="form-group">
-              <label>交易周期</label>
-              <select v-model="form.tradingHorizon" :disabled="isRunning">
-                <option value="intraday">日内（当日开仓、当日平仓）</option>
-                <option value="multi_day">数日（2–10 个交易日）</option>
-                <option value="multi_week">数周（2–12 周）</option>
-                <option value="long_term">长期（3 个月以上）</option>
-              </select>
-            </div>
             <div class="form-group">
               <label>入场条件 <span class="label-hint">可选；留空由模型制定</span></label>
               <input v-model.trim="form.entryCondition" :disabled="isRunning" placeholder="例如：放量突破 5 日高点后入场" />

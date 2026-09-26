@@ -66,7 +66,7 @@ class Propagator:
             "verified_market_snapshot": verified_market_snapshot,
             "instrument_context": instrument_context,
             "trade_date": str(trade_date),
-            "trade_constraints": trade_constraints or {"horizon": "multi_day"},
+            "trade_constraints": trade_constraints or {},
             "past_context": past_context,
             "investment_debate_state": InvestDebateState(
                 {

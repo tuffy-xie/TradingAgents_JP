@@ -61,7 +61,6 @@ def build_run_manifest(
             "max_debate_rounds",
             "max_risk_discuss_rounds",
             "selected_analysts",
-            "trading_horizon",
         )
         if key in config
     }

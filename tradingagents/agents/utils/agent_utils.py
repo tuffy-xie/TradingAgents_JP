@@ -70,6 +70,7 @@ def get_language_instruction() -> str:
     report rather than a mix of languages.
     """
     from tradingagents.dataflows.config import get_config
+
     lang = get_config().get("output_language", "English")
     if lang.strip().lower() == "english":
         return ""
@@ -203,25 +204,14 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
 
 
 def get_trade_constraints_from_state(state: Mapping[str, Any]) -> str:
-    """Render the user-selected mandate into a consistent agent instruction.
+    """Render only execution/risk constraints the user explicitly supplied.
 
-    Blank fields deliberately mean the model should derive a data-supported
-    condition.  Filled fields are hard constraints: agents must not recommend
-    an action that ignores them, and should choose Hold when the setup cannot
-    satisfy the mandate safely.
+    Investment horizon is intentionally absent.  TradingAgents' native
+    Portfolio output may recommend a holding period, but the user does not
+    choose one as an upstream decision constraint.
     """
     raw = state.get("trade_constraints") or {}
-    horizon = raw.get("horizon", "multi_day")
-    horizon_labels = {
-        "intraday": "日内（当日开仓、当日平仓）",
-        "multi_day": "数日（通常 2–10 个交易日）",
-        "multi_week": "数周（通常 2–12 周）",
-        "long_term": "长期（通常 3 个月以上）",
-    }
-    lines = [
-        "**User trading mandate — treat this as binding:**",
-        f"- Trading horizon: {horizon_labels.get(horizon, horizon_labels['multi_day'])}",
-    ]
+    lines: list[str] = []
     fields = (
         ("entry_condition", "Entry condition"),
         ("stop_loss_condition", "Stop-loss condition"),
@@ -231,15 +221,14 @@ def get_trade_constraints_from_state(state: Mapping[str, Any]) -> str:
         value = raw.get(key)
         if isinstance(value, str) and value.strip():
             lines.append(f"- {label}: {value.strip()}")
-        else:
-            lines.append(f"- {label}: derive a specific, data-supported condition")
     max_position = raw.get("max_position_pct")
     if max_position is not None:
         lines.append(f"- Maximum position: {max_position}% of portfolio")
-    else:
-        lines.append("- Maximum position: derive a conservative portfolio percentage")
+    if not lines:
+        return ""
+    lines.insert(0, "**User execution/risk constraints — treat supplied values as binding:**")
     lines.append(
-        "- Do not invent price levels. If data cannot support the requested setup, recommend Hold / no trade and explain why."
+        "- Do not invent price levels. If evidence cannot support these constraints, recommend Hold / no trade and explain why."
     )
     return "\n".join(lines)
 

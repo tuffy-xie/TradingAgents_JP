@@ -29,6 +29,11 @@ def create_trader(llm):
         investment_plan = state["investment_plan"]
         trade_constraints = get_trade_constraints_from_state(state)
         japan_data_context = get_japan_downstream_evidence_context_from_state(state)
+        constraint_instruction = (
+            "Follow any explicit user execution/risk constraints below exactly. "
+            if trade_constraints
+            else ""
+        )
 
         messages = [
             {
@@ -37,8 +42,7 @@ def create_trader(llm):
                     "You are a trading agent analyzing market data to make investment decisions. "
                     "Based on your analysis, provide a specific recommendation to buy, sell, or hold. "
                     "Anchor your reasoning in the analysts' reports and the research plan. "
-                    "Follow the user's trading mandate exactly. Your proposal must state entry, "
-                    "stop-loss, take-profit/trim, maximum position, and the requested holding horizon. "
+                    + constraint_instruction
                     + NO_EXTERNAL_TOOLS
                     + get_language_instruction()
                 ),

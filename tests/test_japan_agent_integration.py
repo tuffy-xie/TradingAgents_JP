@@ -21,16 +21,24 @@ def _bundle() -> dict:
         "ticker": "6981.T",
         "items": [
             {
-                "source": "TDnet", "source_type": "share_buyback", "timestamp": "2026-08-12T15:00:00+00:00",
-                "title": "自己株式の取得", "url": "https://example.test/tdnet.pdf", "metadata": {},
+                "source": "TDnet",
+                "source_type": "share_buyback",
+                "timestamp": "2026-08-12T15:00:00+00:00",
+                "title": "自己株式の取得",
+                "url": "https://example.test/tdnet.pdf",
+                "metadata": {},
             },
             {
-                "source": "JSF", "source_type": "securities_finance_balance", "timestamp": "2026-08-12T00:00:00+00:00",
-                "title": "JSF financing and stock-loan balance", "metadata": {"finance_balance": 721900, "stock_loan_balance": 100},
+                "source": "JSF",
+                "source_type": "securities_finance_balance",
+                "timestamp": "2026-08-12T00:00:00+00:00",
+                "title": "JSF financing and stock-loan balance",
+                "metadata": {"finance_balance": 721900, "stock_loan_balance": 100},
             },
         ],
         "source_statuses": [
-            {"source": "TDnet", "status": "OK"}, {"source": "JPX", "status": "OK"},
+            {"source": "TDnet", "status": "OK"},
+            {"source": "JPX", "status": "OK"},
             {"source": "JSF", "status": "OK"},
         ],
     }
@@ -86,7 +94,10 @@ def test_japan_sentiment_prompt_appends_to_original_community_sources(monkeypatc
     def respond(prompt):
         captured["prompt"] = prompt
         return SentimentReport(
-            overall_band=SentimentBand.NEUTRAL, overall_score=5, confidence="low", narrative="DATA UNAVAILABLE"
+            overall_band=SentimentBand.NEUTRAL,
+            overall_score=5,
+            confidence="low",
+            narrative="DATA UNAVAILABLE",
         )
 
     structured.invoke.side_effect = respond
@@ -145,7 +156,7 @@ def test_us_sentiment_preload_call_contract_is_unchanged(monkeypatch):
     assert social_calls["reddit"] == (("NVDA",), {})
 
 
-def test_financial_official_scan_is_not_shortened_by_trading_horizon(monkeypatch):
+def test_japan_source_windows_are_independent_of_user_investment_horizon(monkeypatch):
     captured = {}
 
     async def collect(_self, _context, *, start_date, end_date, provider_start_dates):
@@ -156,16 +167,12 @@ def test_financial_official_scan_is_not_shortened_by_trading_horizon(monkeypatch
         )
         return JapanResearchBundle("5016.T", (), ())
 
-    monkeypatch.setattr(
-        "tradingagents.dataflows.japan.context.JapanDataService.collect", collect
-    )
+    monkeypatch.setattr("tradingagents.dataflows.japan.context.JapanDataService.collect", collect)
     monkeypatch.setattr(
         "tradingagents.dataflows.japan.context.build_official_japan_providers", tuple
     )
 
-    bundle = collect_japan_data_bundle(
-        resolve_market_context("5016.T"), "2026-08-30", "multi_day"
-    )
+    bundle = collect_japan_data_bundle(resolve_market_context("5016.T"), "2026-08-30")
 
     assert captured["start_date"] == "2026-08-23"
     assert captured["provider_start_dates"] == {
@@ -174,3 +181,4 @@ def test_financial_official_scan_is_not_shortened_by_trading_horizon(monkeypatch
     }
     assert bundle["window_policy"]["official_catalyst_days"] == 14
     assert bundle["window_policy"]["financial_official_scan_days"] == 32
+    assert "trading_horizon" not in bundle

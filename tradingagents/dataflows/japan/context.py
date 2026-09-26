@@ -17,10 +17,11 @@ from tradingagents.dataflows.market import Market, MarketContext
 from .official import build_official_japan_providers
 from .service import JapanDataService
 
+_OFFICIAL_CATALYST_LOOKBACK_DAYS = 14
+_FINANCIAL_OFFICIAL_SCAN_DAYS = 32
 
-def collect_japan_data_bundle(
-    context: MarketContext, trade_date: str, trading_horizon: str = "multi_day"
-) -> dict[str, Any]:
+
+def collect_japan_data_bundle(context: MarketContext, trade_date: str) -> dict[str, Any]:
     """Fetch a bounded recent Japan bundle synchronously at graph-run start.
 
     Provider failures are represented inside ``source_statuses``.  A defensive
@@ -45,12 +46,11 @@ def collect_japan_data_bundle(
             ],
         }
     try:
-        official_days = _official_event_days(trading_horizon)
         # Keep the latest month-end disclosure itself inside the verified
         # official window for every 31-day analysis interval.  A 31-day
         # inclusive window can begin one day after a July 31 disclosure on an
         # August 31 run, leaving same-day official updates unverified.
-        financial_official_scan_days = max(32, official_days)
+        financial_official_scan_days = _FINANCIAL_OFFICIAL_SCAN_DAYS
         official_start_date = end_date - timedelta(days=financial_official_scan_days - 1)
         bundle = asyncio.run(
             JapanDataService(build_official_japan_providers()).collect(
@@ -75,9 +75,10 @@ def collect_japan_data_bundle(
     raw.update(
         {
             "analysis_date": end_date.isoformat(),
-            "trading_horizon": trading_horizon,
             "window_policy": {
-                "official_catalyst_days": official_days,
+                # Source/evidence lookbacks are production data contracts, not
+                # a user-selected investment horizon.
+                "official_catalyst_days": _OFFICIAL_CATALYST_LOOKBACK_DAYS,
                 "financial_official_scan_days": financial_official_scan_days,
                 "news_days": 7,
                 "sentiment_days": 7,
@@ -87,16 +88,6 @@ def collect_japan_data_bundle(
         }
     )
     return raw
-
-
-def _official_event_days(trading_horizon: str) -> int:
-    """Reuse the existing UI horizon names; only official events get widened."""
-    return {
-        "intraday": 7,
-        "multi_day": 14,
-        "multi_week": 30,
-        "long_term": 45,
-    }.get(trading_horizon, 14)
 
 
 def render_japan_agent_context(state: Mapping[str, Any]) -> str:
@@ -112,13 +103,11 @@ def render_japan_agent_context(state: Mapping[str, Any]) -> str:
         if item.get("source") in {"TDnet", "EDINET"}
         or (
             item.get("source") == "Company IR"
-            and (item.get("metadata") or {}).get("freshness_status")
-            != "FRESHNESS_UNVERIFIED"
+            and (item.get("metadata") or {}).get("freshness_status") != "FRESHNESS_UNVERIFIED"
         )
         or (
             item.get("source") == "J-Quants"
-            and item.get("source_type")
-            in {"official_ohlcv", "official_security_master"}
+            and item.get("source_type") in {"official_ohlcv", "official_security_master"}
         )
     ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
@@ -184,9 +173,7 @@ def render_japan_audience_context(state: Mapping[str, Any], audience: str) -> st
             )
         ]
         selected = [
-            item
-            for item in selected
-            if item.get("source_type") != "japan_analyst_expectations"
+            item for item in selected if item.get("source_type") != "japan_analyst_expectations"
         ]
         controls = "Keep source and publication date with every factual event. Exclude future or unverified events."
     elif audience == "FUNDAMENTALS":
@@ -262,18 +249,12 @@ def render_japan_financial_report(state: Mapping[str, Any]) -> str:
     statements and vendor estimates remain the Fundamentals Analyst's domain.
     """
     bundle = state.get("japan_data_bundle") or {}
-    assessment = (bundle.get("provider_metadata") or {}).get(
-        "Japan Financial Authority"
-    )
+    assessment = (bundle.get("provider_metadata") or {}).get("Japan Financial Authority")
     if not isinstance(assessment, Mapping):
         return ""
     lines = ["## 当前财务权威摘要"]
     lines.extend(_financial_report_section("最新实际业绩", assessment.get("actual"), False))
-    lines.extend(
-        _financial_report_section(
-            "当前公司业绩指引", assessment.get("guidance"), True
-        )
-    )
+    lines.extend(_financial_report_section("当前公司业绩指引", assessment.get("guidance"), True))
     coverage = assessment.get("official_coverage")
     if isinstance(coverage, Mapping):
         status = _public_financial_status(coverage.get("status"))
@@ -340,9 +321,7 @@ def _financial_report_section(title: str, value: Any, guidance: bool) -> list[st
         )
     source = document.get("source") or "未提供"
     source_role = (
-        "结构化补充来源"
-        if document.get("source_type") == "STRUCTURED_SOURCE"
-        else "官方披露来源"
+        "结构化补充来源" if document.get("source_type") == "STRUCTURED_SOURCE" else "官方披露来源"
     )
     lines.extend(
         [
@@ -370,11 +349,7 @@ def _public_financial_metric(value: Any, *, guidance: bool) -> str:
     display_amount: Any = amount
     if isinstance(amount, float) and amount.is_integer():
         display_amount = int(amount)
-    return (
-        f"{display_amount} {unit}"
-        if unit
-        else f"{display_amount}（单位未提供）"
-    )
+    return f"{display_amount} {unit}" if unit else f"{display_amount}（单位未提供）"
 
 
 def _public_financial_status(value: Any) -> str:
@@ -418,9 +393,7 @@ def _financial_assessment_lines(value: Any, *, guidance: bool) -> list[str]:
             ]
         )
     decision_eligible = bool(
-        status == "OK"
-        and isinstance(gate, Mapping)
-        and gate.get("status") == "OK"
+        status == "OK" and isinstance(gate, Mapping) and gate.get("status") == "OK"
     )
     lines.append(
         "- Current-use eligibility: OK"
@@ -542,13 +515,11 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
         if item.get("source") in {"TDnet", "EDINET"}
         or (
             item.get("source") == "Company IR"
-            and (item.get("metadata") or {}).get("freshness_status")
-            != "FRESHNESS_UNVERIFIED"
+            and (item.get("metadata") or {}).get("freshness_status") != "FRESHNESS_UNVERIFIED"
         )
         or (
             item.get("source") == "J-Quants"
-            and item.get("source_type")
-            in {"official_ohlcv", "official_security_master"}
+            and item.get("source_type") in {"official_ohlcv", "official_security_master"}
         )
     ]
     supply = [item for item in items if item.get("source") in {"JPX", "JSF"}]
@@ -619,9 +590,7 @@ def _supply_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
                 lines.append("  - 发布状态：速報")
             elif publication == "CONFIRMED":
                 lines.append("  - 发布状态：確報")
-            lines.append(
-                "  - 语义边界：以上仅是 JSF 可观察余额，不代表全市场空头总量或机构立场。"
-            )
+            lines.append("  - 语义边界：以上仅是 JSF 可观察余额，不代表全市场空头总量或机构立场。")
         else:
             lines.append(f"- JPX：{date_text}，{item.get('title') or '公开数据'}")
     return lines or ["本次窗口没有可用的信用与供需数据。"]
@@ -649,8 +618,10 @@ def _sentiment_report_lines(items: list[Mapping[str, Any]]) -> list[str]:
     metadata = latest["metadata"]
     sample_count = metadata.get("sample_count")
     score = metadata.get("sentiment_score")
-    if not isinstance(sample_count, int) or sample_count <= 0 or not isinstance(
-        score, (int, float)
+    if (
+        not isinstance(sample_count, int)
+        or sample_count <= 0
+        or not isinstance(score, (int, float))
     ):
         return ["本次没有可用的日本投资者/社交情绪样本。"]
     band = _sentiment_band(float(score))
@@ -685,8 +656,10 @@ def render_japan_sentiment_report(bundle: Mapping[str, Any] | None) -> str:
     metadata = latest["metadata"]
     sample_count = metadata.get("sample_count")
     score = metadata.get("sentiment_score")
-    if not isinstance(sample_count, int) or sample_count <= 0 or not isinstance(
-        score, (int, float)
+    if (
+        not isinstance(sample_count, int)
+        or sample_count <= 0
+        or not isinstance(score, (int, float))
     ):
         return "## 日本投资者与社交情绪\n\n本次没有可用的投资者或社交情绪样本。"
 
@@ -759,9 +732,7 @@ def _sentiment_confidence(value: Any, sample_count: int) -> str:
         if float(value) < 0.7:
             return "中"
         return "高"
-    return {"low": "低", "medium": "中", "high": "高"}.get(
-        str(value or "").strip().lower(), "低"
-    )
+    return {"low": "低", "medium": "中", "high": "高"}.get(str(value or "").strip().lower(), "低")
 
 
 def _item_lines(items: list[Mapping[str, Any]], *, include_metadata: bool) -> list[str]:
@@ -838,6 +809,8 @@ def _research_metadata(value: Any) -> Any:
         return [_research_metadata(item) for item in value]
     if isinstance(value, str):
         lowered = value.lower()
-        if any(term in lowered for term in ("verified market snapshot", "http 4", "cache hit", "retry")):
+        if any(
+            term in lowered for term in ("verified market snapshot", "http 4", "cache hit", "retry")
+        ):
             return None
     return value

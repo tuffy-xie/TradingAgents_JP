@@ -60,7 +60,7 @@ class AgentState(MessagesState):
     instrument_context: Annotated[str, "Deterministic ticker identity resolved at run start"]
     trade_date: Annotated[str, "What date we are trading at"]
     trade_constraints: Annotated[
-        dict, "User-selected trading horizon and execution/risk constraints"
+        dict, "Optional user-supplied execution and risk constraints"
     ]
 
     sender: Annotated[str, "Agent that sent this message"]

@@ -237,8 +237,7 @@ _EXECUTION_WITHHELD = (
 )
 _PUBLIC_NEWS_TEXT = {
     "Japan company-news authority": "已核验的日本公司新闻",
-    "The following timestamped Japan bundle headlines are available; a separate tool's empty result does not mean there is no company news.":
-        "以下公司新闻均有明确发布时间；其他新闻工具返回空结果，不代表本次没有公司新闻。",
+    "The following timestamped Japan bundle headlines are available; a separate tool's empty result does not mean there is no company news.": "以下公司新闻均有明确发布时间；其他新闻工具返回空结果，不代表本次没有公司新闻。",
 }
 _INTERNAL_STATUS = {
     "OK": "通过",
@@ -275,6 +274,12 @@ _INTERNAL_STATUS = {
     "US_GAAP": "美国会计准则",
 }
 _MACHINE_ENUM = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]*)(?:_[A-Z0-9]+)+(?![A-Za-z0-9])")
+_DEPRECATED_USER_HORIZON_CLAIM = re.compile(
+    r"(?:用户|客户|委托人).{0,60}(?:投资期限|交易周期|持仓周期|分析窗口|时间窗口|时间框架|期限|窗口)"
+    r"|\b(?:user|client)(?:[-\s]+(?:selected|specified|requested))?.{0,40}"
+    r"(?:investment\s+horizon|trading\s+horizon|time\s+horizon|timeframe|holding\s+period|analysis\s+window)\b",
+    re.IGNORECASE,
+)
 
 
 def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -282,25 +287,28 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     result = copy.deepcopy(dict(state))
     if (result.get("market_context") or {}).get("market") != "JP":
         return result
+    needs_horizon_migration = _has_deprecated_horizon_state(result)
+    result = _drop_deprecated_horizon_metadata(result)
     contract = result.get("final_output_contract") or {}
     if (
         contract.get("status") == "FINALIZED"
         and contract.get("version") == _CONTRACT_VERSION
-        and not _execution_cross_state_issues(
-            result, bool(contract.get("execution_allowed"))
-        )
+        and not needs_horizon_migration
+        and not _execution_cross_state_issues(result, bool(contract.get("execution_allowed")))
     ):
         return result
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
         # Re-accept archived v1 state under the current output contract.
         result.update(copy.deepcopy(result["raw_agent_outputs"]))
-    if not result.get("trader_investment_plan") and result.get(
-        "trader_investment_decision"
-    ):
+    result = _drop_deprecated_horizon_metadata(result)
+    if not result.get("trader_investment_plan") and result.get("trader_investment_decision"):
         result["trader_investment_plan"] = result["trader_investment_decision"]
 
     raw_outputs = _snapshot_agent_outputs(result)
     result["raw_agent_outputs"] = raw_outputs
+    # Remove retired user-horizon attribution before numeric evidence
+    # enforcement can turn its day/month range into placeholder fragments.
+    result = _map_report_text(result, _remove_deprecated_user_horizon_claims)
     # Artifact violations describe one concrete rendered candidate.  Archived
     # state can be re-accepted under a newer contract, so carry forward the
     # evidence audit but recompute final-artifact findings from the new exact
@@ -335,9 +343,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         accepted = dict(debate)
         for key, value in debate.items():
             if isinstance(value, str):
-                accepted[key], audit = _accept_text(
-                    result, value, f"{debate_field}.{key}", audit
-                )
+                accepted[key], audit = _accept_text(result, value, f"{debate_field}.{key}", audit)
         result[debate_field] = accepted
 
     financial = render_japan_financial_report(result)
@@ -349,21 +355,15 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
 
     # The source-native aggregate is the only published JP sentiment
     # authority. Agent prose remains available in raw_agent_outputs/full log.
-    result["sentiment_report"] = render_japan_sentiment_report(
-        result.get("japan_data_bundle")
-    )
+    result["sentiment_report"] = render_japan_sentiment_report(result.get("japan_data_bundle"))
     result["market_report"] = _canonicalize_market_report(result)
     result = _enforce_domain_authority_ownership(result)
 
     raw_trader = raw_outputs.get("trader_investment_plan")
     raw_portfolio = raw_outputs.get("final_trade_decision")
-    trader_action = (
-        parse_execution_action(raw_trader) if isinstance(raw_trader, str) else None
-    )
+    trader_action = parse_execution_action(raw_trader) if isinstance(raw_trader, str) else None
     portfolio_rating = (
-        parse_explicit_rating(raw_portfolio)
-        if isinstance(raw_portfolio, str)
-        else None
+        parse_explicit_rating(raw_portfolio) if isinstance(raw_portfolio, str) else None
     )
     prior_validation = dict(result.get("validated_execution") or {})
     # Revalidate an already-authorized plan from its raw Trader output. This may
@@ -377,10 +377,9 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         portfolio_rating=portfolio_rating,
     )
     result["validated_execution"] = reconciled
-    if (
-        (state.get("validated_execution") or {}).get("status") == "OK"
-        and reconciled.get("status") != "OK"
-    ):
+    if (state.get("validated_execution") or {}).get("status") == "OK" and reconciled.get(
+        "status"
+    ) != "OK":
         audit.append(
             {
                 "category": "EXECUTION_ACTION_CONSISTENCY",
@@ -412,6 +411,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     result = _publicize_state_text(result)
+    result = _map_report_text(result, _remove_deprecated_user_horizon_claims)
     accepted_report = sanitize_text(compose_user_report_markdown(result))
     artifact_issues = _validate_final_artifact(
         result, execution_allowed, accepted_report=accepted_report
@@ -451,7 +451,17 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "audit_closure_status": "CLOSED" if not audit_issues else "UNRESOLVED",
         "validation_dimensions": {
             "structural_artifact_valid": not any(
-                issue.startswith(("HEADING_", "NUMBERED_", "CIRCLED_", "EMPTY_", "MALFORMED_", "RAW_MARKDOWN", "MARKDOWN_SWALLOWED"))
+                issue.startswith(
+                    (
+                        "HEADING_",
+                        "NUMBERED_",
+                        "CIRCLED_",
+                        "EMPTY_",
+                        "MALFORMED_",
+                        "RAW_MARKDOWN",
+                        "MARKDOWN_SWALLOWED",
+                    )
+                )
                 for issue in artifact_issues
             ),
             "evidence_closure": not audit_issues,
@@ -479,9 +489,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def compose_user_report_markdown(
-    state: Mapping[str, Any], *, ticker: str | None = None
-) -> str:
+def compose_user_report_markdown(state: Mapping[str, Any], *, ticker: str | None = None) -> str:
     """Compose the exact JP user artifact from accepted canonical state.
 
     This is deterministic and side-effect free. Renderers may translate the
@@ -499,8 +507,7 @@ def compose_user_report_markdown(
     header = [
         f"# TradingAgents 日本股票分析报告：{display_symbol}",
         "",
-        f"市场：{metadata['market']} | 货币：{metadata['currency']} | "
-        f"标的类型：{instrument_type}",
+        f"市场：{metadata['market']} | 货币：{metadata['currency']} | 标的类型：{instrument_type}",
     ]
     if generated:
         header.extend(["", f"生成时间：{generated}"])
@@ -528,30 +535,21 @@ def compose_user_report_markdown(
     if isinstance(research, Mapping) and isinstance(research.get("judge_decision"), str):
         text = research["judge_decision"].strip()
         if text:
-            sections.append(
-                "## II. 研究团队结论\n\n"
-                + _agent_report_section("研究经理", text)
-            )
+            sections.append("## II. 研究团队结论\n\n" + _agent_report_section("研究经理", text))
 
     trader = state.get("trader_investment_plan")
     if isinstance(trader, str) and trader.strip():
-        sections.append(
-            "## III. 交易团队计划\n\n"
-            + _agent_report_section("交易员", trader)
-        )
+        sections.append("## III. 交易团队计划\n\n" + _agent_report_section("交易员", trader))
 
     risk = state.get("risk_debate_state") or {}
     if isinstance(risk, Mapping) and isinstance(risk.get("judge_decision"), str):
         text = risk["judge_decision"].strip()
         if text:
             sections.append(
-                "## IV. 投资组合经理结论\n\n"
-                + _agent_report_section("投资组合经理", text)
+                "## IV. 投资组合经理结论\n\n" + _agent_report_section("投资组合经理", text)
             )
 
-    return normalize_markdown_structure(
-        "\n\n".join(["\n".join(header), *sections])
-    )
+    return normalize_markdown_structure("\n\n".join(["\n".join(header), *sections]))
 
 
 def _agent_report_section(name: str, text: str) -> str:
@@ -576,7 +574,10 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
         raise ValueError("Japan report execution authority is internally inconsistent")
     accepted = state.get("accepted_report_markdown")
     expected_hash = contract.get("accepted_report_sha256")
-    if not isinstance(accepted, str) or hashlib.sha256(accepted.encode("utf-8")).hexdigest() != expected_hash:
+    if (
+        not isinstance(accepted, str)
+        or hashlib.sha256(accepted.encode("utf-8")).hexdigest() != expected_hash
+    ):
         raise ValueError("Japan accepted report does not match its canonical digest")
 
 
@@ -808,8 +809,8 @@ def _category_for_warning(warning: str) -> str:
 def _remove_current_financial_sections(text: str) -> str:
     return _filter_markdown_sections(
         text,
-        lambda heading: not any(
-            token in heading.casefold() for token in _CURRENT_FINANCIAL_HEADINGS
+        lambda heading: (
+            not any(token in heading.casefold() for token in _CURRENT_FINANCIAL_HEADINGS)
         ),
     )
 
@@ -855,8 +856,7 @@ def _fold_empty_sections(text: str) -> str:
     for section in sections:
         table_lines = [line for line in section if line.lstrip().startswith("|")]
         if table_lines and (
-            _is_table_separator(table_lines[0])
-            or not _table_has_data_row(table_lines)
+            _is_table_separator(table_lines[0]) or not _table_has_data_row(table_lines)
         ):
             continue
         body = "".join(section[1:]).strip()
@@ -889,7 +889,8 @@ def _clean_empty_markdown(text: str) -> str:
             label = line.strip().strip("*_ ")
             lead_in = label.endswith((":", "：")) and not line.lstrip().startswith("|")
             bold_heading = (
-                line.strip().startswith("**") and line.strip().endswith("**")
+                line.strip().startswith("**")
+                and line.strip().endswith("**")
                 and not re.search(r"[。；;.!?：:]", label)
             )
             if heading is not None or lead_in or bold_heading:
@@ -897,8 +898,7 @@ def _clean_empty_markdown(text: str) -> str:
                     (
                         i
                         for i in range(index + 1, len(kept))
-                        if kept[i].strip()
-                        and _SEPARATOR.match(kept[i].strip()) is None
+                        if kept[i].strip() and _SEPARATOR.match(kept[i].strip()) is None
                     ),
                     len(kept),
                 )
@@ -908,11 +908,15 @@ def _clean_empty_markdown(text: str) -> str:
                 if heading is not None:
                     boundary = boundary or (next_level is not None and next_level <= heading)
                 else:
-                    boundary = boundary or next_level is not None or (
-                        following.strip().startswith("**") and following.strip().endswith("**")
+                    boundary = (
+                        boundary
+                        or next_level is not None
+                        or (following.strip().startswith("**") and following.strip().endswith("**"))
                     )
-                    if lead_in and next_index > index + 1 and not re.match(
-                        r"\s*(?:[-*+>]\s|\d+[.)]\s|\|)", following
+                    if (
+                        lead_in
+                        and next_index > index + 1
+                        and not re.match(r"\s*(?:[-*+>]\s|\d+[.)]\s|\|)", following)
                     ):
                         boundary = True
                 if boundary:
@@ -935,11 +939,11 @@ _NUMBERED_LIST = re.compile(
     r"^(?P<indent>\s*)(?P<number>\d+|[一二三四五六七八九十百千万]+)"
     r"(?P<punct>[.、)])(?P<space>\s+)(?P<body>.+?)\s*$"
 )
-_DECIMAL_HEADING = re.compile(
-    r"^(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<body>.+?)\s*$"
-)
+_DECIMAL_HEADING = re.compile(r"^(?P<major>\d+)\.(?P<minor>\d+)\s+(?P<body>.+?)\s*$")
 _SEPARATOR = re.compile(r"^\s*(?P<char>[-*_])(?:\s*(?P=char)){2,}\s*$")
-_CIRCLED_LIST = re.compile(r"^(?P<indent>\s*)(?P<number>[①②③④⑤⑥⑦⑧⑨⑩])(?P<space>\s+)(?P<body>.+?)\s*$")
+_CIRCLED_LIST = re.compile(
+    r"^(?P<indent>\s*)(?P<number>[①②③④⑤⑥⑦⑧⑨⑩])(?P<space>\s+)(?P<body>.+?)\s*$"
+)
 _HEADING_COUNT_CLAIM = re.compile(
     r"[（(]\s*\d+\s*个[^）)]{0,24}(?:指标|要点|项目|因素|维度|信号)[^）)]*[）)]"
 )
@@ -1039,10 +1043,7 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
             )
             major = parent_number or int(decimal.group("major"))
             line_ending = "\n" if line.endswith("\n") else ""
-            output[index] = (
-                f"{match.group(1)} {major}.{minor} {decimal.group('body')}"
-                f"{line_ending}"
-            )
+            output[index] = f"{match.group(1)} {major}.{minor} {decimal.group('body')}{line_ending}"
             stack.append((level, f"{major}.{minor} {decimal.group('body')}", minor))
             continue
         numbered = _NUMBERED_HEADING.match(match.group(2))
@@ -1082,10 +1083,7 @@ def _normalize_heading_numbers(lines: list[str]) -> list[str]:
                 or ""
             )
             line_ending = "\n" if line.endswith("\n") else ""
-            output[index] = (
-                f"{match.group(1)} {replacement}{punctuation}"
-                f"{space}{body}{line_ending}"
-            )
+            output[index] = f"{match.group(1)} {replacement}{punctuation}{space}{body}{line_ending}"
         stack.append((level, output[index].strip().lstrip("# "), heading_number))
     return output
 
@@ -1130,7 +1128,9 @@ def _normalize_circled_lists(lines: list[str]) -> list[str]:
             if item and item.group("indent") == indent:
                 symbol = "①②③④⑤⑥⑦⑧⑨⑩"[number - 1] if number <= 10 else str(number)
                 ending = "\n" if output[current].endswith("\n") else ""
-                output[current] = f"{indent}{symbol}{item.group('space')}{item.group('body')}{ending}"
+                output[current] = (
+                    f"{indent}{symbol}{item.group('space')}{item.group('body')}{ending}"
+                )
                 number += 1
                 current += 1
                 continue
@@ -1258,8 +1258,7 @@ def _remove_orphan_structures(lines: list[str]) -> list[str]:
                 (
                     i
                     for i in range(index + 1, len(cleaned))
-                    if cleaned[i].strip()
-                    and _SEPARATOR.match(cleaned[i].strip()) is None
+                    if cleaned[i].strip() and _SEPARATOR.match(cleaned[i].strip()) is None
                 ),
                 len(cleaned),
             )
@@ -1269,7 +1268,12 @@ def _remove_orphan_structures(lines: list[str]) -> list[str]:
             if heading is not None:
                 boundary = boundary or (next_level is not None and next_level <= heading)
             else:
-                boundary = boundary or next_level is not None or re.fullmatch(r"(?:[-*+]|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", following.strip() or "") is not None
+                boundary = (
+                    boundary
+                    or next_level is not None
+                    or re.fullmatch(r"(?:[-*+]|\d+[.)]|[①②③④⑤⑥⑦⑧⑨⑩])\s*", following.strip() or "")
+                    is not None
+                )
             if boundary:
                 changed = True
                 continue
@@ -1337,9 +1341,7 @@ def _markdown_structure_issues(text: str) -> list[str]:
     lines = text.splitlines()
     issues: list[str] = []
 
-    normalized_heading_lines = _normalize_heading_numbers(
-        [line + "\n" for line in lines]
-    )
+    normalized_heading_lines = _normalize_heading_numbers([line + "\n" for line in lines])
     if any(
         original.strip() != normalized.strip()
         for original, normalized in zip(lines, normalized_heading_lines, strict=True)
@@ -1371,12 +1373,13 @@ def _markdown_structure_issues(text: str) -> list[str]:
             _reset_heading_counters(counters, level, parent)
         else:
             counters[key] = counters.get(key, 0) + 1
-            raw_number = numbered.group("arabic") or numbered.group("chinese") or numbered.group("roman") or ""
-            parsed = (
-                _ordinal_value(raw_number)
-                if kind != "roman"
-                else _roman_value(raw_number)
+            raw_number = (
+                numbered.group("arabic")
+                or numbered.group("chinese")
+                or numbered.group("roman")
+                or ""
             )
+            parsed = _ordinal_value(raw_number) if kind != "roman" else _roman_value(raw_number)
             if parsed != counters[key]:
                 issues.append("HEADING_NUMBERING_DISCONTINUITY")
         if _HEADING_COUNT_CLAIM.search(match.group(2)):
@@ -1510,11 +1513,7 @@ def _drop_empty_table_subsections(lines: list[str]) -> list[str]:
     """
     result = list(lines)
     for level in range(6, 0, -1):
-        headings = [
-            index
-            for index, line in enumerate(result)
-            if _heading_level(line) == level
-        ]
+        headings = [index for index, line in enumerate(result) if _heading_level(line) == level]
         ranges: list[tuple[int, int]] = []
         for start in headings:
             end = len(result)
@@ -1543,9 +1542,7 @@ def _heading_level(line: str) -> int | None:
     return len(match.group(1)) if match else None
 
 
-def _table_blocks(
-    lines: list[str], start: int, end: int
-) -> list[tuple[int, int]]:
+def _table_blocks(lines: list[str], start: int, end: int) -> list[tuple[int, int]]:
     blocks: list[tuple[int, int]] = []
     index = start
     while index < end:
@@ -1629,8 +1626,7 @@ def _collect_unapproved_execution_claims(
                 claim = clause.strip()
                 warning = (
                     "UNAPPROVED_EXECUTION_SECTION"
-                    if _heading_level(claim)
-                    and _is_execution_heading(claim.lstrip("# "))
+                    if _heading_level(claim) and _is_execution_heading(claim.lstrip("# "))
                     else _execution_violation(claim)
                 )
                 if not claim or not warning:
@@ -1753,9 +1749,7 @@ def _apply_validated_execution(state: dict[str, Any]) -> dict[str, Any]:
     if isinstance(research, Mapping):
         research = dict(research)
         if isinstance(research.get("judge_decision"), str):
-            research["judge_decision"] = _remove_execution_sections(
-                research["judge_decision"]
-            )
+            research["judge_decision"] = _remove_execution_sections(research["judge_decision"])
         result["investment_debate_state"] = research
     risk = result.get("risk_debate_state")
     if isinstance(risk, Mapping):
@@ -1779,17 +1773,13 @@ def _validated_execution_report(validation: Mapping[str, Any]) -> str:
     if validation.get("position_pct") is not None:
         lines.append(f"| 仓位 | {validation['position_pct']}% |")
     if validation.get("portfolio_stop_risk_pct") is not None:
-        lines.append(
-            f"| 组合止损风险 | {validation['portfolio_stop_risk_pct']}% |"
-        )
+        lines.append(f"| 组合止损风险 | {validation['portfolio_stop_risk_pct']}% |")
     return "\n".join(lines)
 
 
 def _remove_jsf_agent_claims(text: str) -> str:
     """Keep JSF observable facts in its deterministic source section only."""
-    text = _filter_markdown_sections(
-        text, lambda heading: _JSF_CLAIM.search(heading) is None
-    )
+    text = _filter_markdown_sections(text, lambda heading: _JSF_CLAIM.search(heading) is None)
     lines = []
     for line in text.splitlines():
         if _JSF_CLAIM.search(line) and not line.lstrip().startswith("#"):
@@ -1826,9 +1816,7 @@ def _strip_execution_plan(text: str, *, include_target: bool) -> str:
     return _remove_unapproved_execution_lines(text, include_target=include_target)
 
 
-def _remove_unapproved_execution_lines(
-    text: str, *, include_target: bool = False
-) -> str:
+def _remove_unapproved_execution_lines(text: str, *, include_target: bool = False) -> str:
     """Remove numeric execution instructions, while retaining factual target news."""
     terms = r"entry|stop(?:[ -]?loss)?|position(?: sizing)?|入场|建仓|止损|止盈|仓位"
     if include_target:
@@ -1858,6 +1846,64 @@ def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
         return _fold_empty_sections(text)
 
     return _map_report_text(state, publicize)
+
+
+def _drop_deprecated_horizon_metadata(state: dict[str, Any]) -> dict[str, Any]:
+    """Remove the retired user-selected horizon without touching source windows.
+
+    ``window_policy`` belongs to source freshness/lookback contracts and is
+    deliberately preserved.  This migration also makes archived states safe
+    to replay under the current contract.
+    """
+    result = dict(state)
+    result.pop("trading_horizon", None)
+    constraints = result.get("trade_constraints")
+    if isinstance(constraints, Mapping):
+        constraints = dict(constraints)
+        constraints.pop("horizon", None)
+        result["trade_constraints"] = constraints
+    bundle = result.get("japan_data_bundle")
+    if isinstance(bundle, Mapping):
+        bundle = dict(bundle)
+        bundle.pop("trading_horizon", None)
+        result["japan_data_bundle"] = bundle
+    return result
+
+
+def _has_deprecated_horizon_state(state: Mapping[str, Any]) -> bool:
+    constraints = state.get("trade_constraints")
+    bundle = state.get("japan_data_bundle")
+    accepted = state.get("accepted_report_markdown")
+    return bool(
+        "trading_horizon" in state
+        or (isinstance(constraints, Mapping) and "horizon" in constraints)
+        or (isinstance(bundle, Mapping) and "trading_horizon" in bundle)
+        or (isinstance(accepted, str) and _DEPRECATED_USER_HORIZON_CLAIM.search(accepted))
+    )
+
+
+def _remove_deprecated_user_horizon_claims(text: str) -> str:
+    """Drop prose that attributes an investment horizon to a user choice.
+
+    Agents may still recommend their own optional holding period, matching
+    upstream TradingAgents.  Only the retired *user-selected* horizon
+    attribution is removed, including during deterministic legacy replay.
+    """
+    output: list[str] = []
+    for line in text.splitlines():
+        if not _DEPRECATED_USER_HORIZON_CLAIM.search(line):
+            output.append(line)
+            continue
+        if line.lstrip().startswith("|"):
+            continue
+        clauses = re.split(r"(?<=[。！？；;])|(?<=[.!?])\s+", line)
+        retained = [
+            clause
+            for clause in clauses
+            if clause.strip() and not _DEPRECATED_USER_HORIZON_CLAIM.search(clause)
+        ]
+        output.append("".join(retained))
+    return _fold_empty_sections("\n".join(output))
 
 
 def _localize_presentation_labels(text: str) -> str:
@@ -1917,9 +1963,7 @@ def _validate_final_artifact(
     return list(dict.fromkeys(issues))
 
 
-def _execution_cross_state_issues(
-    state: Mapping[str, Any], execution_allowed: bool
-) -> list[str]:
+def _execution_cross_state_issues(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
     """Reject executable plans without two compatible decision authorities."""
     if not execution_allowed:
         return []
@@ -1930,9 +1974,7 @@ def _execution_cross_state_issues(
     )
     if action not in {"Buy", "Sell"}:
         return ["EXECUTION_ACTION_NOT_AUTHORIZED"]
-    compatible = (
-        action == "Buy" and rating in {"Buy", "Overweight"}
-    ) or (
+    compatible = (action == "Buy" and rating in {"Buy", "Overweight"}) or (
         action == "Sell" and rating in {"Sell", "Underweight"}
     )
     return [] if compatible else ["EXECUTION_PORTFOLIO_RATING_CONFLICT"]
@@ -1944,9 +1986,7 @@ def validate_final_report_text(
     """Detect violations in accepted text or a composed artifact; never edit it."""
     issues: list[str] = []
     for token in _INTERNAL_STATUS:
-        if re.search(
-            rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", text
-        ):
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(token)}(?![A-Za-z0-9_])", text):
             issues.append(f"INTERNAL_STATUS_VISIBLE:{token}")
     for token in _MACHINE_ENUM.findall(text):
         issues.append(f"INTERNAL_MACHINE_ENUM_VISIBLE:{token}")
@@ -1975,7 +2015,10 @@ def validate_final_report_text(
     if _clean_empty_markdown(text) != re.sub(r"\n{3,}", "\n\n", text).strip():
         issues.append("EMPTY_MARKDOWN_STRUCTURE")
     lines = text.splitlines()
-    if any(not _table_has_data_row(lines[start:end]) for start, end in _table_blocks(lines, 0, len(lines))):
+    if any(
+        not _table_has_data_row(lines[start:end])
+        for start, end in _table_blocks(lines, 0, len(lines))
+    ):
         issues.append("EMPTY_MARKDOWN_TABLE")
     if check_structure:
         issues.extend(_markdown_structure_issues(text))
@@ -2003,10 +2046,13 @@ def _domain_authority_issues(state: Mapping[str, Any]) -> list[str]:
 
 def _unlocalized_presentation_label(text: str) -> bool:
     labels = "|".join(re.escape(label) for label in _PRESENTATION_HEADING_TRANSLATIONS)
-    return re.search(
-        rf"(?im)^(?:#{{1,6}}\s+|\*\*)?(?:{labels})(?:\*\*)?\s*(?::|$)",
-        text,
-    ) is not None
+    return (
+        re.search(
+            rf"(?im)^(?:#{{1,6}}\s+|\*\*)?(?:{labels})(?:\*\*)?\s*(?::|$)",
+            text,
+        )
+        is not None
+    )
 
 
 def _published_field_text(state: Mapping[str, Any], field: str) -> str | None:
@@ -2074,9 +2120,7 @@ def _finalize_audit(
                         execution_allowed=False,
                         check_structure=False,
                     )
-                    if issue.startswith(
-                        ("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_")
-                    )
+                    if issue.startswith(("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_"))
                 ]
             )
             if execution_issues:
@@ -2118,8 +2162,11 @@ def _finalize_audit(
                         state, replacement, _agent_for_field(field)
                     ).warnings
                 )
-                if warning and original and not original_published and (
-                    not replacement_published or replacement_supported
+                if (
+                    warning
+                    and original
+                    and not original_published
+                    and (not replacement_published or replacement_supported)
                 ):
                     entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
                     entry["resolution_basis"] = (

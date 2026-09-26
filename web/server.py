@@ -1,4 +1,5 @@
 """FastAPI + SSE backend for TradingAgents web interface."""
+
 import asyncio
 import html
 import json
@@ -53,31 +54,38 @@ app.add_middleware(
 executor = ThreadPoolExecutor(max_workers=2)
 
 PROVIDER_URLS = {
-    "openai":     "https://api.openai.com/v1",
-    "anthropic":  "https://api.anthropic.com/",
-    "google":     None,
-    "xai":        "https://api.x.ai/v1",
-    "deepseek":   "https://api.deepseek.com",
-    "qwen":       "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-    "glm":        "https://open.bigmodel.cn/api/paas/v4/",
-    "minimax":    "https://api.minimax.io/v1",
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com/",
+    "google": None,
+    "xai": "https://api.x.ai/v1",
+    "deepseek": "https://api.deepseek.com",
+    "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    "glm": "https://open.bigmodel.cn/api/paas/v4/",
+    "minimax": "https://api.minimax.io/v1",
     "openrouter": "https://openrouter.ai/api/v1",
-    "ollama":     "http://localhost:11434/v1",
-    "azure":      None,
+    "ollama": "http://localhost:11434/v1",
+    "azure": None,
 }
 
 PROVIDER_LABELS = {
-    "openai": "OpenAI", "anthropic": "Anthropic", "google": "Google",
-    "xai": "xAI (Grok)", "deepseek": "DeepSeek", "qwen": "Qwen (Alibaba)",
-    "glm": "GLM (Zhipu)", "minimax": "MiniMax", "openrouter": "OpenRouter",
-    "azure": "Azure OpenAI", "ollama": "Ollama (Local)",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "google": "Google",
+    "xai": "xAI (Grok)",
+    "deepseek": "DeepSeek",
+    "qwen": "Qwen (Alibaba)",
+    "glm": "GLM (Zhipu)",
+    "minimax": "MiniMax",
+    "openrouter": "OpenRouter",
+    "azure": "Azure OpenAI",
+    "ollama": "Ollama (Local)",
 }
 
 # Provider → which reasoning-effort knob the UI should surface.
 # Mirrors cli/main.py Step-8 branching.
 PROVIDER_EFFORT_KIND = {
     "openai": "openai_reasoning_effort",
-    "azure":  "openai_reasoning_effort",
+    "azure": "openai_reasoning_effort",
     "anthropic": "anthropic_effort",
     "google": "google_thinking_level",
 }
@@ -94,20 +102,21 @@ def _safe_web_event(data: dict) -> dict:
     """Return an SSE/error payload safe for browser and network presentation."""
     return sanitize_data(data)
 
+
 # Graph node name → {display, team}
 AGENT_INFO = {
-    "Market Analyst":       {"display": "Market Analyst",       "team": "analysts"},
-    "Social Analyst":       {"display": "Sentiment Analyst",    "team": "analysts"},
-    "News Analyst":         {"display": "News Analyst",         "team": "analysts"},
+    "Market Analyst": {"display": "Market Analyst", "team": "analysts"},
+    "Social Analyst": {"display": "Sentiment Analyst", "team": "analysts"},
+    "News Analyst": {"display": "News Analyst", "team": "analysts"},
     "Fundamentals Analyst": {"display": "Fundamentals Analyst", "team": "analysts"},
-    "Bull Researcher":      {"display": "Bull Researcher",      "team": "research"},
-    "Bear Researcher":      {"display": "Bear Researcher",      "team": "research"},
-    "Research Manager":     {"display": "Research Manager",     "team": "research"},
-    "Trader":               {"display": "Trader",               "team": "trading"},
-    "Aggressive Analyst":   {"display": "Aggressive Analyst",   "team": "risk"},
+    "Bull Researcher": {"display": "Bull Researcher", "team": "research"},
+    "Bear Researcher": {"display": "Bear Researcher", "team": "research"},
+    "Research Manager": {"display": "Research Manager", "team": "research"},
+    "Trader": {"display": "Trader", "team": "trading"},
+    "Aggressive Analyst": {"display": "Aggressive Analyst", "team": "risk"},
     "Conservative Analyst": {"display": "Conservative Analyst", "team": "risk"},
-    "Neutral Analyst":      {"display": "Neutral Analyst",      "team": "risk"},
-    "Portfolio Manager":    {"display": "Portfolio Manager",    "team": "portfolio"},
+    "Neutral Analyst": {"display": "Neutral Analyst", "team": "risk"},
+    "Portfolio Manager": {"display": "Portfolio Manager", "team": "portfolio"},
 }
 
 ANALYST_NODE = {
@@ -125,9 +134,13 @@ def build_agent_sequence(analyst_list: list) -> list:
         if node:
             agents.append({**AGENT_INFO[node], "node": node})
     for node in [
-        "Bull Researcher", "Bear Researcher", "Research Manager",
+        "Bull Researcher",
+        "Bear Researcher",
+        "Research Manager",
         "Trader",
-        "Aggressive Analyst", "Conservative Analyst", "Neutral Analyst",
+        "Aggressive Analyst",
+        "Conservative Analyst",
+        "Neutral Analyst",
         "Portfolio Manager",
     ]:
         agents.append({**AGENT_INFO[node], "node": node})
@@ -147,8 +160,16 @@ def list_providers():
 @app.get("/api/models/{provider}")
 def list_models(provider: str):
     try:
-        quick = [{"label": label, "value": value} for label, value in get_model_options(provider, "quick") if value != "custom"]
-        deep = [{"label": label, "value": value} for label, value in get_model_options(provider, "deep") if value != "custom"]
+        quick = [
+            {"label": label, "value": value}
+            for label, value in get_model_options(provider, "quick")
+            if value != "custom"
+        ]
+        deep = [
+            {"label": label, "value": value}
+            for label, value in get_model_options(provider, "deep")
+            if value != "custom"
+        ]
         return {
             "quick": quick,
             "deep": deep,
@@ -163,19 +184,21 @@ def list_languages():
     # Mirrors cli/utils.ask_output_language. ``value`` is what gets
     # forwarded to ``config["output_language"]`` (the prompt template
     # passes the raw string straight into the LLM).
-    return {"languages": [
-        {"value": "Chinese",    "label": "简体中文"},
-        {"value": "English",    "label": "English"},
-        {"value": "Japanese",   "label": "日本語"},
-        {"value": "Korean",     "label": "한국어"},
-        {"value": "Hindi",      "label": "हिन्दी"},
-        {"value": "Spanish",    "label": "Español"},
-        {"value": "Portuguese", "label": "Português"},
-        {"value": "French",     "label": "Français"},
-        {"value": "German",     "label": "Deutsch"},
-        {"value": "Arabic",     "label": "العربية"},
-        {"value": "Russian",    "label": "Русский"},
-    ]}
+    return {
+        "languages": [
+            {"value": "Chinese", "label": "简体中文"},
+            {"value": "English", "label": "English"},
+            {"value": "Japanese", "label": "日本語"},
+            {"value": "Korean", "label": "한국어"},
+            {"value": "Hindi", "label": "हिन्दी"},
+            {"value": "Spanish", "label": "Español"},
+            {"value": "Portuguese", "label": "Português"},
+            {"value": "French", "label": "Français"},
+            {"value": "German", "label": "Deutsch"},
+            {"value": "Arabic", "label": "العربية"},
+            {"value": "Russian", "label": "Русский"},
+        ]
+    }
 
 
 @app.get("/api/asset-type")
@@ -193,7 +216,6 @@ async def analyze(
     quick_model: str,
     analysts: str = "market,social,news,fundamentals",
     research_depth: int = 1,
-    trading_horizon: str = "multi_day",
     entry_condition: str = "",
     stop_loss_condition: str = "",
     take_profit_condition: str = "",
@@ -204,13 +226,9 @@ async def analyze(
     temperature: float | None = None,
     checkpoint: bool = False,
 ):
-    allowed_horizons = {"intraday", "multi_day", "multi_week", "long_term"}
-    if trading_horizon not in allowed_horizons:
-        raise HTTPException(status_code=422, detail="invalid trading_horizon")
     if max_position_pct is not None and not 0 < max_position_pct <= 100:
         raise HTTPException(status_code=422, detail="max_position_pct must be between 0 and 100")
     trade_constraints = {
-        "horizon": trading_horizon,
         "entry_condition": entry_condition.strip(),
         "stop_loss_condition": stop_loss_condition.strip(),
         "take_profit_condition": take_profit_condition.strip(),
@@ -238,21 +256,30 @@ async def analyze(
             identity = resolve_instrument_identity(base_market_context.symbol)
             market_context = enrich_market_context(base_market_context, identity)
             canonical_ticker = market_context.symbol
-            put({"type": "init", "agents": build_agent_sequence(analyst_list),
-                 "ticker": canonical_ticker, "date": date, "asset_type": asset_type,
-                 "market": market_context.market})
+            put(
+                {
+                    "type": "init",
+                    "agents": build_agent_sequence(analyst_list),
+                    "ticker": canonical_ticker,
+                    "date": date,
+                    "asset_type": asset_type,
+                    "market": market_context.market,
+                }
+            )
 
             config = DEFAULT_CONFIG.copy()
-            config.update({
-                "llm_provider":            provider,
-                "deep_think_llm":          deep_model,
-                "quick_think_llm":         quick_model,
-                "backend_url":             resolved_url,
-                "max_debate_rounds":       research_depth,
-                "max_risk_discuss_rounds": research_depth,
-                "output_language":         output_language,
-                "checkpoint_enabled":      checkpoint,
-            })
+            config.update(
+                {
+                    "llm_provider": provider,
+                    "deep_think_llm": deep_model,
+                    "quick_think_llm": quick_model,
+                    "backend_url": resolved_url,
+                    "max_debate_rounds": research_depth,
+                    "max_risk_discuss_rounds": research_depth,
+                    "output_language": output_language,
+                    "checkpoint_enabled": checkpoint,
+                }
+            )
             if temperature is not None:
                 config["temperature"] = temperature
             # Provider-specific reasoning knob. ``effort`` is a single
@@ -279,19 +306,22 @@ async def analyze(
             # The web path constructs state directly, so mirror that behavior.
             from tradingagents.dataflows.japan.context import collect_japan_data_bundle
 
-            japan_data_bundle = collect_japan_data_bundle(
-                market_context, date, trading_horizon=trading_horizon
-            )
+            japan_data_bundle = collect_japan_data_bundle(market_context, date)
             try:
                 verified_market_snapshot = build_verified_market_snapshot(canonical_ticker, date)
             except Exception as exc:
-                logger.warning("[VerifiedSnapshot] unavailable ticker=%s class=%s", canonical_ticker, type(exc).__name__)
+                logger.warning(
+                    "[VerifiedSnapshot] unavailable ticker=%s class=%s",
+                    canonical_ticker,
+                    type(exc).__name__,
+                )
                 verified_market_snapshot = (
                     "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: optional diagnostic unavailable; "
                     "use valid Market Analyst market-tool results."
                 )
             init_state = ta.propagator.create_initial_state(
-                canonical_ticker, date,
+                canonical_ticker,
+                date,
                 asset_type=asset_type,
                 past_context=past_ctx,
                 instrument_context=instrument_ctx,
@@ -328,13 +358,20 @@ async def analyze(
                     if node_name in AGENT_INFO:
                         info = AGENT_INFO[node_name]
                         if info["display"] not in done_agents:
-                            put({"type": "agent_update", "id": info["display"],
-                                 "team": info["team"], "status": "in_progress"})
+                            put(
+                                {
+                                    "type": "agent_update",
+                                    "id": info["display"],
+                                    "team": info["team"],
+                                    "status": "in_progress",
+                                }
+                            )
 
                     # Merge updates into final_state
                     for k, v in updates.items():
-                        if k in ("investment_debate_state", "risk_debate_state") \
-                                and isinstance(final_state.get(k), dict):
+                        if k in ("investment_debate_state", "risk_debate_state") and isinstance(
+                            final_state.get(k), dict
+                        ):
                             final_state[k].update(v or {})
                         elif k == "messages":
                             final_state.setdefault("messages", [])
@@ -344,10 +381,10 @@ async def analyze(
 
                     # ── Analyst reports: trigger only from this chunk's updates ──
                     for report_key, display_id in [
-                        ("market_report",       "Market Analyst"),
-                        ("sentiment_report",     "Sentiment Analyst"),
-                        ("news_report",          "News Analyst"),
-                        ("fundamentals_report",  "Fundamentals Analyst"),
+                        ("market_report", "Market Analyst"),
+                        ("sentiment_report", "Sentiment Analyst"),
+                        ("news_report", "News Analyst"),
+                        ("fundamentals_report", "Fundamentals Analyst"),
                     ]:
                         if updates.get(report_key) and display_id not in done_agents:
                             done_agents.add(display_id)
@@ -358,16 +395,28 @@ async def analyze(
 
                     if debate.get("bull_history") and "Bull Researcher" not in done_agents:
                         done_agents.add("Bull Researcher")
-                        put({"type": "agent_update", "id": "Bull Researcher", "status": "completed"})
+                        put(
+                            {"type": "agent_update", "id": "Bull Researcher", "status": "completed"}
+                        )
 
                     if debate.get("bear_history") and "Bear Researcher" not in done_agents:
                         done_agents.add("Bear Researcher")
-                        put({"type": "agent_update", "id": "Bear Researcher", "status": "completed"})
+                        put(
+                            {"type": "agent_update", "id": "Bear Researcher", "status": "completed"}
+                        )
 
-                    judge = debate.get("judge_decision") or final_state["investment_debate_state"].get("judge_decision", "")
+                    judge = debate.get("judge_decision") or final_state[
+                        "investment_debate_state"
+                    ].get("judge_decision", "")
                     if judge and "Research Manager" not in done_agents:
                         done_agents.add("Research Manager")
-                        put({"type": "agent_update", "id": "Research Manager", "status": "completed"})
+                        put(
+                            {
+                                "type": "agent_update",
+                                "id": "Research Manager",
+                                "status": "completed",
+                            }
+                        )
 
                     # ── Trader ───────────────────────────────────────────────
                     if updates.get("trader_investment_plan") and "Trader" not in done_agents:
@@ -378,18 +427,41 @@ async def analyze(
                     risk_count = final_state["risk_debate_state"].get("count", 0)
                     if risk_count >= 1 and "Aggressive Analyst" not in done_agents:
                         done_agents.add("Aggressive Analyst")
-                        put({"type": "agent_update", "id": "Aggressive Analyst", "status": "completed"})
+                        put(
+                            {
+                                "type": "agent_update",
+                                "id": "Aggressive Analyst",
+                                "status": "completed",
+                            }
+                        )
                     if risk_count >= 2 and "Conservative Analyst" not in done_agents:
                         done_agents.add("Conservative Analyst")
-                        put({"type": "agent_update", "id": "Conservative Analyst", "status": "completed"})
+                        put(
+                            {
+                                "type": "agent_update",
+                                "id": "Conservative Analyst",
+                                "status": "completed",
+                            }
+                        )
                     if risk_count >= 3 and "Neutral Analyst" not in done_agents:
                         done_agents.add("Neutral Analyst")
-                        put({"type": "agent_update", "id": "Neutral Analyst", "status": "completed"})
+                        put(
+                            {"type": "agent_update", "id": "Neutral Analyst", "status": "completed"}
+                        )
 
                     # ── Final decision ───────────────────────────────────────
-                    if updates.get("final_trade_decision") and "Portfolio Manager" not in done_agents:
+                    if (
+                        updates.get("final_trade_decision")
+                        and "Portfolio Manager" not in done_agents
+                    ):
                         done_agents.add("Portfolio Manager")
-                        put({"type": "agent_update", "id": "Portfolio Manager", "status": "completed"})
+                        put(
+                            {
+                                "type": "agent_update",
+                                "id": "Portfolio Manager",
+                                "status": "completed",
+                            }
+                        )
 
             # Persist results.  The web path drives the graph directly, so it
             # must establish the same canonical final state as CLI/API runs
@@ -449,9 +521,7 @@ async def analyze(
             try:
                 ta._log_state(date, final_state)
             except Exception as log_exc:
-                logger.warning(
-                    "State logging failed (non-fatal): %s", safe_exception_text(log_exc)
-                )
+                logger.warning("State logging failed (non-fatal): %s", safe_exception_text(log_exc))
 
             report_path = None
             try:
@@ -465,7 +535,8 @@ async def analyze(
             if final_state.get("final_trade_decision"):
                 try:
                     ta.memory_log.store_decision(
-                        ticker=ticker, trade_date=date,
+                        ticker=ticker,
+                        trade_date=date,
                         final_trade_decision=final_state["final_trade_decision"],
                     )
                 except Exception as mem_exc:
@@ -517,24 +588,24 @@ LOG_PREFIX = "full_states_log_"
 # under ``{ticker}/{date}/reports/{stem}.md``. The trader section is the only
 # place the two layouts disagree on naming.
 REPORT_SECTIONS = [
-    ("market_report",              "market_report",          "📊 市场分析"),
-    ("sentiment_report",           "sentiment_report",       "💬 情绪分析"),
-    ("news_report",                "news_report",            "📰 新闻分析"),
-    ("fundamentals_report",        "fundamentals_report",    "📋 基本面分析"),
-    ("investment_plan",            "investment_plan",        "🔬 研究决策"),
+    ("market_report", "market_report", "📊 市场分析"),
+    ("sentiment_report", "sentiment_report", "💬 情绪分析"),
+    ("news_report", "news_report", "📰 新闻分析"),
+    ("fundamentals_report", "fundamentals_report", "📋 基本面分析"),
+    ("investment_plan", "investment_plan", "🔬 研究决策"),
     ("trader_investment_decision", "trader_investment_plan", "📈 交易计划"),
-    ("final_trade_decision",       "final_trade_decision",   "🎯 最终决策"),
+    ("final_trade_decision", "final_trade_decision", "🎯 最终决策"),
 ]
 
 # The Portfolio Manager's 5-tier rating, collapsed to the three badge buckets
 # the history list renders: Buy/Overweight are bullish, Underweight/Sell
 # bearish, Hold neutral.
 _RATING_TO_ACTION = {
-    "Buy":         "buy",
-    "Overweight":  "buy",
-    "Hold":        "hold",
+    "Buy": "buy",
+    "Overweight": "buy",
+    "Hold": "hold",
     "Underweight": "sell",
-    "Sell":        "sell",
+    "Sell": "sell",
 }
 
 
@@ -560,8 +631,7 @@ def _md(text: str) -> str:
 def _accepted_portfolio_text(accepted_report: str) -> str:
     """Return the final published decision section from the accepted artifact."""
     positions = [
-        accepted_report.rfind(marker)
-        for marker in ("### 投资组合经理", "### Portfolio Manager")
+        accepted_report.rfind(marker) for marker in ("### 投资组合经理", "### Portfolio Manager")
     ]
     start = max(positions)
     return accepted_report[start:] if start >= 0 else accepted_report
@@ -607,9 +677,7 @@ def _load_run(dir_name: str, date: str) -> dict | None:
         try:
             return json.loads(json_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            logger.warning(
-                "Skipping unreadable log %s: %s", json_path, safe_exception_text(exc)
-            )
+            logger.warning("Skipping unreadable log %s: %s", json_path, safe_exception_text(exc))
 
     rdir = _reports_dir(dir_name, date)
     if rdir.is_dir():
@@ -637,30 +705,34 @@ def list_history():
             log_dir = ticker_dir / LOG_SUBDIR
             if log_dir.is_dir():
                 for log_file in log_dir.glob(f"{LOG_PREFIX}*.json"):
-                    runs[(ticker_dir.name, log_file.stem[len(LOG_PREFIX):])] = True
+                    runs[(ticker_dir.name, log_file.stem[len(LOG_PREFIX) :])] = True
             # Markdown layout: {ticker}/{date}/reports/*.md
             for date_dir in ticker_dir.iterdir():
                 if date_dir.is_dir() and (date_dir / "reports").is_dir():
                     runs[(ticker_dir.name, date_dir.name)] = True
 
     entries = []
-    for (dir_name, date) in runs:
+    for dir_name, date in runs:
         data = _load_run(dir_name, date)
         if not data:
             continue
         decision = data.get("final_trade_decision", "") or ""
         mtime = _run_mtime(dir_name, date)
-        entries.append({
-            "ticker":   data.get("company_of_interest") or dir_name,
-            # ``dir`` is the on-disk folder name used to build report URLs.
-            "dir":      dir_name,
-            "date":     data.get("trade_date") or date,
-            # Run wall-clock time, to the minute, plus a raw epoch for sorting.
-            "datetime": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "",
-            "mtime":    mtime,
-            "action":   _derive_action(decision),
-            "has_report": bool(decision or data.get("market_report")),
-        })
+        entries.append(
+            {
+                "ticker": data.get("company_of_interest") or dir_name,
+                # ``dir`` is the on-disk folder name used to build report URLs.
+                "dir": dir_name,
+                "date": data.get("trade_date") or date,
+                # Run wall-clock time, to the minute, plus a raw epoch for sorting.
+                "datetime": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                if mtime
+                else "",
+                "mtime": mtime,
+                "action": _derive_action(decision),
+                "has_report": bool(decision or data.get("market_report")),
+            }
+        )
     # Newest run first; the front-end allows re-sorting by any column.
     entries.sort(key=lambda e: e["mtime"], reverse=True)
     return {"history": entries}
@@ -685,28 +757,53 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
         label_pattern = "|".join(re.escape(item) for item in labels)
         match = re.search(
             rf"(?:\*\*)?(?:{label_pattern})(?:\*\*)?\s*[:：]\s*([^\n*]+)",
-            decision, flags=re.IGNORECASE,
+            decision,
+            flags=re.IGNORECASE,
         )
         return match.group(1).strip().strip("*") if match else default
 
     rating = decision_field(("Rating", "评级"), "暂无评级")
-    rating = {"Buy": "买入", "Overweight": "增持", "Hold": "持有", "Underweight": "减持", "Sell": "卖出"}.get(rating, rating)
-    execution_allowed = bool(
-        (data.get("final_output_contract") or {}).get("execution_allowed")
-    )
+    rating = {
+        "Buy": "买入",
+        "Overweight": "增持",
+        "Hold": "持有",
+        "Underweight": "减持",
+        "Sell": "卖出",
+    }.get(rating, rating)
+    execution_allowed = bool((data.get("final_output_contract") or {}).get("execution_allowed"))
     target = (
-        decision_field(("Price Target", "目标价"), "—")
-        if execution_allowed
-        else "—"
+        decision_field(("Price Target", "目标价"), "")
+        if execution_allowed or metadata["market"] != "JP"
+        else ""
     )
     horizon = (
-        decision_field(("Time Horizon", "研究周期"), "—")
+        decision_field(("Time Horizon", "研究周期"), "")
         if execution_allowed or metadata["market"] != "JP"
-        else "—"
+        else ""
     )
-    summary = decision_field(
-        ("Executive Summary", "研究摘要"), decision[:1200]
+    unavailable_cover_values = {"", "—", "-", "not provided", "未提供", "数据不可用"}
+    target = "" if target.casefold() in unavailable_cover_values else target
+    horizon = "" if horizon.casefold() in unavailable_cover_values else horizon
+    summary = decision_field(("Executive Summary", "研究摘要"), decision[:1200])
+    cover_cards = [
+        '<div class="cover-card"><small>投资评级</small>'
+        f'<strong class="rating">{html.escape(rating)}</strong></div>'
+    ]
+    if target:
+        cover_cards.append(
+            '<div class="cover-card"><small>目标价</small>'
+            f"<strong>{html.escape(target)}</strong></div>"
+        )
+    if horizon:
+        cover_cards.append(
+            '<div class="cover-card"><small>投资期限</small>'
+            f"<strong>{html.escape(horizon)}</strong></div>"
+        )
+    cover_cards.append(
+        '<div class="cover-card"><small>分析师覆盖</small>'
+        f"<strong>{sum(bool(data.get(key)) for key, _, _ in REPORT_SECTIONS[:4])} 项</strong></div>"
     )
+    cover_cards_html = "\n      ".join(cover_cards)
 
     if metadata["market"] == "JP":
         sections_html = (
@@ -725,7 +822,9 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
                 f"{_md(content)}</section>"
             )
         sections_html = "\n".join(blocks) or "<p>该记录暂无报告内容。</p>"
-    auto = "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""
+    auto = (
+        "<script>window.addEventListener('load',()=>window.print())</script>" if auto_print else ""
+    )
 
     generated = (
         (data.get("run_manifest") or {}).get("runtime_timestamp_jst")
@@ -762,7 +861,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
   .cover-title {{ margin:26px 0 8px; font-size:29px; }}
   .cover-title span {{ font-size:19px; font-weight:400; color:#4b5563; margin-left:10px; }}
   .cover-meta {{ color:var(--muted); font-size:14px; }}
-  .cover-cards {{ display:grid; grid-template-columns:repeat(4,1fr); margin:28px 0 38px;
+  .cover-cards {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); margin:28px 0 38px;
     border:1px solid #cbd5e1; }}
   .cover-card {{ min-height:88px; padding:14px 16px; background:#fafbfd; border-right:1px solid #cbd5e1; }}
   .cover-card:last-child {{ border-right:0; }}
@@ -804,10 +903,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     <h1 class="cover-title">{html.escape(ticker)} <span>多智能体分析报告</span></h1>
     <div class="cover-meta">分析日期 {html.escape(str(date))} ｜ 生成于 {html.escape(str(generated or date))}</div>
     <div class="cover-cards">
-      <div class="cover-card"><small>投资评级</small><strong class="rating">{html.escape(rating)}</strong></div>
-      <div class="cover-card"><small>目标价</small><strong>{html.escape(target)}</strong></div>
-      <div class="cover-card"><small>投资期限</small><strong>{html.escape(horizon)}</strong></div>
-      <div class="cover-card"><small>分析师覆盖</small><strong>{sum(bool(data.get(key)) for key, _, _ in REPORT_SECTIONS[:4])} 项</strong></div>
+      {cover_cards_html}
     </div>
     <div class="cover-advice"><h2>投资建议</h2>{_md(summary)}</div>
   </section>
@@ -818,8 +914,7 @@ def _render_report_html(data: dict, *, auto_print: bool) -> str:
     rendered_issues = validate_rendered_html(document)
     if rendered_issues:
         raise ValueError(
-            "Rendered report failed structural validation: "
-            + ", ".join(rendered_issues)
+            "Rendered report failed structural validation: " + ", ".join(rendered_issues)
         )
     return document
 
