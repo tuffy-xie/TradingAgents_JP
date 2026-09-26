@@ -36,7 +36,8 @@ def _legacy_japan_state() -> dict:
             "investment_debate_state": {
                 **state["investment_debate_state"],
                 "judge_decision": (
-                    "用户2-10日窗口属于短线区间，因此维持减配。独立证据仍支持谨慎判断。"
+                    "用户2-10日窗口属于短线区间，因此维持减配。"
+                    "用户交易指令是2-10个交易日。独立证据仍支持谨慎判断。"
                 ),
             },
             "trader_investment_plan": "Action: Hold",
@@ -116,6 +117,7 @@ def test_legacy_state_replay_removes_user_horizon_metadata_and_prose():
     assert "horizon" not in accepted["trade_constraints"]
     assert "trading_horizon" not in accepted["japan_data_bundle"]
     assert "用户2-10日窗口" not in report
+    assert "用户交易指令是2-10个交易日" not in report
     assert "独立证据仍支持谨慎判断" in report
     assert accepted["final_output_contract"]["status"] == "FINALIZED"
 

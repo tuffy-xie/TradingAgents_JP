@@ -47,6 +47,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
+_CONTRACT_SEMANTIC_REVISION = "cross-section-execution-2026-09"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -124,8 +125,20 @@ _EXECUTION_PROHIBITION = re.compile(
     re.I,
 )
 _CONDITIONAL_EXECUTION = re.compile(
-    r"(?:除非|否则|则|則|隨後|随后|之后|之後|确认后|確認後|突破后|跌破后|"
+    r"(?:若|如果|如若|一旦|除非|否则|则|則|隨後|随后|之后|之後|确认后|確認後|突破后|跌破后|"
     r"\b(?:unless|after confirmation|then|if)\b)",
+    re.I,
+)
+_CONDITION_ACTION_LINK = re.compile(
+    r"(?:→|⇒|=>|->|\bthen\b|则|則|就)"
+    r"[^。；;\n|]{0,40}(?:买入|買入|卖出|賣出|增持|减持|減持|加仓|加倉|"
+    r"减仓|減倉|建仓|建倉|开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|"
+    r"介入|入场|進場|进场|退出|逢低布局|逢高减码|逢高減碼|"
+    r"buy|sell|short|add\s+to|reduce|trim|close|open|enter)",
+    re.I,
+)
+_EXECUTION_CONTRAST_BOUNDARY = re.compile(
+    r"(?:(?<=[，,])\s*|\s+)(?:但(?:是)?|不过|不過|然而|可是|but|however)\s*[，,:：]?\s*",
     re.I,
 )
 _ACTIONABLE_PRICE = re.compile(
@@ -274,8 +287,18 @@ _INTERNAL_STATUS = {
     "US_GAAP": "美国会计准则",
 }
 _MACHINE_ENUM = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]*)(?:_[A-Z0-9]+)+(?![A-Za-z0-9])")
+_INTERNAL_ENGINEERING_ASSIGNMENT = re.compile(
+    r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\s*=\s*(?:true|false|null|none|unknown|unavailable|\d+(?:\.\d+)?)\b",
+    re.IGNORECASE,
+)
+_INTERNAL_TOOL_IDENTIFIER = re.compile(
+    r"\b(?:get|fetch|load|resolve|retrieve|query|search)_[a-z][a-z0-9_]*\b",
+    re.IGNORECASE,
+)
 _DEPRECATED_USER_HORIZON_CLAIM = re.compile(
     r"(?:用户|客户|委托人).{0,60}(?:投资期限|交易周期|持仓周期|分析窗口|时间窗口|时间框架|期限|窗口)"
+    r"|(?:用户|客户|委托人).{0,50}(?:交易|投资|持仓|操作|指令|要求).{0,40}"
+    r"\d+\s*(?:[-–—~～]|至|到)\s*\d+\s*(?:个)?(?:交易日|日|天|周|週|个月|個月|月)"
     r"|\b(?:user|client)(?:[-\s]+(?:selected|specified|requested))?.{0,40}"
     r"(?:investment\s+horizon|trading\s+horizon|time\s+horizon|timeframe|holding\s+period|analysis\s+window)\b",
     re.IGNORECASE,
@@ -293,6 +316,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     if (
         contract.get("status") == "FINALIZED"
         and contract.get("version") == _CONTRACT_VERSION
+        and contract.get("semantic_revision") == _CONTRACT_SEMANTIC_REVISION
         and not needs_horizon_migration
         and not _execution_cross_state_issues(result, bool(contract.get("execution_allowed")))
     ):
@@ -442,6 +466,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     artifact_sha256 = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
     result["final_output_contract"] = {
         "version": _CONTRACT_VERSION,
+        "semantic_revision": _CONTRACT_SEMANTIC_REVISION,
         "status": "FINALIZED" if not artifact_issues else "BLOCKED",
         "authority": "CANONICAL_FINAL_STATE",
         "execution_allowed": execution_allowed,
@@ -456,6 +481,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                         "HEADING_",
                         "NUMBERED_",
                         "CIRCLED_",
+                        "INLINE_",
                         "EMPTY_",
                         "MALFORMED_",
                         "RAW_MARKDOWN",
@@ -475,12 +501,15 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                         "UNAPPROVED_",
                         "UNVALIDATED_",
                         "POSITION_SIZE_",
+                        "FINAL_ARTIFACT_UNAUTHORIZED_EXECUTION",
                     )
                 )
                 for issue in artifact_issues
             ),
             "presentation_valid": not any(
-                issue.startswith(("PROCESS_PROSE", "UNLOCALIZED_", "EMPTY_"))
+                issue.startswith(
+                    ("PROCESS_PROSE", "UNLOCALIZED_", "EMPTY_", "INTERNAL_")
+                )
                 for issue in artifact_issues
             ),
             "persistence_byte_contract": "UTF8_EXACT_NO_APPENDED_BYTES",
@@ -1183,6 +1212,29 @@ def _normalize_numbered_lists(lines: list[str]) -> list[str]:
     return output
 
 
+_INLINE_PAREN_NUMBER = re.compile(
+    r"(?P<prefix>^|(?<=[。；;]))(?P<space>\s*)[（(](?P<number>\d{1,2})[）)]"
+)
+
+
+def _normalize_inline_parenthetical_numbers(lines: list[str]) -> list[str]:
+    """Renumber inline list items without touching years or ordinary numbers."""
+    output = list(lines)
+    for index, line in enumerate(output):
+        matches = list(_INLINE_PAREN_NUMBER.finditer(line))
+        if len(matches) < 2:
+            continue
+        rebuilt: list[str] = []
+        position = 0
+        for sequence, match in enumerate(matches, start=1):
+            rebuilt.append(line[position : match.start()])
+            rebuilt.append(f"{match.group('prefix')}{match.group('space')}({sequence})")
+            position = match.end()
+        rebuilt.append(line[position:])
+        output[index] = "".join(rebuilt)
+    return output
+
+
 def _normalize_markdown_tables(lines: list[str]) -> list[str]:
     """Keep only well-formed Markdown table rows; never guess how to split a row."""
     result: list[str] = []
@@ -1206,7 +1258,11 @@ def _normalize_markdown_tables(lines: list[str]) -> list[str]:
         for row in block[2:]:
             cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
             minimum_content = 1 if len(header) == 1 else 2
-            if len(cells) == len(header) and sum(bool(cell) for cell in cells) >= minimum_content:
+            if (
+                len(cells) == len(header)
+                and sum(bool(cell) for cell in cells) >= minimum_content
+                and not _is_semantically_empty_table_row(cells)
+            ):
                 valid.append(row)
         if len(valid) > 2 and _table_has_sequence_column(header, valid[2:]):
             for sequence, row_index in enumerate(range(2, len(valid)), start=1):
@@ -1296,6 +1352,7 @@ def normalize_markdown_structure(text: str) -> str:
     lines = _normalize_heading_numbers(lines)
     lines = _normalize_heading_count_claims(lines)
     lines = _normalize_numbered_lists(lines)
+    lines = _normalize_inline_parenthetical_numbers(lines)
     lines = _normalize_circled_lists(lines)
     lines = _remove_orphan_structures(lines)
     # Collapse separators once more after orphan removal.
@@ -1348,6 +1405,15 @@ def _markdown_structure_issues(text: str) -> list[str]:
         if _heading_level(original) is not None
     ):
         issues.append("HEADING_NUMBERING_DISCONTINUITY")
+
+    normalized_inline_numbers = _normalize_inline_parenthetical_numbers(
+        [line + "\n" for line in lines]
+    )
+    if any(
+        original.strip() != normalized.strip()
+        for original, normalized in zip(lines, normalized_inline_numbers, strict=True)
+    ):
+        issues.append("INLINE_NUMBERING_DISCONTINUITY")
 
     # Heading sequence validation mirrors the renumbering state machine.
     stack: list[tuple[int, str]] = []
@@ -1462,7 +1528,10 @@ def _markdown_structure_issues(text: str) -> list[str]:
             if len(cells) != header_count:
                 issues.append("MALFORMED_MARKDOWN_TABLE")
                 break
-            if sum(bool(cell) for cell in cells) < minimum_content:
+            if (
+                sum(bool(cell) for cell in cells) < minimum_content
+                or _is_semantically_empty_table_row(cells)
+            ):
                 issues.append("EMPTY_MARKDOWN_TABLE_ROW")
                 break
         header = [cell.strip() for cell in block[0].strip().strip("|").split("|")]
@@ -1564,9 +1633,41 @@ def _table_has_data_row(lines: list[str]) -> bool:
             separator_seen = True
             continue
         minimum_content = 1 if len(cells) == 1 else 2
-        if separator_seen and sum(bool(cell) for cell in cells) >= minimum_content:
+        if (
+            separator_seen
+            and sum(bool(cell) for cell in cells) >= minimum_content
+            and not _is_semantically_empty_table_row(cells)
+        ):
             return True
     return False
+
+
+def _is_semantically_empty_table_row(cells: list[str]) -> bool:
+    """Return true when a row contains only a label plus unavailable markers."""
+    placeholders = {
+        "",
+        "-",
+        "—",
+        "–",
+        "n/a",
+        "na",
+        "none",
+        "null",
+        "unknown",
+        "unavailable",
+        "not provided",
+        "未提供",
+        "未知",
+        "数据不可用",
+        "資料不可用",
+    }
+
+    def meaningful(cell: str) -> bool:
+        normalized = re.sub(r"[*_`~]", "", cell).strip().casefold()
+        return normalized not in placeholders
+
+    meaningful_indexes = [index for index, cell in enumerate(cells) if meaningful(cell)]
+    return not meaningful_indexes or meaningful_indexes == [0]
 
 
 def _table_has_sequence_column(header: list[str], rows: list[str]) -> bool:
@@ -1649,14 +1750,35 @@ def _collect_unapproved_execution_claims(
 
 
 def _execution_violation(text: str) -> str | None:
-    # A line may contain an independent prohibition after an analytical
-    # sentence.  Never let a directive in one clause lend authority to an
-    # action in another clause (or vice versa).
-    for clause in re.split(r"(?<=[。！？；;])", text):
-        violation = _execution_clause_violation(clause)
+    """Classify executable authorization across prose and Markdown cells.
+
+    Contrast boundaries are semantic boundaries: a withholding statement in
+    the first half of a sentence must not authorize a later ``but if ... buy``
+    clause.  Markdown table cells are checked independently so a condition →
+    action plan cannot hide inside a monitoring table.
+    """
+    for unit in _execution_semantic_units(text):
+        violation = _execution_clause_violation(unit)
         if violation:
             return violation
     return None
+
+
+def _execution_semantic_units(text: str) -> list[str]:
+    raw_units: list[str]
+    stripped = text.strip()
+    if stripped.startswith("|") and stripped.endswith("|"):
+        raw_units = [cell.strip() for cell in stripped.strip("|").split("|")]
+    else:
+        raw_units = [text]
+    units: list[str] = []
+    for raw in raw_units:
+        for sentence in re.split(r"(?<=[。！？；;])|(?<=[.!?])\s+", raw):
+            for contrast in _EXECUTION_CONTRAST_BOUNDARY.split(sentence):
+                cleaned = contrast.strip()
+                if cleaned:
+                    units.append(cleaned)
+    return units
 
 
 def _execution_clause_violation(text: str) -> str | None:
@@ -1680,6 +1802,7 @@ def _execution_clause_violation(text: str) -> str | None:
         _ACTION_AMOUNT.search(plain)
         or _STOP_TRIGGER.search(plain)
         or _EXECUTION_TRIGGER_ACTION.search(plain)
+        or _CONDITION_ACTION_LINK.search(plain)
     ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     # A prohibition with no actionable level, size, duration, trigger or later
@@ -1842,6 +1965,28 @@ def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
                 text,
             )
         text = text.replace("DATA UNAVAILABLE", "数据不可用")
+        text = re.sub(
+            r"\bcurrent_eligible\s*=\s*true\b",
+            "可用于当前判断",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = re.sub(
+            r"\bcurrent_eligible\s*=\s*false\b",
+            "不可用于当前判断",
+            text,
+            flags=re.IGNORECASE,
+        )
+        # Tool function names belong in full_agent_log, not the user report.
+        # Drop all-tool parentheticals and use one generic source label when a
+        # function identifier is the only source shown in a table or sentence.
+        text = re.sub(
+            r"[（(]\s*(?:get_[a-z][a-z0-9_]*\s*[、,，/]?\s*)+[）)]",
+            "",
+            text,
+            flags=re.IGNORECASE,
+        )
+        text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
         text = _localize_presentation_labels(text)
         return _fold_empty_sections(text)
 
@@ -1956,11 +2101,34 @@ def _validate_final_artifact(
     issues = validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
+    if not execution_allowed:
+        issues.extend(
+            "FINAL_ARTIFACT_UNAUTHORIZED_EXECUTION:"
+            + hashlib.sha256(claim.encode("utf-8")).hexdigest()
+            for claim in _artifact_execution_claims(accepted_report)
+        )
     issues.extend(_execution_cross_state_issues(state, execution_allowed))
     issues.extend(_domain_authority_issues(state))
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
+
+
+def _artifact_execution_claims(text: str) -> list[str]:
+    """Return exact unauthorized claims from the final publishable artifact.
+
+    This deliberately runs after composition and structural normalization.  It
+    is the Final Output Contract's independent defense if field-level finding
+    collection or pruning ever misses a newly formatted claim.
+    """
+    claims: list[str] = []
+    for line in text.splitlines():
+        if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
+            continue
+        for unit in _execution_semantic_units(line):
+            if _execution_clause_violation(unit):
+                claims.append(unit)
+    return list(dict.fromkeys(claims))
 
 
 def _execution_cross_state_issues(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
@@ -1990,6 +2158,10 @@ def validate_final_report_text(
             issues.append(f"INTERNAL_STATUS_VISIBLE:{token}")
     for token in _MACHINE_ENUM.findall(text):
         issues.append(f"INTERNAL_MACHINE_ENUM_VISIBLE:{token}")
+    if _INTERNAL_ENGINEERING_ASSIGNMENT.search(text):
+        issues.append("INTERNAL_ENGINEERING_METADATA_VISIBLE")
+    if _INTERNAL_TOOL_IDENTIFIER.search(text):
+        issues.append("INTERNAL_TOOL_IDENTIFIER_VISIBLE")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):
         issues.append("SHORT_MARKET_OVERCLAIM")
     if _remove_generation_process_prose(text) != text:

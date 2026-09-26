@@ -10,6 +10,7 @@ from tradingagents.dataflows.japan.context import (
     render_japan_report_sections,
 )
 from tradingagents.final_output import (
+    _artifact_execution_claims,
     _execution_cross_state_issues,
     _execution_violation,
     build_canonical_final_state,
@@ -582,6 +583,129 @@ def test_execution_semantics_allow_withholding_and_research_facts(claim):
     assert validate_final_report_text(
         claim, execution_allowed=False, check_structure=False
     ) == []
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "若有回调可考虑逢低布局",
+        "若跌破关键位则减仓",
+        "出现CapEx指引下调→减仓",
+        "板块性下跌→确认减仓",
+        "| 监测条件 | 出现CapEx指引下调 | →减仓 |",
+        "- 若板块继续下跌，则确认减仓",
+        "If capex guidance falls, then reduce the position.",
+    ],
+)
+def test_cross_section_execution_semantics_block_condition_action_claims(claim):
+    assert _execution_violation(claim) is not None
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "CapEx下调是负面风险",
+        "板块下跌增加下行风险",
+        "不追高",
+        "暂不建仓",
+        "维持观望",
+        "7500是技术阻力位",
+        "公司在公告后减持了历史持股",
+    ],
+)
+def test_cross_section_execution_semantics_preserve_research_and_withholding(claim):
+    assert _execution_violation(claim) is None
+
+
+def test_exact_artifact_execution_defense_is_independent_of_upstream_audit():
+    artifact = (
+        "## 新闻\n不建议追高，但若有回调可考虑逢低布局。\n\n"
+        "## 研究结论\n| 触发条件 | 动作 |\n|---|---|\n"
+        "| CapEx指引下调 | →减仓 |"
+    )
+
+    claims = _artifact_execution_claims(artifact)
+
+    assert any("若有回调可考虑逢低布局" in claim for claim in claims)
+    assert any("→减仓" in claim for claim in claims)
+
+
+def test_cross_section_execution_claims_are_audited_removed_and_closed():
+    state = _jp_state()
+    state["news_report"] = "不建议追高，但若有回调可考虑逢低布局。"
+    state["investment_debate_state"]["judge_decision"] = (
+        "## 风险观察\n"
+        "| 数据 | 触发条件 | 动作 |\n"
+        "|---|---|---|\n"
+        "| 公司指引 | CapEx下调 | →减仓 |\n"
+        "| 同行股价 | 板块下跌 | →确认减仓 |\n\n"
+        "## 独立研究判断\nCapEx下调是负面风险。板块下跌增加下行风险。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+    findings = [
+        item
+        for item in accepted["evidence_audit"]
+        if item.get("category") == "UNAPPROVED_EXECUTION_CLAIM"
+    ]
+
+    assert "逢低布局" not in artifact
+    assert "→减仓" not in artifact
+    assert "→确认减仓" not in artifact
+    assert "CapEx下调是负面风险" in artifact
+    assert "板块下跌增加下行风险" in artifact
+    assert findings
+    assert all(len(item.get("claim_sha256", "")) == 64 for item in findings)
+    assert all(item.get("resolution") == "CLAIM_REMOVED_OR_REPLACED" for item in findings)
+    assert not any(item.get("resolution") == "UNRESOLVED" for item in findings)
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert accepted["final_output_contract"]["audit_closure_status"] == "CLOSED"
+    assert accepted["final_output_contract"]["artifact_issues"] == []
+
+
+def test_user_artifact_publicizes_engineering_metadata_and_drops_empty_rows():
+    state = _jp_state()
+    state["evidence_registry"].append(
+        {
+            "claim_type": "FACT",
+            "value": "FY2023 revenue 100 profit 10; references 1 2 3",
+            "allowed_for_current_decision": True,
+        }
+    )
+    state["fundamentals_report"] += (
+        "\n\n## 历史数据\n"
+        "| 期间 | 收入 | 利润 |\n"
+        "|---|---:|---:|\n"
+        "| FY2022 | — | — |\n"
+        "| FY2023 | 100 | 10 |\n"
+        "current_eligible=True（get_financial_data）\n"
+        "(3) 第一项。(2) 第二项。(3) 第三项。"
+    )
+
+    accepted = build_canonical_final_state(state)
+    artifact = accepted["accepted_report_markdown"]
+
+    assert "current_eligible" not in artifact
+    assert "get_financial_data" not in artifact
+    assert "| FY2022 | — | — |" not in artifact
+    assert "| FY2023 | 100 | 10 |" in artifact
+    assert "(1) 第一项。(2) 第二项。(3) 第三项。" in artifact
+    assert accepted["final_output_contract"]["artifact_issues"] == []
+
+
+def test_final_contract_reaccepts_same_v5_state_after_semantic_revision():
+    stale = build_canonical_final_state(_jp_state())
+    stale["final_output_contract"].pop("semantic_revision")
+    stale["raw_agent_outputs"]["news_report"] = "若回调可考虑逢低布局。"
+    stale["news_report"] = "若回调可考虑逢低布局。"
+    stale["accepted_report_markdown"] += "\n\n若回调可考虑逢低布局。"
+
+    accepted = build_canonical_final_state(stale)
+
+    assert "逢低布局" not in accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["version"] == "v5"
+    assert accepted["final_output_contract"]["semantic_revision"]
 
 
 def test_execution_gate_records_claim_identity_before_pruning():
