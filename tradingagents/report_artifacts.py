@@ -97,3 +97,10 @@ def validate_rendered_html(html_text: str) -> list[str]:
         if any(_RAW_MARKDOWN.search(cell) for row in table for cell in row):
             issues.append("MARKDOWN_SWALLOWED_BY_TABLE")
     return list(dict.fromkeys(issues))
+
+
+def rendered_table_rows(html_text: str) -> list[tuple[list[str], list[str]]]:
+    """Expose rendered header/row relationships without interpreting business data."""
+    parser = _RenderedArtifactParser()
+    parser.feed(html_text)
+    return [(table[0], row) for table in parser.tables if table for row in table[1:]]

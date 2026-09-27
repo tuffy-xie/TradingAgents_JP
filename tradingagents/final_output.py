@@ -32,7 +32,11 @@ from tradingagents.dataflows.japan.context import (
 from tradingagents.dataflows.japan.trading_calendar import (
     latest_completed_japan_session,
 )
-from tradingagents.report_artifacts import render_markdown_fragment, validate_rendered_html
+from tradingagents.report_artifacts import (
+    render_markdown_fragment,
+    rendered_table_rows,
+    validate_rendered_html,
+)
 from tradingagents.report_consistency import canonical_report_metadata
 from tradingagents.secret_redaction import sanitize_text
 
@@ -47,7 +51,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "cross-section-execution-2026-09"
+_CONTRACT_SEMANTIC_REVISION = "relational-execution-lineage-2026-09"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -134,7 +138,7 @@ _CONDITION_ACTION_LINK = re.compile(
     r"[^。；;\n|]{0,40}(?:买入|買入|卖出|賣出|增持|减持|減持|加仓|加倉|"
     r"减仓|減倉|建仓|建倉|开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|"
     r"介入|入场|進場|进场|退出|逢低布局|逢高减码|逢高減碼|"
-    r"buy|sell|short|add\s+to|reduce|trim|close|open|enter)",
+    r"\b(?:buy|sell|short|add\s+to|reduce|trim|close|open|enter)(?![\w-]))",
     re.I,
 )
 _EXECUTION_CONTRAST_BOUNDARY = re.compile(
@@ -158,7 +162,7 @@ _ACTIONABLE_HOLDING_PERIOD = re.compile(
     re.I,
 )
 _ENGLISH_TRADE_ACTION = re.compile(
-    r"\b(?:buy|sell|short|add\s+to|reduce|trim|close|open|enter)\b",
+    r"(?<![\w-])(?:buy|sell|short|add\s+to|reduce|trim|close|open|enter)(?![\w-])",
     re.I,
 )
 _ACTION_AMOUNT = re.compile(
@@ -599,6 +603,8 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
     contract = state.get("final_output_contract") or {}
     if contract.get("status") != "FINALIZED" or contract.get("version") != _CONTRACT_VERSION:
         raise ValueError("Japan report input is not an accepted canonical final state")
+    if contract.get("semantic_revision") != _CONTRACT_SEMANTIC_REVISION:
+        raise ValueError("Japan report semantic revision requires canonical reacceptance")
     if _execution_cross_state_issues(state, bool(contract.get("execution_allowed"))):
         raise ValueError("Japan report execution authority is internally inconsistent")
     accepted = state.get("accepted_report_markdown")
@@ -1257,11 +1263,9 @@ def _normalize_markdown_tables(lines: list[str]) -> list[str]:
         valid = block[:2]
         for row in block[2:]:
             cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
-            minimum_content = 1 if len(header) == 1 else 2
             if (
                 len(cells) == len(header)
-                and sum(bool(cell) for cell in cells) >= minimum_content
-                and not _is_semantically_empty_table_row(cells)
+                and not _is_semantically_empty_table_row(cells, header)
             ):
                 valid.append(row)
         if len(valid) > 2 and _table_has_sequence_column(header, valid[2:]):
@@ -1524,14 +1528,10 @@ def _markdown_structure_issues(text: str) -> list[str]:
             continue
         for row in block[2:]:
             cells = [cell.strip() for cell in row.strip().strip("|").split("|")]
-            minimum_content = 1 if header_count == 1 else 2
             if len(cells) != header_count:
                 issues.append("MALFORMED_MARKDOWN_TABLE")
                 break
-            if (
-                sum(bool(cell) for cell in cells) < minimum_content
-                or _is_semantically_empty_table_row(cells)
-            ):
+            if _is_semantically_empty_table_row(cells, _table_cells(block[0])):
                 issues.append("EMPTY_MARKDOWN_TABLE_ROW")
                 break
         header = [cell.strip() for cell in block[0].strip().strip("|").split("|")]
@@ -1627,47 +1627,49 @@ def _table_blocks(lines: list[str], start: int, end: int) -> list[tuple[int, int
 
 def _table_has_data_row(lines: list[str]) -> bool:
     separator_seen = False
+    header = _table_cells(lines[0]) if lines else []
     for line in lines:
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         if _is_table_separator(line):
             separator_seen = True
             continue
-        minimum_content = 1 if len(cells) == 1 else 2
         if (
             separator_seen
-            and sum(bool(cell) for cell in cells) >= minimum_content
-            and not _is_semantically_empty_table_row(cells)
+            and not _is_semantically_empty_table_row(cells, header)
         ):
             return True
     return False
 
 
-def _is_semantically_empty_table_row(cells: list[str]) -> bool:
-    """Return true when a row contains only a label plus unavailable markers."""
+def _is_semantically_empty_table_row(cells: list[str], headers: list[str] | None = None) -> bool:
+    """Empty glyphs carry no value; explicit availability states do carry information.
+
+    A single-column observation is its own value, not a row label. A leading
+    cell is ignored only when the table declares it a label/period, or it is
+    an unambiguous period identifier. Unknown text is retained, not guessed empty.
+    """
     placeholders = {
         "",
         "-",
         "—",
         "–",
-        "n/a",
-        "na",
-        "none",
-        "null",
-        "unknown",
-        "unavailable",
-        "not provided",
-        "未提供",
-        "未知",
-        "数据不可用",
-        "資料不可用",
     }
 
     def meaningful(cell: str) -> bool:
         normalized = re.sub(r"[*_`~]", "", cell).strip().casefold()
         return normalized not in placeholders
 
-    meaningful_indexes = [index for index, cell in enumerate(cells) if meaningful(cell)]
-    return not meaningful_indexes or meaningful_indexes == [0]
+    if not any(meaningful(cell) for cell in cells):
+        return True
+    if len(cells) < 2 or any(meaningful(cell) for cell in cells[1:]):
+        return False
+    header = re.sub(r"[*_`~]", "", (headers or [""])[0]).strip().casefold()
+    label_column = bool(re.fullmatch(
+        r"(?:period|year|metric|item|kind|category|label|期间|年度|年份|指标|项目|类别|种类)", header
+    ))
+    label = re.sub(r"[*_`~]", "", cells[0]).strip()
+    period = bool(re.fullmatch(r"(?:FY\s*)?\d{4}(?:[-/]\d{1,2}){0,2}|(?:FY\s*)?\d{4}\s*Q[1-4]", label, re.I))
+    return label_column or period
 
 
 def _table_has_sequence_column(header: list[str], rows: list[str]) -> bool:
@@ -1722,13 +1724,13 @@ def _collect_unapproved_execution_claims(
         text = _published_field_text(state, field)
         if not text:
             continue
-        for line in text.splitlines():
+        for line, headers in _execution_lines(text):
             for clause in re.split(r"(?<=[。！？；;])", line):
                 claim = clause.strip()
                 warning = (
                     "UNAPPROVED_EXECUTION_SECTION"
                     if _heading_level(claim) and _is_execution_heading(claim.lstrip("# "))
-                    else _execution_violation(claim)
+                    else _execution_violation(claim, headers)
                 )
                 if not claim or not warning:
                     continue
@@ -1749,14 +1751,65 @@ def _collect_unapproved_execution_claims(
     return findings
 
 
-def _execution_violation(text: str) -> str | None:
+def _execution_lines(text: str):
+    """Keep table header and row scope through collection, pruning and validation."""
+    lines = text.splitlines()
+    headers = None
+    for index, line in enumerate(lines):
+        if line.strip().startswith("|"):
+            if index + 1 < len(lines) and _is_table_separator(lines[index + 1]):
+                headers = _table_cells(line)
+                yield line, None
+                continue
+            yield line, headers
+        else:
+            headers = None
+            yield line, None
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _table_execution_violation(cells: list[str], headers: list[str] | None) -> str | None:
+    """A condition and response in different cells still form one plan.
+
+    Typed action columns authorize imperative responses, not risk effects or
+    historical transactions. Unknown headers use an explicit conditional link
+    only; ordinary numerical/qualitative tables are not trading plans.
+    """
+    def role_value(pattern: str) -> str:
+        return " ".join(cell for header, cell in zip(headers or [], cells, strict=False)
+                        if re.fullmatch(pattern, header, re.I))
+
+    subject = role_value(r"subject|actor|entity|主体|行为主体|主体名称")
+    target = role_value(r"object|target|标的|对象|对象资产")
+    for index, cell in enumerate(cells):
+        header = headers[index] if headers and index < len(headers) else ""
+        action_column = bool(re.search(
+            r"^(?:后续)?(?:操作|动作|行动|应对|应对措施)$|"
+            r"^(?:action|response|next action|trade action)$", header, re.I
+        ))
+        conditional = any(_CONDITIONAL_EXECUTION.search(c) for c in cells[:index])
+        contextual = " ".join(part for part in (subject, cell, target) if part)
+        if (action_column or conditional) and _execution_clause_violation("then " + contextual):
+            return "UNAPPROVED_EXECUTION_INSTRUCTION"
+        if _execution_clause_violation(contextual):
+            return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    return None
+
+
+def _execution_violation(text: str, headers: list[str] | None = None) -> str | None:
     """Classify executable authorization across prose and Markdown cells.
 
-    Contrast boundaries are semantic boundaries: a withholding statement in
-    the first half of a sentence must not authorize a later ``but if ... buy``
-    clause.  Markdown table cells are checked independently so a condition →
-    action plan cannot hide inside a monitoring table.
+    Conditions and actions retain row context; contrast separates a prohibition
+    from a later authorization. Layout is never itself trading permission.
     """
+    if "\n" in text:
+        return next((v for line, header in _execution_lines(text)
+                     if (v := _execution_violation(line, header))), None)
+    if text.strip().startswith("|"):
+        return _table_execution_violation(_table_cells(text), headers)
     for unit in _execution_semantic_units(text):
         violation = _execution_clause_violation(unit)
         if violation:
@@ -1786,6 +1839,17 @@ def _execution_clause_violation(text: str) -> str | None:
     if not plain:
         return None
     action = _EXECUTION_ACTION.search(plain) or _ENGLISH_TRADE_ACTION.search(plain)
+    actions = sorted(
+        [*_EXECUTION_ACTION.finditer(plain), *_ENGLISH_TRADE_ACTION.finditer(plain)],
+        key=lambda match: match.start(),
+    )
+    if actions and all(_non_authorizing_action(plain, match) for match in actions) and not (
+        _ACTIONABLE_HOLDING_PERIOD.search(plain)
+        or _POSITION_DIRECTIVE.search(plain)
+        or _STOP_TRIGGER.search(plain)
+    ):
+        # Polarity/subject belong to the action, not to a conditional elsewhere.
+        return None
     if _POSITION_DIRECTIVE.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
     if _POSITION_RECOMMENDATION.search(plain):
@@ -1805,16 +1869,17 @@ def _execution_clause_violation(text: str) -> str | None:
         or _CONDITION_ACTION_LINK.search(plain)
     ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
-    # A prohibition with no actionable level, size, duration, trigger or later
-    # authorization withholds permission; it does not authorize a trade.  Run
-    # this only after explicit plan constructs so an unrelated "不可..." phrase
-    # cannot hide an actionable instruction elsewhere in the same claim.
-    if _EXECUTION_PROHIBITION.search(plain) and not (
-        (action and _ACTIONABLE_PRICE.search(plain))
-        or (action and _CONDITIONAL_EXECUTION.search(plain))
-    ):
+    # Action-bearing clauses already had action-local polarity checked above.
+    # Only action-free withholding text can use a clause-wide exemption.
+    if not action and _EXECUTION_PROHIBITION.search(plain):
         return None
     if _EXECUTION_INSTRUCTIONS.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    imperative = _ENGLISH_TRADE_ACTION.match(plain)
+    if imperative and re.match(
+        r"\s+(?:the|a|an|your|this|that|shares|stock|position|at|below|above)\b",
+        plain[imperative.end():], re.I,
+    ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if action and (
         _EXECUTION_DIRECTIVE_CONTEXT.search(plain)
@@ -1830,13 +1895,39 @@ def _execution_clause_violation(text: str) -> str | None:
     return None
 
 
+def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
+    """Recognize action-local prohibition and explicitly descriptive agency.
+
+    A company action in the antecedent does not excuse a later investor order.
+    Likewise a prohibition never carries across contrast or clause boundaries.
+    """
+    before = re.split(r"[，,。；;!?！？]|→|⇒|=>|->", text[:action.start()])[-1]
+    prohibitions = list(_EXECUTION_PROHIBITION.finditer(before))
+    if prohibitions:
+        # A later modal/coordination starts a new authorization scope. A ban
+        # on chasing prices cannot negate a separate instruction to buy.
+        tail = before[prohibitions[-1].end():]
+        if not re.search(r"(?:但|且|并|而|可(?:以)?|应当|应该|建议|\b(?:but|and|then|can|may|should|recommend)\b)", tail, re.I):
+            return True
+    subject = re.search(r"(?:公司|企业|企業|发行人|發行人|\b(?:company|issuer|firm)\b)", before, re.I)
+    target = text[action.end():]
+    corporate_target = re.match(
+        r"\s*(?:过|了|其|非核心|核心|部分|non-core\s+|core\s+|its\s+)?"
+        r"(?:资产|資產|业务|業務|子公司|assets?\b|business\b|subsidiar)", target, re.I
+    )
+    if subject and corporate_target:
+        return True
+    historical = re.search(r"(?:历史上|歷史上|此前|去年|曾经|曾經|\bhistorically\b|\blast year\b)", before, re.I)
+    return bool(historical and not re.search(r"(?:建议|建議|应当|recommend|should)", before, re.I))
+
+
 def _prune_unapproved_execution(text: str) -> str:
     text = _filter_markdown_sections(
         text,
         lambda heading: not _is_execution_heading(heading),
     )
     lines = []
-    for line in text.splitlines():
+    for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             lines.append(line)
             continue
@@ -1846,7 +1937,7 @@ def _prune_unapproved_execution(text: str) -> str:
         if _EXECUTION_LINE.search(line):
             continue
         if line.lstrip().startswith("|"):
-            if not _execution_violation(line):
+            if not _execution_violation(line, headers):
                 lines.append(line)
             continue
         # Remove complete clauses, retaining independent directional judgments.
@@ -1955,42 +2046,28 @@ def _remove_unapproved_execution_lines(text: str, *, include_target: bool = Fals
 
 
 def _publicize_state_text(state: dict[str, Any]) -> dict[str, Any]:
-    def publicize(text: str) -> str:
-        for internal, display in _PUBLIC_NEWS_TEXT.items():
-            text = text.replace(internal, display)
-        for internal in sorted(_INTERNAL_STATUS, key=len, reverse=True):
-            text = re.sub(
-                rf"(?<![A-Za-z0-9_]){re.escape(internal)}(?![A-Za-z0-9_])",
-                _INTERNAL_STATUS[internal],
-                text,
-            )
-        text = text.replace("DATA UNAVAILABLE", "数据不可用")
-        text = re.sub(
-            r"\bcurrent_eligible\s*=\s*true\b",
-            "可用于当前判断",
-            text,
-            flags=re.IGNORECASE,
-        )
-        text = re.sub(
-            r"\bcurrent_eligible\s*=\s*false\b",
-            "不可用于当前判断",
-            text,
-            flags=re.IGNORECASE,
-        )
-        # Tool function names belong in full_agent_log, not the user report.
-        # Drop all-tool parentheticals and use one generic source label when a
-        # function identifier is the only source shown in a table or sentence.
-        text = re.sub(
-            r"[（(]\s*(?:get_[a-z][a-z0-9_]*\s*[、,，/]?\s*)+[）)]",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-        text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
-        text = _localize_presentation_labels(text)
-        return _fold_empty_sections(text)
+    return _map_report_text(state, lambda text: _fold_empty_sections(_publicize_inline_text(text)))
 
-    return _map_report_text(state, publicize)
+
+def _publicize_inline_text(text: str) -> str:
+    """Deterministic display transforms, also used to preserve audit lineage."""
+    for internal, display in _PUBLIC_NEWS_TEXT.items():
+        text = text.replace(internal, display)
+    for internal in sorted(_INTERNAL_STATUS, key=len, reverse=True):
+        text = re.sub(
+            rf"(?<![A-Za-z0-9_]){re.escape(internal)}(?![A-Za-z0-9_])",
+            _INTERNAL_STATUS[internal], text,
+        )
+    text = text.replace("DATA UNAVAILABLE", "数据不可用")
+    for value, label in (("true", "可用于当前判断"), ("false", "不可用于当前判断")):
+        text = re.sub(rf"\bcurrent_eligible\s*=\s*{value}\b", label, text, flags=re.I)
+    # All-tool parentheses are omitted; standalone identifiers retain a source label.
+    text = re.sub(
+        r"[（(]\s*(?:(?:get|fetch|load|resolve|retrieve|query|search)_[a-z][a-z0-9_]*\s*[、,，/]?\s*)+[）)]",
+        "", text, flags=re.I,
+    )
+    text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
+    return _localize_presentation_labels(text)
 
 
 def _drop_deprecated_horizon_metadata(state: dict[str, Any]) -> dict[str, Any]:
@@ -2122,12 +2199,22 @@ def _artifact_execution_claims(text: str) -> list[str]:
     collection or pruning ever misses a newly formatted claim.
     """
     claims: list[str] = []
-    for line in text.splitlines():
+    for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
+            continue
+        if line.strip().startswith("|"):
+            if _table_execution_violation(_table_cells(line), headers):
+                claims.append(line.strip())
             continue
         for unit in _execution_semantic_units(line):
             if _execution_clause_violation(unit):
                 claims.append(unit)
+    # Independently recover row/header relations from the actual renderer,
+    # including raw HTML tables. No upstream findings or Markdown cell-splitting
+    # decisions are trusted at this final boundary.
+    for headers, cells in rendered_table_rows(render_markdown_fragment(text)):
+        if _table_execution_violation(cells, headers):
+            claims.append("| " + " | ".join(cells) + " |")
     return list(dict.fromkeys(claims))
 
 
@@ -2173,7 +2260,7 @@ def validate_final_report_text(
     for internal in _PUBLIC_NEWS_TEXT:
         if internal in text:
             issues.append("UNLOCALIZED_NEWS_AUTHORITY")
-    for line in text.splitlines():
+    for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             continue
         if not execution_allowed:
@@ -2181,7 +2268,7 @@ def validate_final_report_text(
                 issues.append("UNAPPROVED_EXECUTION_SECTION")
             if _EXECUTION_LINE.search(line):
                 issues.append("UNVALIDATED_EXECUTABLE_PLAN")
-            violation = _execution_violation(line)
+            violation = _execution_violation(line, headers)
             if violation:
                 issues.append(violation)
     if _clean_empty_markdown(text) != re.sub(r"\n{3,}", "\n\n", text).strip():
@@ -2266,10 +2353,16 @@ def _finalize_audit(
             entry["accepted_artifact_sha256"] = hashlib.sha256(
                 accepted_report.encode("utf-8")
             ).hexdigest()
-            if original and not _claim_is_published(original, accepted_report):
+            # Compare presentation-stable components as well as whole claims.
+            # A source-label/numbering change is not removal of the action.
+            surviving = _execution_claim_survives(original, accepted_report)
+            entry["presentation_claim_sha256"] = hashlib.sha256(
+                _claim_identity(original).encode("utf-8")
+            ).hexdigest()
+            if original and not surviving:
                 entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
                 entry["resolution_basis"] = (
-                    "ORIGINAL_EXECUTION_CLAIM_ABSENT_FROM_EXACT_ACCEPTED_ARTIFACT"
+                    "EXECUTION_CLAIM_COMPONENTS_ABSENT_FROM_EXACT_ACCEPTED_ARTIFACT"
                 )
                 entry["execution_blocking"] = False
             else:
@@ -2372,17 +2465,56 @@ def _finalize_audit(
 
 def _claim_is_published(claim: str, accepted_report: str) -> bool:
     """Match one whole published claim, never a substring of another claim."""
-    normalized_claim = re.sub(r"\s+", " ", claim).strip()
+    normalized_claim = _claim_identity(claim)
     if not normalized_claim:
         return False
     candidates: list[str] = []
     for line in accepted_report.splitlines():
-        normalized_line = re.sub(r"\s+", " ", line).strip()
+        normalized_line = _claim_identity(line)
         if normalized_line:
             candidates.append(normalized_line)
         candidates.extend(
-            re.sub(r"\s+", " ", clause).strip()
+            _claim_identity(clause)
             for clause in re.split(r"(?<=[。！？；;.!?])", line)
             if clause.strip()
         )
     return normalized_claim in candidates
+
+
+def _claim_identity(text: str) -> str:
+    """Ignore only deterministic presentation transforms, never business values."""
+    text = _publicize_inline_text(text)
+    text = re.sub(r"[*`#]", "", text)
+    text = re.sub(r"(?m)^\s*(?:[-+]\s+|\(?\d+\)[.、]?\s*|\d+[.、]\s+|[①-⑳]\s*)", "", text)
+    return re.sub(r"\s+", " ", text).strip().rstrip("。.;；")
+
+
+def _execution_claim_survives(original: str, artifact: str) -> bool:
+    if _claim_is_published(original, artifact):
+        return True
+    # A row may lose an incidental provenance cell, or prose may be split into
+    # bullets. Retain action-bearing components and compare whole components,
+    # not substrings such as Buy inside a withholding sentence.
+    components = {
+        _claim_identity(unit)
+        for unit in _execution_semantic_units(original)
+        if _EXECUTION_ACTION.search(unit) or _ENGLISH_TRADE_ACTION.search(unit)
+    }
+    for line in artifact.splitlines():
+        if components.intersection(_claim_identity(unit) for unit in _execution_semantic_units(line)):
+            return True
+    for _, cells in rendered_table_rows(render_markdown_fragment(artifact)):
+        if components.intersection(_claim_identity(cell) for cell in cells):
+            return True
+    # When composition changes clause boundaries, do not claim proof of removal
+    # while an unauthorized action of the same identity remains. This is
+    # intentionally conservative: unrelated remaining violations must be fixed
+    # before closure, rather than guessing which original finding they belong to.
+    actions = {m.group().casefold() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
+               for m in pattern.finditer(original)}
+    for claim in _artifact_execution_claims(artifact):
+        remaining = {m.group().casefold() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
+                     for m in pattern.finditer(claim)}
+        if actions & remaining:
+            return True
+    return False

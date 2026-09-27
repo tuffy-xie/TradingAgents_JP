@@ -13,6 +13,7 @@ import pytest
 from rich.console import Console
 
 import cli.main as m
+from tradingagents.final_output import _CONTRACT_SEMANTIC_REVISION
 
 # Minimal selections dict shaped like get_user_selections()'s return value.
 SELECTIONS = {
@@ -82,6 +83,7 @@ def test_japan_cli_displays_only_canonical_accepted_report(monkeypatch):
         "accepted_report_markdown": report,
         "final_output_contract": {
             "version": "v5",
+            "semantic_revision": _CONTRACT_SEMANTIC_REVISION,
             "status": "FINALIZED",
             "accepted_report_sha256": hashlib.sha256(report.encode()).hexdigest(),
         },
