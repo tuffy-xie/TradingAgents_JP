@@ -51,7 +51,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "relational-execution-lineage-2026-09"
+_CONTRACT_SEMANTIC_REVISION = "table-role-execution-2026-09"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -1757,7 +1757,11 @@ def _execution_lines(text: str):
     headers = None
     for index, line in enumerate(lines):
         if line.strip().startswith("|"):
-            if index + 1 < len(lines) and _is_table_separator(lines[index + 1]):
+            if index + 1 < len(lines) and all(
+                re.fullmatch(r":?-+:?", cell) for cell in _table_cells(lines[index + 1])
+            ):
+                # The renderer accepts short delimiter cells too. Execution
+                # collection must run before stricter structural normalization.
                 headers = _table_cells(line)
                 yield line, None
                 continue
@@ -1771,28 +1775,52 @@ def _table_cells(line: str) -> list[str]:
     return [cell.strip() for cell in line.strip().strip("|").split("|")]
 
 
+def _table_header_roles(header: str) -> set[str]:
+    """Compose semantic roles from header concepts, not full label spellings.
+
+    Modifiers, emphasis and word order do not change an action/response role.
+    A role supplies context only: the cell must still express an actual trading
+    instruction. Company agency and descriptive columns are carried separately.
+    """
+    plain = re.sub(r"[*`#_]", " ", header).casefold()
+    words = set(re.findall(r"[a-z]+", plain))
+    concepts = {
+        "condition": ({"condition", "conditions", "trigger", "triggers", "event", "events", "scenario", "scenarios"},
+                      ("条件", "触发", "情景", "场景", "事件", "因素")),
+        "response": ({"action", "actions", "response", "responses", "strategy", "strategies", "instruction", "instructions", "adjustment"},
+                     ("操作", "动作", "行动", "应对", "策略", "指令", "仓位调整")),
+        "description": ({"impact", "effect", "effects", "assessment", "evaluation", "description", "observation"},
+                        ("影响", "评价", "评估", "描述", "观察")),
+        "company": ({"company", "corporate", "issuer", "firm"}, ("公司", "企业", "发行人")),
+        "subject": ({"subject", "actor", "entity"}, ("主体",)),
+        "object": ({"object", "target"}, ("标的", "对象")),
+    }
+    return {role for role, (english, chinese) in concepts.items()
+            if words & english or any(term in plain for term in chinese)}
+
+
 def _table_execution_violation(cells: list[str], headers: list[str] | None) -> str | None:
     """A condition and response in different cells still form one plan.
 
-    Typed action columns authorize imperative responses, not risk effects or
-    historical transactions. Unknown headers use an explicit conditional link
-    only; ordinary numerical/qualitative tables are not trading plans.
+    Trigger and response roles form a relation regardless of column order.
+    Roles never authorize trading by themselves: risk effects, prohibitions and
+    descriptive corporate actions still use the existing action classifier.
     """
-    def role_value(pattern: str) -> str:
-        return " ".join(cell for header, cell in zip(headers or [], cells, strict=False)
-                        if re.fullmatch(pattern, header, re.I))
-
-    subject = role_value(r"subject|actor|entity|主体|行为主体|主体名称")
-    target = role_value(r"object|target|标的|对象|对象资产")
+    roles = [_table_header_roles(headers[index]) if headers and index < len(headers) else set()
+             for index in range(len(cells))]
+    subject = " ".join(cell for cell, role in zip(cells, roles, strict=True) if "subject" in role)
+    target = " ".join(cell for cell, role in zip(cells, roles, strict=True) if "object" in role)
+    conditions = {index for index, (cell, role) in enumerate(zip(cells, roles, strict=True))
+                  if cell.strip() and ("condition" in role or _CONDITIONAL_EXECUTION.search(cell))}
     for index, cell in enumerate(cells):
-        header = headers[index] if headers and index < len(headers) else ""
-        action_column = bool(re.search(
-            r"^(?:后续)?(?:操作|动作|行动|应对|应对措施)$|"
-            r"^(?:action|response|next action|trade action)$", header, re.I
-        ))
-        conditional = any(_CONDITIONAL_EXECUTION.search(c) for c in cells[:index])
-        contextual = " ".join(part for part in (subject, cell, target) if part)
-        if (action_column or conditional) and _execution_clause_violation("then " + contextual):
+        role = roles[index]
+        actor = subject or ("company" if "company" in role else "")
+        contextual = " ".join(part for part in (actor, cell, target) if part)
+        # A mixed response/impact column can contain either. The action-cell
+        # classifier decides; an added descriptive label cannot cancel a plan.
+        response = "response" in role
+        conditional = bool(conditions - {index}) and not role.intersection({"condition", "description"})
+        if (response or conditional) and _execution_clause_violation("then " + contextual):
             return "UNAPPROVED_EXECUTION_INSTRUCTION"
         if _execution_clause_violation(contextual):
             return "UNAPPROVED_EXECUTION_INSTRUCTION"

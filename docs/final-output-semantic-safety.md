@@ -7,7 +7,7 @@ canonical acceptance collects and removes unapproved plans; Audit proves claim
 closure; renderers display the accepted artifact. No provider, agent topology,
 financial authority or US execution policy is changed by this revision.
 
-The v5 semantic revision is `relational-execution-lineage-2026-09`.
+The v5 semantic revision is `table-role-execution-2026-09`.
 
 ## Review findings and fixes
 
@@ -17,6 +17,12 @@ The v5 semantic revision is `relational-execution-lineage-2026-09`.
   subject/object columns preserve descriptive company actions. Final validation
   also extracts rows from the actual rendered HTML, independently of upstream
   Markdown segmentation and Audit collection.
+  Header roles are composed from condition/response/description/agency concepts,
+  so modifiers such as recommended, portfolio or suggested do not depend on an
+  exact full-header spelling. Trigger/response columns can occur in either order.
+  Company-action columns supply company agency to the existing descriptive-action
+  policy; they do not become reader trading instructions. Short Markdown delimiter
+  cells are recognized for execution collection before structural normalization.
 * **R2:** Whole-line literal equality mistook presentation changes for removal.
   Audit retains the original SHA and a presentation-normalized SHA, compares
   action-bearing components, and follows the same deterministic localization
