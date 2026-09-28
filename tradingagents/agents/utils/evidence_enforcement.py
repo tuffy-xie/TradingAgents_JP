@@ -14,6 +14,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from tradingagents.agents.utils.market_authority import canonical_market_authority
+
 # A numeric token may be followed immediately by a display suffix such as
 # ``x`` or ``pt``.  It may not, however, begin in the middle of an identifier
 # such as ``FY2027``.  The old look-behind allowed the engine to restart at the
@@ -186,12 +188,20 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "【来源约束：各事实保留 Evidence Registry 中各自的来源类型；行情/新闻工具事实为 "
                 "VERIFIED_TOOL_OUTPUT，财务事实为 VERIFIED_FINANCIAL_AUTHORITY，不得合并改写。】",
             )
-        if _UNVERIFIED_MARKET.search(clause) and _has_verified_domain(state, "MARKET"):
-            return resolve_claim(
-                clause,
-                "verified_market_fact_downgraded",
-                "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】",
-            )
+        if _UNVERIFIED_MARKET.search(clause):
+            if _has_verified_domain(state, "MARKET"):
+                return resolve_claim(
+                    clause,
+                    "verified_market_fact_downgraded",
+                    "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】",
+                )
+            if _has_market_tool_provenance(state):
+                return resolve_claim(
+                    clause,
+                    "verified_market_fact_downgraded",
+                    "【证据连续性：Market 工具输出有可追溯来源，不得降级为无工具验证；"
+                    "但当前时效未获确认，不得用作当前技术判断。】",
+                )
         if _UNVERIFIED_NEWS.search(clause) and _has_verified_domain(state, "NEWS"):
             return resolve_claim(
                 clause,
@@ -534,7 +544,12 @@ def _sanitize_legacy_enforcement_artifacts(text: str) -> str:
 
 
 def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
-    snapshot_numbers = _numbers_in(state.get("verified_market_snapshot", ""))
+    is_japan = (state.get("market_context") or {}).get("market") == "JP"
+    market_current = not is_japan or canonical_market_authority(state)["status"] == "CURRENT"
+    # The JP snapshot is diagnostic, not the formal Market-tool authority.
+    snapshot_numbers = (
+        set() if is_japan else _numbers_in(state.get("verified_market_snapshot", ""))
+    )
     market_report_numbers: set[str] = set()
     all_numbers = set(snapshot_numbers) | set(market_report_numbers)
     guidance_numbers: set[str] = set()
@@ -575,6 +590,8 @@ def _catalog_from_state(state: Mapping[str, Any]) -> _Catalog:
         if (
             item.get("domain") == "MARKET"
             and item.get("verification_status") == "VERIFIED_TOOL_OUTPUT"
+            and item.get("allowed_for_current_decision") is True
+            and market_current
         ):
             market_report_numbers.update(payload_numbers)
         if semantic == "COMPANY_GUIDANCE":
@@ -615,6 +632,17 @@ def _has_verified_domain(state: Mapping[str, Any], domain: str) -> bool:
         and item.get("domain") == domain
         and str(item.get("verification_status", "")).startswith("VERIFIED")
         and item.get("allowed_for_current_decision") is True
+        for item in state.get("evidence_registry") or []
+    )
+
+
+def _has_market_tool_provenance(state: Mapping[str, Any]) -> bool:
+    return any(
+        isinstance(item, Mapping)
+        and item.get("domain") == "MARKET"
+        and item.get("source_type") == "TOOL_OUTPUT"
+        and item.get("source") in {"get_stock_data", "get_indicators"}
+        and item.get("verification_status") == "VERIFIED_TOOL_OUTPUT"
         for item in state.get("evidence_registry") or []
     )
 

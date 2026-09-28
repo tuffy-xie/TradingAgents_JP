@@ -172,7 +172,8 @@ def test_stale_market_tool_window_cannot_publish_current_technical_prose():
 
     accepted = build_canonical_final_state(state)
 
-    assert "最近完整 OHLCV 日期为 2026-09-14" in accepted["market_report"]
+    # A legacy, partial display value cannot establish a lossless latest date.
+    assert "最近完整 OHLCV 日期为 未获完整证据核验" in accepted["market_report"]
     assert "预期最近已完成交易日为 2026-09-15" in accepted["market_report"]
     assert "当前技术面偏多" not in accepted["accepted_report_markdown"]
 

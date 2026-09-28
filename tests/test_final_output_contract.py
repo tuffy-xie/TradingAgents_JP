@@ -97,7 +97,36 @@ def _jp_state():
                 "claim_type": "FACT",
                 "value": "Historical EPS 127.66",
                 "allowed_for_current_decision": True,
-            }
+            },
+            {
+                "evidence_id": "market-stock-fixture",
+                "source_type": "TOOL_OUTPUT",
+                "source": "get_stock_data",
+                "domain": "MARKET",
+                "claim_type": "FACT",
+                "verification_status": "VERIFIED_TOOL_OUTPUT",
+                "allowed_for_current_decision": True,
+                "derivation": {"market_data": {
+                    "status": "PARSED_COMPLETE_PAYLOAD",
+                    "requested_end": "2026-09-02",
+                    "latest_complete_ohlcv_date": "2026-09-02",
+                    "complete_ohlcv_row_count": 1,
+                }},
+            },
+            {
+                "evidence_id": "market-indicator-fixture",
+                "source_type": "TOOL_OUTPUT",
+                "source": "get_indicators",
+                "domain": "MARKET",
+                "claim_type": "FACT",
+                "verification_status": "VERIFIED_TOOL_OUTPUT",
+                "allowed_for_current_decision": True,
+                "derivation": {"market_data": {
+                    "status": "PARSED",
+                    "requested_end": "2026-09-02",
+                    "underlying_latest_complete_date": "2026-09-02",
+                }},
+            },
         ],
         "evidence_audit": [
             {

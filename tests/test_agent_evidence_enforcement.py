@@ -178,7 +178,7 @@ def test_graph_observer_preserves_prose_and_captures_evidence_metadata():
     )
 
 
-def test_verified_market_tool_numbers_remain_valid_without_snapshot():
+def test_verified_market_tool_numbers_need_lossless_current_metadata():
     state = _state()
     state["verified_market_snapshot"] = ""
     state["market_report"] = "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。"
@@ -196,8 +196,8 @@ def test_verified_market_tool_numbers_remain_valid_without_snapshot():
         "当前价3861，SMA50为3986.16，SMA200为3283.34，ATR为277.53，RSI为49.06。",
         "Trader",
     )
-    assert result.warnings == ()
-    assert result.text == state["market_report"]
+    assert "non_snapshot_current_price" in result.warnings
+    assert "当前价3861" not in result.text
 
 
 def test_market_agent_prose_is_not_its_own_numeric_authority():

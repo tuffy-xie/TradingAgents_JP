@@ -1,0 +1,238 @@
+"""Lossless JP Market authority and cross-section publication regressions."""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+
+import pytest
+from langchain_core.messages import ToolMessage
+
+from tradingagents.agents.utils.evidence_registry import capture_agent_evidence
+from tradingagents.agents.utils.market_authority import (
+    canonical_market_authority,
+    summarize_market_tool_response,
+)
+from tradingagents.agents.utils.market_claims import (
+    current_market_claims,
+    remove_current_market_claims,
+)
+from tradingagents.final_output import (
+    _artifact_market_claims,
+    _canonicalize_market_report,
+    _validate_final_artifact,
+    build_canonical_final_state,
+    require_canonical_final_state,
+)
+
+AS_OF = "2026-09-28"
+
+
+def _stock_response(*, latest: str = AS_OF) -> str:
+    end = date.fromisoformat(latest)
+    dates = [end - timedelta(days=offset) for offset in range(560)]
+    dates = sorted(day for day in dates if day.weekday() < 5)
+    lines = [
+        f"# Stock data for TEST.T from 2025-03-01 to {AS_OF}",
+        f"# Total records: {len(dates)}",
+        "# Data retrieved on: 2026-09-28 23:15:00",
+        "",
+        "Date,Open,High,Low,Close,Volume",
+    ]
+    lines.extend(
+        f"{day.isoformat()},100.0,103.0,99.0,102.0,120000"
+        for day in dates
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _indicator_response(*, latest: str = AS_OF) -> str:
+    return (
+        f"## macd values from 2026-08-29 to {AS_OF}:\n\n"
+        f"Underlying OHLCV latest completed bar: {latest}\n\n"
+        f"{latest}: 2.5\n\nMACD trend indicator."
+    )
+
+
+def _state_with_tools(*, stock_latest: str = AS_OF, indicator_latest: str = AS_OF):
+    state = {
+        "market_context": {"market": "JP", "symbol": "TEST.T"},
+        "trade_date": AS_OF,
+        "run_manifest": {
+            "analysis_as_of": AS_OF,
+            "runtime_timestamp_jst": "2026-09-28T23:15:00+09:00",
+        },
+        "evidence_registry": [],
+        "evidence_audit": [],
+        "messages": [
+            ToolMessage(
+                content=_stock_response(latest=stock_latest),
+                name="get_stock_data",
+                tool_call_id="stock-1",
+            ),
+            ToolMessage(
+                content=_indicator_response(latest=indicator_latest),
+                name="get_indicators",
+                tool_call_id="indicator-1",
+            ),
+        ],
+    }
+    captured = capture_agent_evidence(
+        state, {}, "Market Analyst", capture_reports=False
+    )
+    return {**state, **captured}
+
+
+def _minimal_final_state():
+    return {
+        "company_of_interest": "TEST.T",
+        "trade_date": AS_OF,
+        "market_context": {
+            "market": "JP", "symbol": "TEST.T", "currency": "JPY",
+            "instrument_type": "EQUITY",
+        },
+        "run_manifest": {
+            "analysis_as_of": AS_OF,
+            "runtime_timestamp_jst": "2026-09-28T23:15:00+09:00",
+        },
+        "japan_data_bundle": {"items": [], "provider_metadata": {}},
+        "evidence_registry": [
+            {
+                "domain": "NEWS", "claim_type": "FACT",
+                "source": "Yahoo Finance Japan",
+                "value": "Yahoo Finance Japan 报道标题称该股4日続伸。",
+                "allowed_for_current_decision": True,
+            }
+        ],
+        "evidence_audit": [],
+        "market_report": "MACD黄金交叉，当前技术面转折成立。",
+        "news_report": (
+            "Yahoo Finance Japan 报道标题称该股4日続伸。\n"
+            "因此买盘支撑很强，当前趋势转多。"
+        ),
+        "fundamentals_report": "",
+        "sentiment_report": "",
+        "investment_debate_state": {
+            "judge_decision": "## 研究判断\n技术面转折成立：MACD黄金交叉。\n非市场领域仍需研究。"
+        },
+        "trader_investment_plan": "Hold。",
+        "risk_debate_state": {
+            "judge_decision": "Rating: Hold\n技术面转折明确（已核验的工具数据）。"
+        },
+        "final_trade_decision": "Rating: Hold\n技术面转折明确（已核验的工具数据）。",
+        "validated_execution": {
+            "status": "DATA_UNAVAILABLE",
+            "detail": "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION",
+        },
+    }
+
+
+def test_long_stock_response_keeps_lossless_authority_metadata():
+    state = _state_with_tools()
+    stock = next(
+        item for item in state["evidence_registry"]
+        if item["source"] == "get_stock_data"
+    )
+    summary = stock["derivation"]["market_data"]
+    assert len(_stock_response()) > 12_000
+    assert len(stock["value"]) == 12_000
+    assert "2026-09-28" not in stock["value"].splitlines()[-1]
+    assert summary["status"] == "PARSED_COMPLETE_PAYLOAD"
+    assert summary["requested_end"] == AS_OF
+    assert summary["latest_complete_ohlcv_date"] == AS_OF
+    assert summary["reported_row_count"] == summary["complete_ohlcv_row_count"]
+    assert stock["freshness"] == "LATEST_AVAILABLE"
+    assert stock["source_record_id"] == "stock-1"
+    assert stock["fetched_at"]
+    assert canonical_market_authority(state)["status"] == "CURRENT"
+
+
+def test_presentation_truncation_does_not_change_market_freshness():
+    state = _state_with_tools()
+    stock = next(
+        item for item in state["evidence_registry"]
+        if item["source"] == "get_stock_data"
+    )
+    stock["value"] = stock["value"][:40]
+    assert canonical_market_authority(state)["status"] == "CURRENT"
+    # A legacy state with no complete-payload summary never recovers authority
+    # by parsing the shortened CSV or trusting a reported record count.
+    stock["derivation"].pop("market_data")
+    assert canonical_market_authority(state)["status"] == "UNAVAILABLE"
+
+
+def test_stock_indicator_disagreement_fails_closed():
+    state = _state_with_tools(indicator_latest="2026-09-25")
+    stale_indicator = next(
+        item for item in state["evidence_registry"]
+        if item["source"] == "get_indicators"
+    )
+    assert stale_indicator["freshness"] == "STALE_SOURCE"
+    assert stale_indicator["allowed_for_current_decision"] is False
+    assert canonical_market_authority(state)["reason"] == "STOCK_INDICATOR_DATE_CONFLICT"
+    state["market_report"] = "当前MACD黄金交叉。"
+    assert "证据不足" in _canonicalize_market_report(state)
+
+
+def test_partial_or_miscounted_stock_response_is_not_current():
+    full = _stock_response()
+    summary = summarize_market_tool_response("get_stock_data", full[:12_000])
+    assert summary["status"] != "PARSED_COMPLETE_PAYLOAD"
+
+
+def test_unavailable_market_prunes_all_published_sections_but_keeps_news_fact():
+    accepted = build_canonical_final_state(_minimal_final_state())
+    report = accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert accepted["final_output_contract"]["audit_closure_status"] == "CLOSED"
+    assert not _artifact_market_claims(accepted, report)
+    assert "MACD黄金交叉" not in report
+    assert "技术面转折" not in report
+    assert "Yahoo Finance Japan 报道标题称该股4日続伸" in report
+    assert "买盘支撑很强" not in report
+    assert "非市场领域仍需研究" in report
+    findings = [
+        item for item in accepted["evidence_audit"]
+        if item.get("category") == "MARKET_AUTHORITY_CLAIM"
+    ]
+    assert findings
+    assert all(item["resolution"] == "CLAIM_REMOVED_OR_REPLACED" for item in findings)
+    assert all(item["claim_sha256"] and item["accepted_artifact_sha256"] for item in findings)
+    require_canonical_final_state(accepted)
+
+
+def test_exact_artifact_defense_blocks_market_claim_when_pruning_is_bypassed():
+    accepted = build_canonical_final_state(_minimal_final_state())
+    injected = accepted["accepted_report_markdown"] + "\n\n当前技术面转折成立：MACD黄金交叉。"
+    issues = _validate_final_artifact(
+        accepted, False, accepted_report=injected
+    )
+    assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:MARKET:") for issue in issues)
+    assert current_market_claims(injected, analysis_as_of=AS_OF)
+
+
+@pytest.mark.parametrize(
+    ("text", "current"),
+    [
+        ("Yahoo Finance Japan 报道标题称该股4日続伸。", False),
+        ("Yahoo Finance Japan 报道标题称该股4日続伸，因此买盘支撑很强。", True),
+        ("当前RSI处于超买。", True),
+        ("现价突破当前阻力。", True),
+        ("2025-09-30 的历史 MACD 金叉仅供回顾。", False),
+        ("若 MACD 回落至零轴下方，趋势风险可能上升。", False),
+    ],
+)
+def test_news_fact_and_current_technical_claim_boundary(text, current):
+    claims = current_market_claims(text, analysis_as_of=AS_OF)
+    assert bool(claims) is current
+    if current:
+        assert not current_market_claims(
+            remove_current_market_claims(text, analysis_as_of=AS_OF),
+            analysis_as_of=AS_OF,
+        )
+
+
+def test_current_verified_market_keeps_technical_analysis():
+    state = _state_with_tools()
+    state["market_report"] = "当前MACD黄金交叉，RSI处于中性区间。"
+    assert canonical_market_authority(state)["status"] == "CURRENT"
+    assert _canonicalize_market_report(state) == state["market_report"]

@@ -9,12 +9,9 @@ original agent output is retained separately for the technical agent log.
 from __future__ import annotations
 
 import copy
-import csv
 import hashlib
-import io
 import re
 from collections.abc import Mapping
-from datetime import date, datetime
 from typing import Any
 
 from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
@@ -23,14 +20,16 @@ from tradingagents.agents.utils.execution_validation import (
     reconcile_execution_authority,
     validate_execution_plan,
 )
+from tradingagents.agents.utils.market_authority import canonical_market_authority
+from tradingagents.agents.utils.market_claims import (
+    current_market_claims,
+    remove_current_market_claims,
+)
 from tradingagents.agents.utils.rating import parse_explicit_rating
 from tradingagents.dataflows.japan.context import (
     render_japan_financial_report,
     render_japan_report_sections,
     render_japan_sentiment_report,
-)
-from tradingagents.dataflows.japan.trading_calendar import (
-    latest_completed_japan_session,
 )
 from tradingagents.rating_authority import (
     artifact_rating_violations,
@@ -56,7 +55,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "portfolio-rating-authority-2026-09"
+_CONTRACT_SEMANTIC_REVISION = "market-authority-lossless-2026-09"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -329,6 +328,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         and not needs_horizon_migration
         and not _execution_cross_state_issues(result, bool(contract.get("execution_allowed")))
         and not _rating_artifact_claims(result, str(result.get("accepted_report_markdown") or ""))
+        and not _artifact_market_claims(result, str(result.get("accepted_report_markdown") or ""))
     ):
         return result
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
@@ -394,7 +394,10 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
     # authority. Agent prose remains available in raw_agent_outputs/full log.
     result["sentiment_report"] = render_japan_sentiment_report(result.get("japan_data_bundle"))
     result["market_report"] = _canonicalize_market_report(result)
+    result, market_findings = _enforce_market_authority_ownership(result)
+    audit.extend(market_findings)
     result = _enforce_domain_authority_ownership(result)
+    result = _correct_financial_authority_wording(result)
 
     raw_trader = raw_outputs.get("trader_investment_plan")
     raw_portfolio = raw_outputs.get("final_trade_decision")
@@ -489,7 +492,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "audit_finalized_after_artifact_validation": True,
         "artifact_issues": artifact_issues,
         "accepted_report_sha256": artifact_sha256,
-        "audit_closure_status": "CLOSED" if not audit_issues else "UNRESOLVED",
+        "audit_closure_status": "CLOSED" if not artifact_issues else "UNRESOLVED",
         "validation_dimensions": {
             "structural_artifact_valid": not any(
                 issue.startswith(
@@ -621,6 +624,8 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
         raise ValueError("Japan report execution authority is internally inconsistent")
     if _rating_artifact_claims(state, str(state.get("accepted_report_markdown") or "")):
         raise ValueError("Japan report has a secondary or inconsistent investment rating")
+    if _artifact_market_claims(state, str(state.get("accepted_report_markdown") or "")):
+        raise ValueError("Japan report has current technical claims without Market authority")
     accepted = state.get("accepted_report_markdown")
     expected_hash = contract.get("accepted_report_sha256")
     if (
@@ -693,86 +698,116 @@ def _canonicalize_market_report(state: Mapping[str, Any]) -> str:
     remains in ``raw_agent_outputs`` for audit.
     """
     report = str(state.get("market_report") or "")
-    tool_values = [
-        str(item.get("value") or "")
-        for item in state.get("evidence_registry") or []
-        if isinstance(item, Mapping)
-        and item.get("domain") == "MARKET"
-        and item.get("source") == "get_stock_data"
-        and item.get("source_type") == "TOOL_OUTPUT"
-    ]
-    if not tool_values:
+    authority = canonical_market_authority(state)
+    if authority["status"] == "CURRENT":
         return report
-    manifest = state.get("run_manifest") or {}
-    analysis_text = str(manifest.get("analysis_as_of") or state.get("trade_date") or "")
-    try:
-        analysis_as_of = date.fromisoformat(analysis_text)
-    except ValueError:
-        return report
-    observed_at = _manifest_timestamp(manifest)
-    expected = latest_completed_japan_session(analysis_as_of, now=observed_at)
-    latest = max(
-        (
-            value
-            for content in tool_values
-            if not content.lstrip().startswith("NO_DATA_AVAILABLE")
-            for value in [_latest_complete_ohlcv_date(content, analysis_as_of)]
-            if value is not None
-        ),
-        default=None,
-    )
-    if latest == expected:
-        return report
-    latest_text = latest.isoformat() if latest else "未取得"
+    latest_text = authority.get("latest_complete_ohlcv_date") or "未获完整证据核验"
     return (
         "## 当前市场数据状态\n\n"
-        f"截至 {analysis_as_of.isoformat()}，最近完整 OHLCV 日期为 {latest_text}；"
-        f"预期最近已完成交易日为 {expected.isoformat()}。"
+        f"截至 {authority.get('analysis_as_of') or state.get('trade_date')}，"
+        f"正式行情工具可核验的最近完整 OHLCV 日期为 {latest_text}；"
+        f"预期最近已完成交易日为 {authority.get('expected_latest_complete_date') or '未取得'}。"
         "当前行情与技术指标证据不足，因此不发布当前技术方向、指标分数或交易含义。"
         "历史行情仍保留在技术审计日志中。"
     )
 
 
-def _manifest_timestamp(manifest: Mapping[str, Any]) -> datetime | None:
-    value = manifest.get("runtime_timestamp_jst")
-    try:
-        observed = datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
-    return observed if observed.tzinfo is not None and observed.utcoffset() is not None else None
-
-
-def _latest_complete_ohlcv_date(content: str, analysis_as_of: date) -> date | None:
-    lines = content.splitlines()
-    header_index = next(
-        (index for index, line in enumerate(lines) if line.startswith("Date,")),
-        None,
+def _artifact_market_claims(state: Mapping[str, Any], text: str):
+    authority = canonical_market_authority(state)
+    if authority["status"] == "CURRENT":
+        return []
+    return current_market_claims(
+        text, analysis_as_of=str(authority.get("analysis_as_of") or state.get("trade_date") or "")
     )
-    if header_index is None:
-        return None
-    latest: date | None = None
-    for row in csv.DictReader(io.StringIO("\n".join(lines[header_index:]))):
-        try:
-            observed = date.fromisoformat(str(row.get("Date") or "")[:10])
-        except ValueError:
-            continue
-        if observed > analysis_as_of or not all(
-            _present_number(row.get(name)) for name in ("Open", "High", "Low", "Close")
-        ):
-            continue
-        latest = max(latest, observed) if latest else observed
-    return latest
 
 
-def _present_number(value: Any) -> bool:
-    normalized = str(value or "").strip().casefold()
-    if normalized in {"", "nan", "none", "null"}:
-        return False
-    try:
-        float(normalized.replace(",", ""))
-    except ValueError:
-        return False
-    return True
+def _enforce_market_authority_ownership(
+    state: Mapping[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Remove current-technical inference from every published section."""
+    result = dict(state)
+    authority = canonical_market_authority(state)
+    if authority["status"] == "CURRENT":
+        return result, []
+    as_of = str(authority.get("analysis_as_of") or state.get("trade_date") or "")
+    findings: list[dict[str, Any]] = []
+    fields = (
+        "market_report", "news_report", "fundamentals_report", "sentiment_report",
+        "investment_debate_state.judge_decision", "trader_investment_plan",
+        "risk_debate_state.judge_decision", "final_trade_decision",
+    )
+    for field in fields:
+        text = _published_field_text(result, field)
+        if not text:
+            continue
+        for claim in current_market_claims(text, analysis_as_of=as_of):
+            findings.append({
+                "category": "MARKET_AUTHORITY_CLAIM",
+                "agent": _agent_for_field(field),
+                "field": field,
+                "original_claim": claim.text,
+                "claim_sha256": claim.sha256,
+                "semantic_type": claim.semantic_type,
+                "required_domain_authority": "CURRENT_MARKET",
+                "authority_state": authority["status"],
+                "enforcement_action": "REMOVED",
+                "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                "execution_blocking": True,
+            })
+        without_claim_sections = _filter_markdown_sections(
+            text,
+            lambda heading: not current_market_claims(
+                heading, analysis_as_of=as_of
+            ),
+        )
+        accepted = _fold_empty_sections(remove_current_market_claims(
+            without_claim_sections, analysis_as_of=as_of
+        ))
+        if "." in field:
+            outer, inner = field.split(".", 1)
+            result[outer] = dict(result[outer]) | {inner: accepted}
+        else:
+            result[field] = accepted
+    return result, findings
+
+
+def _correct_financial_authority_wording(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Do not relabel dated vendor balance sheets as Current Financial Authority."""
+    authority = ((state.get("japan_data_bundle") or {}).get("provider_metadata") or {}).get(
+        "Japan Financial Authority"
+    ) or {}
+    actual = authority.get("actual") or {}
+    guidance = authority.get("guidance") or {}
+    if actual.get("status") == guidance.get("status") == "OK":
+        return dict(state)
+    historical_vendor = any(
+        isinstance(entry, Mapping)
+        and entry.get("source") == "get_balance_sheet"
+        and entry.get("claim_type") == "FACT"
+        for entry in state.get("evidence_registry") or []
+    )
+    result = dict(state)
+    replacement = (
+        "历史供应商资产负债表，非当前官方实绩确认"
+        if historical_vendor else "未经当前官方实绩确认"
+    )
+    for field in ("investment_debate_state", "risk_debate_state"):
+        debate = result.get(field)
+        if isinstance(debate, Mapping) and isinstance(debate.get("judge_decision"), str):
+            result[field] = dict(debate) | {
+                "judge_decision": debate["judge_decision"].replace(
+                    "VERIFIED_FINANCIAL_AUTHORITY", replacement
+                )
+            }
+    for field in (
+        "market_report", "news_report", "fundamentals_report",
+        "trader_investment_plan", "final_trade_decision",
+    ):
+        if isinstance(result.get(field), str):
+            result[field] = result[field].replace(
+                "VERIFIED_FINANCIAL_AUTHORITY", replacement
+            )
+    return result
 
 
 def _enforce_domain_authority_ownership(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -2279,6 +2314,13 @@ def _validate_final_artifact(
         + hashlib.sha256(claim.text.encode("utf-8")).hexdigest()
         for claim in _rating_artifact_claims(state, accepted_report)
     )
+    # Independent exact-artifact defense: no upstream finding or pruning is
+    # needed for an unsupported current technical claim to block publication.
+    issues.extend(
+        "CROSS_DOMAIN_AUTHORITY:MARKET:"
+        + claim.sha256
+        for claim in _artifact_market_claims(state, accepted_report)
+    )
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
@@ -2411,7 +2453,7 @@ def _published_field_text(state: Mapping[str, Any], field: str) -> str | None:
     if field in {"market_report", "sentiment_report", "news_report", "fundamentals_report"}:
         value = state.get(field)
         return value if isinstance(value, str) else None
-    if field == "trader_investment_plan":
+    if field in {"trader_investment_plan", "final_trade_decision"}:
         value = state.get(field)
         return value if isinstance(value, str) else None
     if field in {"investment_debate_state.judge_decision", "risk_debate_state.judge_decision"}:
@@ -2441,7 +2483,28 @@ def _finalize_audit(
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
-        if entry.get("category") == "SECONDARY_INTERNAL_RATING":
+        if entry.get("category") == "MARKET_AUTHORITY_CLAIM":
+            survivors = _artifact_market_claims(state, accepted_report)
+            surviving = any(
+                claim.semantic_type == entry.get("semantic_type")
+                for claim in survivors
+            )
+            entry["accepted_artifact_sha256"] = hashlib.sha256(
+                accepted_report.encode("utf-8")
+            ).hexdigest()
+            entry["resolution"] = (
+                "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            )
+            entry["resolution_basis"] = (
+                "SAME_CLASS_CURRENT_MARKET_CLAIM_IN_EXACT_ARTIFACT"
+                if surviving else "MARKET_CLAIM_CLASS_ABSENT_FROM_EXACT_ARTIFACT"
+            )
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append(
+                    f"UNRESOLVED_MARKET_CLAIM:{entry.get('field')}:{entry.get('claim_sha256')}"
+                )
+        elif entry.get("category") == "SECONDARY_INTERNAL_RATING":
             # Presentation changes cannot close a surviving secondary rating.
             # Re-scan the exact artifact by ownership and canonical rating,
             # not literal equality of an Agent field before composition.

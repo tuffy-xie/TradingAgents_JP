@@ -19,6 +19,13 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tradingagents.agents.utils.market_authority import (
+    canonical_market_authority,
+    market_tool_response_eligible,
+    market_tool_response_freshness,
+    summarize_market_tool_response,
+)
+
 _JST = ZoneInfo("Asia/Tokyo")
 _STALE = {
     "STALE",
@@ -160,6 +167,9 @@ def capture_agent_evidence(
             continue
         numeric_tokens = sorted(_numeric_tokens(content))
         unavailable = content.lstrip().startswith("NO_DATA_AVAILABLE")
+        market_data = summarize_market_tool_response(tool_name, content)
+        market_eligible = market_tool_response_eligible(market_data, state)
+        market_freshness = market_tool_response_freshness(market_data, state)
         new_entries.append(
             _make_entry(
                 domain=_TOOL_DOMAINS.get(tool_name, _AGENT_DOMAINS.get(agent_name, "OTHER")),
@@ -171,10 +181,16 @@ def capture_agent_evidence(
                 source_type="TOOL_OUTPUT",
                 source_record_id=str(getattr(message, "tool_call_id", "") or "") or None,
                 analysis_as_of=analysis_as_of,
-                freshness="DATA_UNAVAILABLE" if unavailable else "AS_OF_FILTERED",
+                freshness=(
+                    "DATA_UNAVAILABLE" if unavailable else market_freshness
+                ),
                 verification_status="VERIFIED_TOOL_OUTPUT",
-                allowed=not unavailable,
-                derivation={"numeric_tokens": numeric_tokens},
+                allowed=not unavailable and market_eligible,
+                fetched_at=datetime.now(_JST).isoformat(),
+                derivation={
+                    "numeric_tokens": numeric_tokens,
+                    **({"market_data": market_data} if market_data else {}),
+                },
             )
         )
         new_entries.extend(
@@ -304,12 +320,24 @@ def render_downstream_evidence_context(state: Mapping[str, Any]) -> str:
     lines = [
         "## Internal evidence continuity (JP; analyst handoff metadata)",
         "Verified tool facts remain verified downstream. Do not call them unverified merely because they are quoted through an Analyst report.",
-        "Market Analyst numbers sourced from get_stock_data/get_indicators remain VERIFIED_TOOL_OUTPUT; cite that ownership instead of calling them debate-only or unverified.",
+        "Market tool provenance is distinct from current Market authority. A tool fact is not a current technical conclusion until the complete OHLCV and indicator dates reconcile.",
         "News Analyst facts sourced from named tools retain those tool sources; unsupported prose remains inference and is not hard evidence.",
         "Financial metrics retain VERIFIED_FINANCIAL_AUTHORITY with their TDnet/Company IR/EDINET DB source; they are not generic tool output.",
         "COMPANY_GUIDANCE, ANALYST_CONSENSUS, and VENDOR_FORWARD_ESTIMATE are distinct semantic types.",
         "STALE/HISTORICAL_ONLY evidence may be dated background but is prohibited as current directional evidence.",
     ]
+    market_authority = canonical_market_authority(state)
+    lines.append(
+        "- Canonical Market authority: "
+        f"{market_authority['status']} ({market_authority['reason']}); "
+        f"latest_complete={market_authority.get('latest_complete_ohlcv_date')}; "
+        f"expected={market_authority.get('expected_latest_complete_date')}. "
+        + (
+            "Current price and technical analysis may be used with source attribution."
+            if market_authority["status"] == "CURRENT"
+            else "Do not turn Market Analyst or debate prose into verified current price, indicators, trend, support/resistance, or technical conviction."
+        )
+    )
     for item in tool_entries:
         derivation = item.get("derivation") or {}
         refs = derivation.get("upstream_evidence_ids") or []
