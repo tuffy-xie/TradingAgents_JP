@@ -7,7 +7,60 @@ canonical acceptance collects and removes unapproved plans; Audit proves claim
 closure; renderers display the accepted artifact. No provider, agent topology,
 financial authority or US execution policy is changed by this revision.
 
-The v5 semantic revision is `table-role-execution-2026-09`.
+The v5 semantic revision is `portfolio-rating-authority-2026-09`.
+
+## User-facing investment rating ownership
+
+Portfolio's explicitly labelled final rating is the only internal investment
+rating in JP user reports. Acceptance freezes it as `portfolio_rating` in the
+Final Output Contract. It does not derive that rating from Trader action,
+execution parameters or an Analyst's recommendation. Publisher checks use the
+frozen contract, not subsequently changed raw Agent fields.
+
+Other published Analyst/Research/Trader fields lose only their own rating
+propositions; their raw reasoning remains in the full Agent log. Attributed
+broker ratings and consensus distributions remain third-party facts, not
+internal recommendations. Attribution is clause/row-local; a broker citation
+cannot exempt a sibling internal recommendation. Label/value lines, headings,
+table cells and first-person recommendations share this policy.
+
+Each removal has its original claim, SHA, rating and field in Audit. Closure
+rechecks secondary rating ownership against the exact composed artifact;
+format/localization changes do not count as removal. A second internal rating
+(even one agreeing with Portfolio), or a contradictory Portfolio rating,
+blocks domain-authority validation. The final artifact check does not depend
+on upstream rating finding/pruning. Current-revision publication also checks
+the exact artifact, in addition to the digest and revision guards.
+
+### Read-only Market snapshot investigation (run 01d7d9bb)
+
+The captured run (2026-09-26 01:52 JST) contains a diagnostic snapshot dated
+2026-09-25 with complete OHLCV and calculated indicators. Its Market tool
+evidence contains only `NO_DATA_AVAILABLE`: latest complete bar 2026-09-24,
+expected completed session 2026-09-25. `_canonicalize_market_report` uses
+`get_stock_data` evidence, not snapshot text, so it cannot recover an actual
+CSV date and displays "未取得". This means no accepted tool OHLCV was obtained;
+it is not proof that all run-local diagnostic data is absent.
+
+The source-of-truth contract and tests explicitly make snapshot an optional
+diagnostic. Market Analyst has `get_stock_data` / `get_indicators` tools and is
+not given snapshot as replacement authority. The paths are different:
+snapshot selects the most recently modified matching CSV in the home cache
+(normal loader only on cache miss); stock data calls configured vendor routing
+and Yahoo history; indicators use the configured five-year cache/loader.
+Snapshot is built before Agent execution. The archived evidence does not save
+the selected cache filename/hash, actual tool request arguments, or per-call
+fetch times, so the exact cause of the differing vendor/cache rows cannot be
+proved retroactively. No transport/timing hypothesis is promoted to fact.
+
+There is legacy wording drift: snapshot text still calls itself source of truth
+and its registry seed is eligible, while the Japan governance contract treats
+it as diagnostic. This is a follow-up dataflow/diagnostic contract issue, not a
+reason to promote snapshot into Market authority. A minimal later fix would
+record per-source/cache lineage, scope the unavailable message to the Market
+tool path, and share a normalized, freshness-validated market result across
+diagnostic and tool consumers. This rating change modifies none of those paths
+or freshness gates.
 
 ## Review findings and fixes
 

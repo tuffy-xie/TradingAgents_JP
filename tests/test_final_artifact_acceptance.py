@@ -229,7 +229,8 @@ def test_process_narration_and_standard_english_labels_are_not_user_visible():
     assert "现在让我" not in report
     assert "Recommendation" not in report
     assert "Investment Thesis" not in report
-    assert "**研究建议**: Hold" in report
+    # Localization cannot publish News' own second investment rating.
+    assert "**研究建议**: Hold" not in report
     assert "**投资逻辑**: 证据仍不足" in report
     assert "**策略说明**: 后续观察计划" in report
     assert ": ##" not in report

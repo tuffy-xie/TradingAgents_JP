@@ -32,6 +32,11 @@ from tradingagents.dataflows.japan.context import (
 from tradingagents.dataflows.japan.trading_calendar import (
     latest_completed_japan_session,
 )
+from tradingagents.rating_authority import (
+    artifact_rating_violations,
+    internal_rating_claims,
+    remove_internal_ratings,
+)
 from tradingagents.report_artifacts import (
     render_markdown_fragment,
     rendered_table_rows,
@@ -51,7 +56,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "table-role-execution-2026-09"
+_CONTRACT_SEMANTIC_REVISION = "portfolio-rating-authority-2026-09"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -323,11 +328,15 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         and contract.get("semantic_revision") == _CONTRACT_SEMANTIC_REVISION
         and not needs_horizon_migration
         and not _execution_cross_state_issues(result, bool(contract.get("execution_allowed")))
+        and not _rating_artifact_claims(result, str(result.get("accepted_report_markdown") or ""))
     ):
         return result
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
         # Re-accept archived v1 state under the current output contract.
         result.update(copy.deepcopy(result["raw_agent_outputs"]))
+    # A reacceptance must derive Portfolio authority anew. Publishers use the
+    # frozen rating in the completed contract, never a later raw-prose mutation.
+    result.pop("final_output_contract", None)
     result = _drop_deprecated_horizon_metadata(result)
     if not result.get("trader_investment_plan") and result.get("trader_investment_decision"):
         result["trader_investment_plan"] = result["trader_investment_decision"]
@@ -439,6 +448,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     result = _publicize_state_text(result)
+    result, rating_findings = _enforce_portfolio_rating_ownership(result)
+    audit.extend(rating_findings)
     result = _map_report_text(result, _remove_deprecated_user_horizon_claims)
     accepted_report = sanitize_text(compose_user_report_markdown(result))
     artifact_issues = _validate_final_artifact(
@@ -474,6 +485,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         "status": "FINALIZED" if not artifact_issues else "BLOCKED",
         "authority": "CANONICAL_FINAL_STATE",
         "execution_allowed": execution_allowed,
+        "portfolio_rating": portfolio_rating,
         "audit_finalized_after_artifact_validation": True,
         "artifact_issues": artifact_issues,
         "accepted_report_sha256": artifact_sha256,
@@ -607,6 +619,8 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
         raise ValueError("Japan report semantic revision requires canonical reacceptance")
     if _execution_cross_state_issues(state, bool(contract.get("execution_allowed"))):
         raise ValueError("Japan report execution authority is internally inconsistent")
+    if _rating_artifact_claims(state, str(state.get("accepted_report_markdown") or "")):
+        raise ValueError("Japan report has a secondary or inconsistent investment rating")
     accepted = state.get("accepted_report_markdown")
     expected_hash = contract.get("accepted_report_sha256")
     if (
@@ -795,6 +809,52 @@ def _remove_cross_domain_sentiment_authority(text: str) -> str:
         clauses = re.split(r"(?<=[。！？；;])", line)
         kept.append("".join(part for part in clauses if not _SENTIMENT_AUTHORITY.search(part)))
     return _fold_empty_sections("\n".join(kept))
+
+
+def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Publish only Portfolio's own rating; preserve attributed source ratings.
+
+    This happens after execution reconciliation, so the raw Trader action is
+    still available to the validator. Original reasoning remains in the log.
+    """
+    result = dict(state)
+    findings = []
+    fields = ("market_report", "sentiment_report", "news_report", "fundamentals_report",
+              "trader_investment_plan", "investment_debate_state.judge_decision")
+    for field in fields:
+        text = _published_field_text(result, field)
+        if not text:
+            continue
+        for claim in internal_rating_claims(text):
+            findings.append({
+                "category": "SECONDARY_INTERNAL_RATING",
+                "agent": _agent_for_field(field), "field": field,
+                "original_claim": claim.text,
+                "claim_sha256": hashlib.sha256(claim.text.encode("utf-8")).hexdigest(),
+                "rating": claim.rating,
+                "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
+                "execution_blocking": True,
+            })
+        accepted = _fold_empty_sections(remove_internal_ratings(text))
+        if "." in field:
+            outer, inner = field.split(".", 1)
+            result[outer] = dict(result[outer]) | {inner: accepted}
+        else:
+            result[field] = accepted
+    return result, findings
+
+
+def _rating_artifact_claims(state: Mapping[str, Any], text: str):
+    # Portfolio prose, not the Trader or an execution-plan side field, owns
+    # investment rating. Execution authorization is a separate contract.
+    contract = state.get("final_output_contract") or {}
+    rating = (
+        contract.get("portfolio_rating")
+        if contract.get("semantic_revision") == _CONTRACT_SEMANTIC_REVISION
+        and "portfolio_rating" in contract
+        else parse_explicit_rating(str(state.get("final_trade_decision") or ""))
+    )
+    return artifact_rating_violations(text, rating)
 
 
 def _agent_for_field(field: str) -> str:
@@ -2214,6 +2274,11 @@ def _validate_final_artifact(
         )
     issues.extend(_execution_cross_state_issues(state, execution_allowed))
     issues.extend(_domain_authority_issues(state))
+    issues.extend(
+        "CROSS_DOMAIN_AUTHORITY:INVESTMENT_RATING:"
+        + hashlib.sha256(claim.text.encode("utf-8")).hexdigest()
+        for claim in _rating_artifact_claims(state, accepted_report)
+    )
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
@@ -2376,7 +2441,19 @@ def _finalize_audit(
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
-        if entry.get("category") == "UNAPPROVED_EXECUTION_CLAIM":
+        if entry.get("category") == "SECONDARY_INTERNAL_RATING":
+            # Presentation changes cannot close a surviving secondary rating.
+            # Re-scan the exact artifact by ownership and canonical rating,
+            # not literal equality of an Agent field before composition.
+            survivors = _rating_artifact_claims(state, accepted_report)
+            surviving = any(claim.rating == entry.get("rating") for claim in survivors)
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = "SECONDARY_RATING_AUTHORITY_PRESENT" if surviving else "SECONDARY_RATING_AUTHORITY_ABSENT_FROM_EXACT_ARTIFACT"
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append(f"UNRESOLVED_RATING_CLAIM:{entry.get('field')}:{entry.get('claim_sha256')}")
+        elif entry.get("category") == "UNAPPROVED_EXECUTION_CLAIM":
             original = str(entry.get("original_claim") or "").strip()
             entry["accepted_artifact_sha256"] = hashlib.sha256(
                 accepted_report.encode("utf-8")
@@ -2488,6 +2565,13 @@ def _finalize_audit(
         if key not in seen:
             finalized.append(entry)
             seen.add(key)
+    # No upstream rating finding is required to block audit closure. Otherwise
+    # a missed collection could report CLOSED beside a blocked final artifact.
+    issues.extend(
+        "UNRESOLVED_RATING_AUTHORITY:"
+        + hashlib.sha256(claim.text.encode("utf-8")).hexdigest()
+        for claim in _rating_artifact_claims(state, accepted_report)
+    )
     return finalized, list(dict.fromkeys(issues))
 
 
