@@ -128,8 +128,10 @@ _EXECUTION_PROHIBITION = re.compile(
     r"(?:不(?:建议|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
     r"加仓|加倉|建仓|建倉|减仓|減倉|做空|执行|提供)|"
     r"暂不|暫不|禁止|不得|避免|没有获准|未获批准|尚未获准|"
+    r"(?:无法|無法|不能|未能)(?:支持|提供|批准|授權|授权)|"
     r"\b(?:do not|don't|must not|should not|not recommended|not authorized|"
-    r"no approved|avoid)\b)",
+    r"no approved|avoid|cannot\s+(?:support|provide|approve|authorize)|"
+    r"unable\s+to\s+(?:support|provide|approve|authorize))\b)",
     re.I,
 )
 _CONDITIONAL_EXECUTION = re.compile(

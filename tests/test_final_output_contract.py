@@ -11,6 +11,7 @@ from tradingagents.dataflows.japan.context import (
 )
 from tradingagents.final_output import (
     _artifact_execution_claims,
+    _execution_claim_survives,
     _execution_cross_state_issues,
     _execution_violation,
     build_canonical_final_state,
@@ -586,6 +587,8 @@ def test_final_artifact_validation_detects_leakage_without_editing(claim, catego
         "若基本面证伪则核心仓提前了结。",
         "Buy at 7000.",
         "Reduce the position to 5%.",
+        "无法支持实时入场参数，但可在7000买入。",
+        "We cannot authorize an open position, but buy at 7000.",
     ],
 )
 def test_execution_semantics_block_action_authorization(claim):
@@ -600,11 +603,14 @@ def test_execution_semantics_block_action_authorization(claim):
         "暂不加仓",
         "空仓者禁止建仓",
         "没有获准交易计划",
+        "确定性执行校验未通过(数据不可用)，无法支持实时入场参数。",
+        "数据不足，不能提供入场价或仓位计划。",
         "7500是技术阻力位",
         "未来两周事件风险较高",
         "等待确认后再评估",
         "Do not open a position.",
         "No approved trading plan is available.",
+        "The evidence is insufficient; we cannot authorize an open position.",
     ],
 )
 def test_execution_semantics_allow_withholding_and_research_facts(claim):
@@ -776,6 +782,21 @@ def test_live_style_mixed_execution_claim_is_pruned_clause_by_clause():
     assert "持仓周期严格控制" not in report
     assert "空仓者禁止建仓" in report
     assert accepted["final_output_contract"]["artifact_issues"] == []
+
+
+def test_withheld_entry_parameters_do_not_preserve_removed_trade_plan_lineage():
+    artifact = (
+        "## 交易执行状态\n\n"
+        "确定性执行校验未通过，因此没有获准的入场、止损、目标价或仓位计划。\n\n"
+        "**研究摘要**: 数据不足，无法支持实时入场参数。空仓者禁止建仓。"
+    )
+    originals = (
+        "### 情形A：回踩入场（推荐）",
+        "| **止损价** | 7,600 JPY | 略低于入场价3.2% |",
+    )
+
+    assert _artifact_execution_claims(artifact) == []
+    assert all(not _execution_claim_survives(claim, artifact) for claim in originals)
 
 
 def test_japan_html_cover_uses_canonical_localized_fields_without_execution_plan():
