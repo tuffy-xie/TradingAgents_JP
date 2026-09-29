@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import date, timedelta
 
 import pytest
@@ -208,6 +209,107 @@ def test_exact_artifact_defense_blocks_market_claim_when_pruning_is_bypassed():
     )
     assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:MARKET:") for issue in issues)
     assert current_market_claims(injected, analysis_as_of=AS_OF)
+
+
+def test_news_derived_market_inference_is_removed_with_claim_level_audit():
+    state = _minimal_final_state()
+    state["news_report"] = (
+        "Yahoo Finance Japan 报道标题称该股4日続伸。\n"
+        "该消息是推动近期股价连续走强的核心催化剂。\n"
+        "该协议可能成为未来业绩增长催化剂。"
+    )
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert "4日続伸" in report
+    assert "未来业绩增长催化剂" in report
+    assert "推动近期股价连续走强" not in report
+    finding = next(
+        item for item in accepted["evidence_audit"]
+        if item.get("category") == "MARKET_AUTHORITY_CLAIM"
+        and "推动近期股价" in item.get("original_claim", "")
+    )
+    assert finding["agent"] == "News Analyst"
+    assert finding["field"] == "news_report"
+    assert finding["required_domain_authority"] == "CURRENT_MARKET"
+    assert finding["authority_state"] == "UNAVAILABLE"
+    assert finding["claim_sha256"]
+    assert finding["enforcement_action"] == "REMOVED"
+    assert finding["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert finding["accepted_artifact_sha256"] == accepted["final_output_contract"]["accepted_report_sha256"]
+
+
+def test_exact_artifact_defense_blocks_news_derived_market_inference():
+    accepted = build_canonical_final_state(_minimal_final_state())
+    injected = (
+        accepted["accepted_report_markdown"]
+        + "\n\n该消息推动近期股价连续走强。"
+    )
+    issues = _validate_final_artifact(accepted, False, accepted_report=injected)
+    assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:MARKET:") for issue in issues)
+    assert current_market_claims(injected, analysis_as_of=AS_OF)
+
+
+def test_final_contract_blocks_news_inference_without_upstream_market_findings(monkeypatch):
+    import tradingagents.final_output as final_output
+
+    claim = "该消息推动近期股价连续走强。"
+    state = _minimal_final_state()
+    state["news_report"] = "Yahoo Finance Japan 报道标题称该股4日続伸。\n" + claim
+    monkeypatch.setattr(
+        final_output,
+        "_enforce_market_authority_ownership",
+        lambda candidate: (dict(candidate), []),
+    )
+
+    accepted = build_canonical_final_state(state)
+    contract = accepted["final_output_contract"]
+    assert claim in accepted["accepted_report_markdown"]
+    assert not any(
+        item.get("category") == "MARKET_AUTHORITY_CLAIM"
+        for item in accepted["evidence_audit"]
+    )
+    assert contract["status"] == "BLOCKED"
+    assert contract["validation_dimensions"]["domain_authority_consistent"] is False
+    assert (
+        "CROSS_DOMAIN_AUTHORITY:MARKET:"
+        + hashlib.sha256(claim.encode("utf-8")).hexdigest()
+    ) in contract["artifact_issues"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Yahoo Finance Japan 报道标题称该股“4日続伸”。",
+        "报道称该股连续第四日上涨。",
+        "该协议可能成为未来业绩增长催化剂。",
+        "该合作有望强化5G/6G业务布局。",
+        "若未来MACD柱状图跌破零轴，则视为需要重新评估的技术信号。",
+        "MACD柱状图回落至零轴下方 → 技术转折失效信号。",
+    ],
+)
+def test_market_unavailable_preserves_news_facts_business_and_hypotheses(text):
+    assert not current_market_claims(text, analysis_as_of=AS_OF)
+    assert remove_current_market_claims(text, analysis_as_of=AS_OF) == text
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "该消息推动近期股价连续走强。",
+        "该事件是近期上涨的核心催化剂。",
+        "消息发布后买盘明显增强。",
+        "当前走势因该消息明显转强。",
+        "The announcement drove the recent rally.",
+        "Strong buying support confirms the current move.",
+    ],
+)
+def test_market_unavailable_blocks_news_derived_current_price_inference(text):
+    assert current_market_claims(text, analysis_as_of=AS_OF)
+    assert not current_market_claims(
+        remove_current_market_claims(text, analysis_as_of=AS_OF),
+        analysis_as_of=AS_OF,
+    )
 
 
 @pytest.mark.parametrize(

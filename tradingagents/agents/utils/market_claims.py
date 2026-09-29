@@ -27,14 +27,22 @@ _TECHNICAL_ASSERTION = re.compile(
 )
 _PRICE_ACTION = re.compile(
     r"(?:连续\s*\d+\s*日(?:上涨|下跌)|\d+日(?:続伸|続落|连涨|连跌)|"
+    r"(?:近期|最近|当前|當前)[^。；;\n]{0,12}(?:上涨|上漲|下跌|走强|走強|转强|轉強|走势|走勢)|"
     r"现价|現價|当前价|當前價|当前股价|當前股價|收盘价|收盤價|"
-    r"股价|股價|价格|價格|股价动能|股價動能|"
-    r"当前趋势|當前趨勢|current\s+(?:price|trend|momentum))",
+    r"股价|股價|价格|價格|股价动能|股價動能|买盘|買盤|卖盘|賣盤|"
+    r"当前趋势|當前趨勢|当前走势|當前走勢|"
+    r"\b(?:share[ -]?price|stock[ -]?price|rally|buying\s+(?:support|pressure)|"
+    r"selling\s+pressure|current\s+(?:price|trend|momentum|move))\b)",
     re.I,
 )
 _PRICE_INFERENCE = re.compile(
     r"(?:显示|顯示|表明|证明|證明|确认|確認|意味着|意味著|因此|所以|"
-    r"反映|形成|支撑|支撐|动能|動能|趋势|趨勢|买盘|買盤|卖盘|賣盤)",
+    r"反映|形成|支撑|支撐|动能|動能|趋势|趨勢|"
+    r"推动|推動|带动|帶動|驱动|驅動|促成|提振|催化剂|催化劑|"
+    r"增强|增強|转强|轉強|走强|走強|发布后|發佈後|"
+    r"\b(?:driv(?:e|es|en|ing)|drove|fuel(?:ed|s)?|spark(?:ed|s)?|"
+    r"cataly(?:st|zed)|confirm(?:s|ed)?|strengthen(?:s|ed)?|"
+    r"following\s+the\s+(?:news|announcement))\b)",
     re.I,
 )
 _ATTRIBUTED_NEWS = re.compile(
