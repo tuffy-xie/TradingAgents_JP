@@ -45,6 +45,30 @@ _PRICE_INFERENCE = re.compile(
     r"following\s+the\s+(?:news|announcement))\b)",
     re.I,
 )
+# Market claims are propositions, not language-specific whole phrases: an
+# issuer-price/technical subject plus a directional state and an asserted
+# interpretation needs current Market authority in any Agent section.
+_MARKET_SUBJECT = re.compile(
+    r"(?:股价|股價|技术面|技術面|买盘|買盤|卖盘|賣盤|"
+    r"株価|銘柄|テクニカル|チャート|買い(?:勢|圧力)|売り(?:勢|圧力)|"
+    r"\b(?:shares?|stock|technical|buying|selling|price)\b)",
+    re.I,
+)
+_MARKET_DIRECTION = re.compile(
+    r"(?:上升趋势|上昇趋势|上涨趋势|上漲趨勢|上涨|上漲|转多|轉多|走强|走強|"
+    r"买盘增强|買盤增強|上昇トレンド|上昇基調|買い優勢|売り優勢|"
+    r"上昇余地|上昇余力|トレンド転換|底堅さ|強気|"
+    r"\b(?:uptrend|bullish|bearish|buying\s+momentum|selling\s+momentum|rally)\b)",
+    re.I,
+)
+_MARKET_INTERPRETATION = re.compile(
+    r"(?:示唆|显示|顯示|表明|确认|確認|进入|進入|开始|開始|正在|已经|已經|"
+    r"転じ|入った|鮮明|拡大|強まり|強まった|みられる|優勢|強気|可能性|"
+    r"\b(?:confirm(?:ed|s)?|turn(?:ed|s)?|strengthen(?:ing|ed|s)?|"
+    r"enter(?:ing|ed|s)?|suggest(?:s|ed)?|indicat(?:e|es|ed|ing)|is\s+now)\b)",
+    re.I,
+)
+_IMPLICIT_MARKET_STATE = re.compile(r"(?:上昇基調|買い優勢|売り優勢|テクニカル的に強気|トレンド転換)", re.I)
 _ATTRIBUTED_NEWS = re.compile(
     r"(?:Yahoo\s+Finance(?:\s+Japan)?|新闻(?:标题|报道称|报道)|新聞(?:標題|報道)|"
     r"媒体(?:报道|報道)|报导(?:称)?|報道(?:稱)?|headline|reported\s+by|"
@@ -74,6 +98,18 @@ _DATE = re.compile(r"(?<!\d)(20\d{2}-\d{2}-\d{2})(?!\d)")
 _TECHNICAL_LEVEL = re.compile(
     r"(?:支撑|支撐|阻力|压力|壓力|均线|均線)[^。；;\n]{0,20}\d[\d,]*(?:\.\d+)?"
     r"|\d[\d,]*(?:\.\d+)?[^。；;\n]{0,12}(?:支撑|支撐|阻力|压力|壓力|均线|均線)"
+)
+_REPORTED_JAPANESE_FACT = re.compile(
+    r"(?:"
+    r"(?P<source>[^。.!！\n]{1,80}?)(?:の見出しは|は|によると)\s*[「『][^」』]{1,160}[」』]\s*"
+    r"|(?:記事|報道|ニュース)(?:では|によると)?[^。.!！\n]{0,160}"
+    r")"
+    r"(?:と報じた|と報道した|と表現されている|と伝えた)[。.!！]?$",
+    re.I,
+)
+_DATED_SOURCE_HEADLINE = re.compile(
+    r"^[-*]\s+20\d{2}-\d{2}-\d{2}[^\n]{0,80}\[[^\]]+\]\s+.+\(https?://[^\s)]+\)$",
+    re.I,
 )
 
 
@@ -137,6 +173,17 @@ def _claim_type(text: str, *, analysis_as_of: str) -> str | None:
     dated = [match.group(1) for match in _DATE.finditer(plain)]
     if (_HISTORY.search(plain) or dated and max(dated) < analysis_as_of) and not _PRESENT_TIME.search(plain):
         return None
+    reported = _REPORTED_JAPANESE_FACT.fullmatch(plain)
+    if reported and not _MARKET_SUBJECT.search(reported.group("source") or ""):
+        return None
+    if _DATED_SOURCE_HEADLINE.search(text.strip()):
+        return None
+    if (
+        (_MARKET_SUBJECT.search(plain) or _IMPLICIT_MARKET_STATE.search(plain))
+        and _MARKET_DIRECTION.search(plain)
+        and _MARKET_INTERPRETATION.search(plain)
+    ):
+        return "CURRENT_PRICE_OR_MOMENTUM_ASSERTION"
     if _TECHNICAL_BASIS.search(plain) and (
         _TECHNICAL_ASSERTION.search(plain) or _TECHNICAL_LEVEL.search(plain)
     ):

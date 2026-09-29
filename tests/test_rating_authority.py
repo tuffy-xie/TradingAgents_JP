@@ -32,6 +32,8 @@ INTERNAL = [
     "我们建议持有。", "Our recommendation: Buy", "FINAL TRANSACTION PROPOSAL: HOLD",
     "| 综合评级 |\n|---|\n| HOLD |",
     "## News Analyst\nRecommendation: Hold",
+    "投資判断: 買い転換の可能性",
+    "## 投資判断\n買い",
 ]
 EXTERNAL = [
     "某券商维持买入评级。", "日系中坚券商维持**强气（买入）评级**",
@@ -41,6 +43,8 @@ EXTERNAL = [
     "## Analyst consensus\n\nRecommendation: Buy",
     "评级下调至Hold会增加风险。",
     "| 公司 | 分析师评级 | 强气（买入） | 机构看好 |",
+    "Nomura maintains Buy rating",
+    "野村證券 投資判断: 買い",
 ]
 
 
@@ -95,6 +99,30 @@ def test_exact_artifact_defense_without_upstream_rating_pruning():
     assert any(x.startswith("CROSS_DOMAIN_AUTHORITY:INVESTMENT_RATING") for x in contract["artifact_issues"])
     with pytest.raises(ValueError):
         _render_report_html(accepted, auto_print=False)
+
+
+def test_japanese_news_investment_rating_is_removed_but_broker_rating_remains():
+    state = state_with("野村證券 投資判断: 買い\n投資判断: 買い転換の可能性")
+    accepted = output.build_canonical_final_state(state)
+    text = accepted["accepted_report_markdown"]
+    assert "野村證券 投資判断: 買い" in text
+    assert "投資判断: 買い転換の可能性" not in text
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    findings = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING"]
+    assert len(findings) == 1
+    assert findings[0]["agent"] == "News Analyst"
+    assert findings[0]["claim_sha256"] == hashlib.sha256(findings[0]["original_claim"].encode()).hexdigest()
+    assert findings[0]["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+
+
+def test_exact_artifact_defense_blocks_japanese_rating_without_upstream_pruning():
+    with patch.object(output, "_enforce_portfolio_rating_ownership", side_effect=lambda state: (state, [])):
+        accepted = output.build_canonical_final_state(state_with("投資判断: 買い転換の可能性"))
+    contract = accepted["final_output_contract"]
+    assert "投資判断: 買い転換の可能性" in accepted["accepted_report_markdown"]
+    assert contract["status"] == "BLOCKED"
+    assert contract["validation_dimensions"]["domain_authority_consistent"] is False
+    assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:INVESTMENT_RATING:") for issue in contract["artifact_issues"])
 
 
 def test_audit_does_not_close_format_changed_secondary_rating():

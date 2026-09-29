@@ -277,6 +277,94 @@ def test_final_contract_blocks_news_inference_without_upstream_market_findings(m
     ) in contract["artifact_issues"]
 
 
+def test_japanese_market_inference_is_removed_without_erasing_attributed_news():
+    state = _minimal_final_state()
+    state["news_report"] = (
+        "Kabutan は『株価の底堅さがみられる』と報じた。\n"
+        "EPS訂正が上方修正されたことで株価テクニカル面での上昇トレンド示唆。\n"
+        "分析师一致预期上调。"
+    )
+    accepted = build_canonical_final_state(state)
+    report = accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    assert "底堅さがみられる" in report
+    assert "分析师一致预期上调" in report
+    assert "株価テクニカル面での上昇トレンド示唆" not in report
+    findings = [
+        item for item in accepted["evidence_audit"]
+        if item.get("category") == "MARKET_AUTHORITY_CLAIM"
+        and item.get("field") == "news_report"
+    ]
+    assert len(findings) == 1
+    assert findings[0]["agent"] == "News Analyst"
+    assert findings[0]["required_domain_authority"] == "CURRENT_MARKET"
+    assert findings[0]["authority_state"] == "UNAVAILABLE"
+    assert findings[0]["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert findings[0]["accepted_artifact_sha256"] == accepted["final_output_contract"]["accepted_report_sha256"]
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "株価テクニカル面での上昇トレンド示唆",
+        "現在の株価は上昇トレンドに入った",
+        "買い優勢が鮮明になった",
+        "上昇基調に転じた",
+        "テクニカル的に強気",
+        "株価上昇余地が拡大",
+        "トレンド転換を確認",
+        "Technical uptrend is now confirmed.",
+        "Current buying momentum is strengthening.",
+        "Shares have turned bullish.",
+        "The stock is entering an uptrend.",
+        "当前趋势转多。",
+        "技术面开始走强。",
+        "股价进入上升趋势。",
+        "当前买盘增强。",
+        "現在の株価は上昇トレンドに入ったが、記事では強気と報じた。",
+    ],
+)
+def test_multilingual_current_market_propositions_need_market_authority(claim):
+    assert current_market_claims(claim, analysis_as_of=AS_OF)
+
+
+@pytest.mark.parametrize(
+    "fact",
+    [
+        "Yahoo Finance Japan の見出しは『4日続伸』と報じた。",
+        "Kabutan は『7000円～7500円辺りでの底堅さがみられる』と報じた。",
+        "分析师一致预期上调。",
+        "该协议可能成为未来业务增长催化剂。",
+        "若未来 MACD 跌破零轴，则重新评估。",
+    ],
+)
+def test_multilingual_news_facts_and_future_conditions_remain_available(fact):
+    assert not current_market_claims(fact, analysis_as_of=AS_OF)
+    assert remove_current_market_claims(fact, analysis_as_of=AS_OF) == fact
+
+
+@pytest.mark.parametrize(
+    "claim",
+    ["株価テクニカル面での上昇トレンド示唆", "Technical uptrend is now confirmed."],
+)
+def test_exact_artifact_defense_blocks_multilingual_market_claim_without_upstream(monkeypatch, claim):
+    import tradingagents.final_output as final_output
+
+    state = _minimal_final_state()
+    state["news_report"] = claim
+    monkeypatch.setattr(
+        final_output,
+        "_enforce_market_authority_ownership",
+        lambda candidate: (dict(candidate), []),
+    )
+    accepted = build_canonical_final_state(state)
+    contract = accepted["final_output_contract"]
+    assert claim in accepted["accepted_report_markdown"]
+    assert contract["status"] == "BLOCKED"
+    assert contract["validation_dimensions"]["domain_authority_consistent"] is False
+    assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:MARKET:") for issue in contract["artifact_issues"])
+
+
 @pytest.mark.parametrize(
     "text",
     [

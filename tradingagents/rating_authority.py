@@ -10,14 +10,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_VALUES = re.compile(r"\b(overweight|underweight|buy|hold|sell)\b|买入|增持|持有|减持|卖出", re.I)
-_CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell"}
+_VALUES = re.compile(r"\b(overweight|underweight|buy|hold|sell)\b|买入|增持|持有|减持|卖出|買い|売り", re.I)
+_CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell"}
 _LABEL = re.compile(
     r"(?:评级|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
-    r"final\s+transaction\s+proposal)\s*[:：|\-—]", re.I
+    r"投資判断|投資推奨|レーティング|推奨|final\s+transaction\s+proposal)\s*[:：|\-—]", re.I
 )
 _LABEL_HEADING = re.compile(
     r"^(?:(?:综合|最终|投资|系统|本报告)\s*)?(?:评级|投资建议|建议|推荐)$|"
+    r"^(?:投資判断|投資推奨|レーティング|推奨)$|"
     r"^(?:(?:final|overall|investment)\s+)?(?:rating|recommendation)$|"
     r"^final\s+transaction\s+proposal$", re.I
 )
@@ -26,13 +27,13 @@ _OUR_RECOMMENDATION = re.compile(
     r"\b(?:we\s+recommend|our\s+(?:rating|recommendation)|i\s+recommend)\b", re.I
 )
 _EXTERNAL = re.compile(
-    r"券商|投行|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调)|"
+    r"券商|投行|証券会社|證券会社|証券|證券|アナリスト|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调)|"
     r"(?:位|名)分析师|评级分布|共识评级|\b(?:broker(?:age)?|consensus|"
     r"third[ -]party|according\s+to)\b|\banalysts?\b.{0,35}"
     r"\b(?:rate|rates|rated|maintain|maintains|recommend|recommendation|ratings?)\b", re.I
 )
 _EXTERNAL_HEADING = re.compile(
-    r"券商|投行|分析师(?:共识|评级动态|评级分布)|共识|评级分布|"
+    r"券商|投行|証券会社|證券会社|アナリスト評価|分析师(?:共识|评级动态|评级分布)|共识|评级分布|"
     r"\b(?:broker(?:age)?|consensus|third[ -]party)\b", re.I
 )
 _OWN_LABEL = re.compile(r"(?:综合|最终|本系统|本报告)(?:投资)?(?:评级|建议)|\b(?:our|overall|final)\s+(?:rating|recommendation)\b", re.I)
