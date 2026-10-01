@@ -31,6 +31,15 @@ DECISION_NO_RATING = (
 # Shared helpers
 # ---------------------------------------------------------------------------
 
+def _isolate_propagation_sources(monkeypatch):
+    """Memory orchestration tests do not exercise real market/source retrieval."""
+    from tradingagents.graph import trading_graph as module
+
+    monkeypatch.setattr(module, "resolve_instrument_identity", lambda *_: {})
+    monkeypatch.setattr(module, "collect_japan_data_bundle", lambda *_: {})
+    monkeypatch.setattr(module, "build_verified_market_snapshot", lambda *_: "offline stub")
+
+
 def make_log(tmp_path, filename="trading_memory.md"):
     config = {"memory_log_path": str(tmp_path / filename)}
     return TradingMemoryLog(config)
@@ -825,9 +834,11 @@ class TestLegacyRemoval:
         with pytest.raises(TypeError):
             create_portfolio_manager(mock_llm, memory=MagicMock())
 
-    def test_full_pipeline_no_regression(self, tmp_path):
+    def test_full_pipeline_no_regression(self, tmp_path, monkeypatch):
         """propagate() completes and stores the decision after the redesign."""
         import functools
+
+        _isolate_propagation_sources(monkeypatch)
 
         fake_state = {
             "final_trade_decision": "Rating: Buy\nBuy NVDA.",
@@ -871,11 +882,13 @@ class TestLegacyRemoval:
         assert entries[0]["pending"] is True
 
     def test_memory_persistence_failure_does_not_fail_completed_run(
-        self, tmp_path, caplog
+        self, tmp_path, caplog, monkeypatch
     ):
         """Supplemental reflection storage cannot invalidate canonical output."""
         import functools
         import logging
+
+        _isolate_propagation_sources(monkeypatch)
 
         fake_state = {
             "final_trade_decision": "Rating: Hold\nObserve NVDA.",
