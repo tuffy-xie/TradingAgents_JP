@@ -7,7 +7,30 @@ canonical acceptance collects and removes unapproved plans; Audit proves claim
 closure; renderers display the accepted artifact. No provider, agent topology,
 financial authority or US execution policy is changed by this revision.
 
-The v5 semantic revision is `rating-transition-authority-2026-10`.
+The v5 semantic revision is `published-rating-execution-ownership-2026-10`.
+
+Approval is scoped to the deterministic execution publisher, not to all Agent
+text. Both approved and withheld runs collect execution claims before pruning.
+Raw Analyst/Research/Portfolio action or position instructions are removed;
+only the validator-generated plan is inserted in the Trader and Portfolio
+publication slots. The exact artifact defense exempts that block only when its
+owner and every label/value (including direction) match canonical validation.
+A changed parameter, action or an identical block in an Analyst section blocks
+publication. Ordinary technical analysis, monitoring, prohibitions, attributed
+ratings and business descriptions retain their existing semantics.
+
+Formal rating ownership includes conclusion labels and natural-language
+assertions linking a recommendation/value to a rating predicate, not just
+label/colon syntax. A direction-only Market outlook labelled "整体评级" is
+relabelled "技术面展望"; an explicit investment rating or Buy/Hold/Sell conclusion
+is not exempt. Assistant-agency report-production/data-preparation narration
+is presentation leakage; its original claim is audited and removed. Quoted
+company speech and ordinary first-person business explanations are preserved.
+
+These checks run after exact composition and at publication/idempotent entry
+points independently of the upstream findings. Audit closes an execution
+claim against the artifact excluding only exact validator-owned blocks, so
+an approved deterministic replacement cannot be mistaken for raw plan survival.
 
 ## User-facing investment rating ownership
 

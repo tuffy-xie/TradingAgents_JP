@@ -33,7 +33,9 @@ from tradingagents.dataflows.japan.context import (
 )
 from tradingagents.rating_authority import (
     artifact_rating_violations,
+    attributed_rating_fact,
     internal_rating_claims,
+    normalize_technical_outlook_labels,
     remove_internal_ratings,
 )
 from tradingagents.report_artifacts import (
@@ -55,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "rating-transition-authority-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "published-rating-execution-ownership-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -111,10 +113,12 @@ _EXECUTION_INSTRUCTIONS = re.compile(
 _EXECUTION_ACTION = re.compile(
     r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
     r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
-    r"了结|了結|退出|逢低布局|逢高减码|逢高減碼|"
+    r"了结|了結|退出|布局|逢高减码|逢高減碼|"
     r"调整仓位|調整倉位|调整敞口|調整敞口|"
     r"open\s+(?:a\s+)?position|increase\s+(?:the\s+)?position|"
-    r"reduce\s+(?:the\s+)?position|close\s+(?:the\s+)?position)",
+    r"reduce\s+(?:the\s+)?position|close\s+(?:the\s+)?position|"
+    r"(?:add(?:ing)?|increas(?:e|ing)|reduc(?:e|ing))\s+(?:the\s+)?exposure|"
+    r"enter(?:ing)?\s+(?:a\s+)?(?:long|short)(?:\s+position)?)",
     re.I,
 )
 _EXECUTION_DIRECTIVE_CONTEXT = re.compile(
@@ -331,6 +335,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         and not _execution_cross_state_issues(result, bool(contract.get("execution_allowed")))
         and not _rating_artifact_claims(result, str(result.get("accepted_report_markdown") or ""))
         and not _artifact_market_claims(result, str(result.get("accepted_report_markdown") or ""))
+        and not _validate_final_artifact(result, bool(contract.get("execution_allowed")),
+                                        accepted_report=str(result.get("accepted_report_markdown") or ""))
     ):
         return result
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
@@ -436,10 +442,14 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         )
 
     execution_allowed = (result.get("validated_execution") or {}).get("status") == "OK"
+    # Permission belongs to the deterministic publisher, not to every Agent.
+    # Capture original claims before either approved or withheld replacement.
+    audit.extend(_collect_unapproved_execution_claims(result))
+    result, rating_findings = _enforce_portfolio_rating_ownership(result)
+    audit.extend(rating_findings)
     if execution_allowed:
         result = _apply_validated_execution(result)
     else:
-        audit.extend(_collect_unapproved_execution_claims(result))
         result = _withhold_unvalidated_execution(result)
         audit.append(
             {
@@ -629,6 +639,9 @@ def require_canonical_final_state(state: Mapping[str, Any]) -> None:
     if _artifact_market_claims(state, str(state.get("accepted_report_markdown") or "")):
         raise ValueError("Japan report has current technical claims without Market authority")
     accepted = state.get("accepted_report_markdown")
+    if _validate_final_artifact(state, bool(contract.get("execution_allowed")),
+                                accepted_report=str(accepted or "")):
+        raise ValueError("Japan report exact artifact violates canonical publication authority")
     expected_hash = contract.get("accepted_report_sha256")
     if (
         not isinstance(accepted, str)
@@ -647,6 +660,16 @@ def _accept_text(
     state: Mapping[str, Any], text: str, field: str, audit: list[dict[str, Any]]
 ) -> tuple[str, list[dict[str, Any]]]:
     agent = _agent_for_field(field)
+    for claim in _generation_process_claims(text):
+        audit.append({
+            "category": "SEMANTIC_MISMATCH", "semantic_type": "PROCESS_NARRATION",
+            "agent": agent, "field": field, "warning": "PROCESS_PROSE_VISIBLE",
+            "original_claim": claim,
+            "claim_sha256": hashlib.sha256(claim.encode("utf-8")).hexdigest(),
+            "authority_owner": "User report presentation",
+            "enforcement_action": "REMOVE_ASSISTANT_PROCESS_NARRATION",
+            "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION", "execution_blocking": True,
+        })
     checked = enforce_agent_output(state, text, agent)
     for finding in checked.findings:
         audit.append(
@@ -682,14 +705,53 @@ _ZH_GENERATION_PROCESS_PROSE = re.compile(
 
 def _remove_generation_process_prose(text: str) -> str:
     """Remove model process narration, not research content."""
-    text = _GENERATION_PROCESS_PROSE.sub("", text)
-    text = _ZH_GENERATION_PROCESS_PROSE.sub("", text)
     process_clause = re.compile(
         r"(?:现在|接下来|下面)?(?:让(?:我|我们)|我(?:将|来))"
         r"[^。！？\n]{0,60}(?:基于|根据)[^。！？\n]{0,100}"
         r"(?:提供|生成|撰写|整理)[^。！？\n]{0,40}(?:报告|分析)[。！？]?"
     )
-    return process_clause.sub("", text)
+    lines = []
+    for line in text.splitlines(keepends=True):
+        if _process_quotation(line):
+            lines.append(line)
+            continue
+        for claim in _generation_process_claims(line):
+            line = line.replace(claim, "")
+        line = _GENERATION_PROCESS_PROSE.sub("", line)
+        line = _ZH_GENERATION_PROCESS_PROSE.sub("", line)
+        lines.append(process_clause.sub("", line))
+    return "".join(lines)
+
+
+def _process_quotation(line: str) -> bool:
+    return line.lstrip().startswith(('>', '"', '“', '「')) or bool(re.search(
+        r'(?:管理层|公司|management|company).*(?:表示|称|said|stated)\s*[:：]', line, re.I
+    ))
+
+
+def _generation_process_claims(text: str) -> list[str]:
+    """Assistant agency + report-production/data-preparation intent.
+
+    Quoted speech and business explanations do not have assistant agency.
+    Inspect separate sentences, not a blacklist of entire model preambles.
+    """
+    claims = []
+    for line in text.splitlines():
+        # Preserve attributed speech, blockquotes and quoted first-person text.
+        if _process_quotation(line):
+            continue
+        for unit in re.findall(r"[^.!?。！？\n]+[.!?。！？]?", line):
+            plain = unit.strip().strip('*')
+            agency = re.match(
+                r"(?:(?:now|next|first|finally)[,:]?\s+)?(?:i\b|we\b|let\s+(?:me|us)\b|here\s+is\b)|"
+                r"^(?:现在|接下来|下面)?(?:我将|我来|让我们|让我)", plain, re.I
+            )
+            work = re.search(r"\b(?:compile|prepare|produce|generate|write|provide|analy[sz]e|gathered|collected)\b|生成|撰写|整理", plain, re.I)
+            object_ = re.search(r"\b(?:report|analysis|data|information)\b|报告|分析", plain, re.I)
+            ready = re.search(r"\bhave\b.*\b(?:all|required|needed|enough)\b.*\b(?:data|information)\b|\bhave\b.*\b(?:data|information)\b.*\b(?:required|needed)\b", plain, re.I)
+            if agency and ((work and object_) or ready or re.match(r"here\s+is\s+(?:the|my|our)\s+(?:report|analysis)\b", plain, re.I)):
+                claims.append(unit)
+    return claims
 
 
 def _canonicalize_market_report(state: Mapping[str, Any]) -> str:
@@ -862,6 +924,8 @@ def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[
         text = _published_field_text(result, field)
         if not text:
             continue
+        if field == "market_report":
+            text = normalize_technical_outlook_labels(text)
         for claim in internal_rating_claims(text):
             findings.append({
                 "category": "SECONDARY_INTERNAL_RATING",
@@ -1845,6 +1909,13 @@ def _collect_unapproved_execution_claims(
                         "warning": warning,
                         "claim_sha256": hashlib.sha256(claim.encode("utf-8")).hexdigest(),
                         "original_claim": claim,
+                        "semantic_type": "EXECUTION_RECOMMENDATION",
+                        "authority_owner": "validated_execution",
+                        "detected_actions": list(dict.fromkeys(
+                            match.group() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
+                            for match in pattern.finditer(claim)
+                        )),
+                        "canonical_action": (state.get("validated_execution") or {}).get("action"),
                         "replacement_claim": _EXECUTION_WITHHELD,
                         "enforcement_action": "REMOVED_BY_EXECUTION_GATE",
                         "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
@@ -1927,6 +1998,11 @@ def _table_execution_violation(cells: list[str], headers: list[str] | None) -> s
             return "UNAPPROVED_EXECUTION_INSTRUCTION"
         if _execution_clause_violation(contextual):
             return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    # Parameter label/value relations can cross cells just like actions do.
+    # Cell-local scanning alone cannot see `Entry | 8513` or `仓位 | 3%`.
+    joined = " ".join(cells)
+    if _EXECUTION_PARAMETER.search(joined) or _POSITION_RECOMMENDATION.search(joined):
+        return _execution_clause_violation(joined)
     return None
 
 
@@ -1968,6 +2044,13 @@ def _execution_semantic_units(text: str) -> list[str]:
 def _execution_clause_violation(text: str) -> str | None:
     plain = text.replace("**", "").replace("`", "").strip()
     if not plain:
+        return None
+    # Attribution owns only the reported rating, not additional position plans.
+    rating_actions = {"买入", "卖出", "增持", "减持", "買い", "売り"}
+    if (attributed_rating_fact(plain)
+            and all(match.group() in rating_actions for match in _EXECUTION_ACTION.finditer(plain))
+            and not _POSITION_DIRECTIVE.search(plain)
+            and not _ACTION_AMOUNT.search(plain)):
         return None
     action = _EXECUTION_ACTION.search(plain) or _ENGLISH_TRADE_ACTION.search(plain)
     actions = sorted(
@@ -2040,6 +2123,15 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
         tail = before[prohibitions[-1].end():]
         if not re.search(r"(?:但|且|并|而|可(?:以)?|应当|应该|建议|\b(?:but|and|then|can|may|should|recommend)\b)", tail, re.I):
             return True
+    if action.group() == "布局":
+        # Business deployment has a different object from investor exposure.
+        # Keep action-local negation above, and let price/portfolio context
+        # take precedence over an incidental business noun.
+        nearby = text[max(0, action.start() - 24):action.end() + 24]
+        business = re.search(r"业务|产业|产品|研发|战略|5G|6G|海外市场|business|product|R&D", nearby, re.I)
+        trading = re.search(r"股价|回调|支撑|阻力|价位|仓位|敞口|position|exposure", nearby, re.I)
+        if business and not trading:
+            return True
     subject = re.search(r"(?:公司|企业|企業|发行人|發行人|\b(?:company|issuer|firm)\b)", before, re.I)
     target = text[action.end():]
     corporate_target = re.match(
@@ -2079,7 +2171,7 @@ def _prune_unapproved_execution(text: str) -> str:
 
 def _apply_validated_execution(state: dict[str, Any]) -> dict[str, Any]:
     """Expose only calculator-approved execution numbers in the user artifact."""
-    result = dict(state)
+    result = _map_report_text(state, _prune_unapproved_execution)
     validation = result.get("validated_execution") or {}
     decision = _strip_execution_plan(
         str(result.get("final_trade_decision") or ""), include_target=True
@@ -2110,6 +2202,7 @@ def _validated_execution_report(validation: Mapping[str, Any]) -> str:
         "",
         "| 项目 | 确定性校验值 |",
         "|---|---:|",
+        f"| 交易方向 | {'买入' if validation.get('action') == 'Buy' else '卖出'} |",
         f"| 入场价 | {validation.get('entry')} |",
         f"| 止损价 | {validation.get('stop')} |",
         f"| 止损距离 | {validation.get('distance')} |",
@@ -2309,12 +2402,12 @@ def _validate_final_artifact(
     issues = validate_final_report_text(
         accepted_report, execution_allowed=execution_allowed, check_structure=True
     )
-    if not execution_allowed:
-        issues.extend(
-            "FINAL_ARTIFACT_UNAUTHORIZED_EXECUTION:"
-            + hashlib.sha256(claim.encode("utf-8")).hexdigest()
-            for claim in _artifact_execution_claims(accepted_report)
-        )
+    unauthorized = _artifact_without_validated_execution(state, accepted_report) if execution_allowed else accepted_report
+    issues.extend(
+        "FINAL_ARTIFACT_UNAUTHORIZED_EXECUTION:"
+        + hashlib.sha256(claim.encode("utf-8")).hexdigest()
+        for claim in _artifact_execution_claims(unauthorized)
+    )
     issues.extend(_execution_cross_state_issues(state, execution_allowed))
     issues.extend(_domain_authority_issues(state))
     issues.extend(
@@ -2332,6 +2425,45 @@ def _validate_final_artifact(
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
+
+
+def _artifact_without_validated_execution(state: Mapping[str, Any], text: str) -> str:
+    """Exempt only an exact deterministic plan in its two publication slots.
+
+    Approval is not a blanket permission for Analyst prose, or for a modified
+    plan even in the Trader/Portfolio section. Compare all canonical values;
+    Markdown heading nesting and delimiter spacing are presentation only.
+    """
+    validation = state.get("validated_execution") or {}
+    if validation.get("status") != "OK":
+        return text
+    expected = [_table_cells(line) for line in _validated_execution_report(validation).splitlines()
+                if line.startswith("|") and not all(re.fullmatch(r":?-+:?", cell) for cell in _table_cells(line))]
+    lines = text.splitlines(keepends=True)
+    kept = []
+    wrapper = ""
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        heading = re.match(r"^##\s+(.+)$", line.strip())
+        if heading:
+            wrapper = heading[1]
+        owner = bool(re.fullmatch(r"(?:[IVX]+\.\s*)?(?:交易团队计划|投资组合经理结论)", wrapper))
+        if owner and re.fullmatch(r"#{3,6}\s+已验证交易执行参数", line.strip()):
+            end = index + 1
+            while end < len(lines) and not lines[end].strip():
+                end += 1
+            start = end
+            while end < len(lines) and lines[end].lstrip().startswith("|"):
+                end += 1
+            rows = [_table_cells(row) for row in lines[start:end]
+                    if not all(re.fullmatch(r":?-+:?", cell) for cell in _table_cells(row))]
+            if rows == expected:
+                index = end
+                continue
+        kept.append(line)
+        index += 1
+    return "".join(kept)
 
 
 def _artifact_execution_claims(text: str) -> list[str]:
@@ -2491,7 +2623,15 @@ def _finalize_audit(
     seen: set[tuple[Any, ...]] = set()
     for raw in audit:
         entry = dict(raw)
-        if entry.get("category") == "MARKET_AUTHORITY_CLAIM":
+        if entry.get("semantic_type") == "PROCESS_NARRATION":
+            surviving = bool(_generation_process_claims(accepted_report))
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = "PROCESS_NARRATION_PRESENT" if surviving else "PROCESS_NARRATION_ABSENT_FROM_EXACT_ARTIFACT"
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append("UNRESOLVED_PROCESS_NARRATION")
+        elif entry.get("category") == "MARKET_AUTHORITY_CLAIM":
             survivors = _artifact_market_claims(state, accepted_report)
             surviving = any(
                 claim.semantic_type == entry.get("semantic_type")
@@ -2531,13 +2671,16 @@ def _finalize_audit(
             ).hexdigest()
             # Compare presentation-stable components as well as whole claims.
             # A source-label/numbering change is not removal of the action.
-            surviving = _execution_claim_survives(original, accepted_report)
+            unauthorized = _artifact_without_validated_execution(state, accepted_report) if execution_allowed else accepted_report
+            surviving = _execution_claim_survives(original, unauthorized)
             entry["presentation_claim_sha256"] = hashlib.sha256(
                 _claim_identity(original).encode("utf-8")
             ).hexdigest()
             if original and not surviving:
                 entry["resolution"] = "CLAIM_REMOVED_OR_REPLACED"
                 entry["resolution_basis"] = (
+                    "UNAUTHORIZED_CLAIM_ABSENT_OUTSIDE_EXACT_VALIDATOR_OWNED_BLOCKS"
+                    if execution_allowed else
                     "EXECUTION_CLAIM_COMPONENTS_ABSENT_FROM_EXACT_ACCEPTED_ARTIFACT"
                 )
                 entry["execution_blocking"] = False
@@ -2643,6 +2786,9 @@ def _finalize_audit(
         + hashlib.sha256(claim.text.encode("utf-8")).hexdigest()
         for claim in _rating_artifact_claims(state, accepted_report)
     )
+    unauthorized = _artifact_without_validated_execution(state, accepted_report) if execution_allowed else accepted_report
+    issues.extend("UNRESOLVED_EXECUTION_AUTHORITY:" + hashlib.sha256(claim.encode("utf-8")).hexdigest()
+                  for claim in _artifact_execution_claims(unauthorized))
     return finalized, list(dict.fromkeys(issues))
 
 

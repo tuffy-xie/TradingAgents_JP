@@ -371,6 +371,17 @@ def _structured_sentiment_llm(captured: dict, report: SentimentReport | None = N
 
 @pytest.mark.unit
 class TestSentimentAnalystAgent:
+    @pytest.fixture(autouse=True)
+    def offline_sources(self, monkeypatch):
+        # These are structured-render/prompt tests, not vendor integration.
+        # Never fetch live social/news data while testing a mocked LLM.
+        monkeypatch.setattr(sentiment_module, "fetch_stocktwits_messages",
+                            lambda *a, **k: "<stocktwits unavailable>")
+        monkeypatch.setattr(sentiment_module, "fetch_reddit_posts",
+                            lambda *a, **k: "<reddit status=FETCH_FAILED; sample_count=UNKNOWN>")
+        monkeypatch.setattr(sentiment_module.get_news, "func",
+                            lambda *a, **k: "<news unavailable>")
+
     def test_structured_path_produces_rendered_markdown(self):
         captured = {}
         report = SentimentReport(

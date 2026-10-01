@@ -10,14 +10,21 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り", re.I)
-_CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell"}
+_VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell|bullish|bearish)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り|看涨|看跌|強気|弱気", re.I)
+_CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell", "bullish": "Overweight", "bearish": "Underweight", "看涨": "Overweight", "看跌": "Underweight", "強気": "Overweight", "弱気": "Underweight"}
+_OUTLOOK_VALUES = {"bullish", "bearish", "看涨", "看跌", "強気", "弱気"}
 _LABEL = re.compile(
     r"(?:评级|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
-    r"投資判断|投資推奨|レーティング|推奨|final\s+transaction\s+proposal)\s*[:：|\-—]", re.I
+    r"(?:最终|综合|投资|研究|交易)+(?:研究)?结论|投資判断|投資推奨|レーティング|推奨|final\s+transaction\s+proposal|"
+    r"(?:final|investment|research)\s+conclusion)\s*[:：|\-—]", re.I
 )
+_RATING_ASSERTION_BEFORE = re.compile(
+    r"(?:给出|给予|评为|定为|推荐为|建议(?:是|为))\s*$|"
+    r"\b(?:recommend(?:s|ed)?|assign(?:s|ed)?|rate(?:s|d)?(?:\s+as)?)\s*$", re.I
+)
+_RATING_ASSERTION_AFTER = re.compile(r"^\s*(?:评级|評級|评价|rating\b)", re.I)
 _LABEL_HEADING = re.compile(
-    r"^(?:(?:综合|最终|投资|系统|本报告)\s*)?(?:评级|投资建议|建议|推荐)$|"
+    r"^(?:(?:综合|最终|投资|系统|本报告)\s*)?(?:评级|投资建议|建议|推荐|研究结论|投资结论)$|"
     r"^(?:投資判断|投資推奨|レーティング|推奨)$|"
     r"^(?:(?:final|overall|investment)\s+)?(?:rating|recommendation)$|"
     r"^final\s+transaction\s+proposal$|"
@@ -26,10 +33,10 @@ _LABEL_HEADING = re.compile(
 # A recommendation can be expressed as a short signal/status cell without a
 # rating label. Match the direction's relation to recommendation semantics,
 # not a direction word alone (e.g. 買い材料 is a research factor).
-_DIRECTION = r"(?:\b(?:buy|sell)\b|买入|卖出|買い|売り)"
+_DIRECTION = r"(?:\b(?:buy|sell|overweight|underweight)\b|买入|卖出|增持|减持|買い|売り)"
 _RECOMMENDATION = re.compile(
     rf"{_DIRECTION}\s*(?:[のを]\s*)?(?:示唆|推奨|シグナル|信号|建议|推荐|\b(?:signal|recommendation)\b)|"
-    rf"(?:建议|推荐|推奨)\s*{_DIRECTION}|"
+    rf"(?:建议|推荐|推奨)\s*(?:(?:投资者|持仓者|现有持仓者)\s*)?{_DIRECTION}|"
     rf"\b(?:recommend(?:s|ed)?|signal(?:s)?\s+to)\s+{_DIRECTION}", re.I
 )
 _RECOMMENDATION_WITHHELD_BEFORE = re.compile(
@@ -75,7 +82,7 @@ _HOLD_STANCE = re.compile(
 )
 _NAMED_SOURCE_REPORT = re.compile(
     r"(?:^|[：:]\s*)(?P<source>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})\s+"
-    r"(?:upgraded|downgraded|maintains?|raised|lowered)\b"
+    r"(?:upgraded|downgraded|maintains?|recommends?|raised|lowered)\b"
 )
 _SYSTEM_SOURCE = re.compile(
     r"\b(?:we|our|i|research|manager|analyst|trader|portfolio|system|report)\b", re.I
@@ -93,7 +100,28 @@ class RatingClaim:
 
 
 def _canonical_rating(value: str) -> str:
-    return _CANONICAL.get(value, value.capitalize())
+    return _CANONICAL.get(value.lower(), value.capitalize())
+
+
+def normalize_technical_outlook_labels(text: str) -> str:
+    """A qualitative technical outlook is not a formal investment rating.
+
+    Relabel only a direction-only outlook. Explicit investment labels and
+    formal Buy/Hold/Sell values still go through Portfolio ownership checks.
+    """
+    def outlook(match):
+        values = list(_VALUES.finditer(match[2]))
+        if values and all(value[0].lower() in _OUTLOOK_VALUES for value in values):
+            return "技术面展望：" + match[2]
+        return match[0]
+
+    return re.sub(r"((?:整体|综合)评级)\s*[:：]([^\n。]+)", outlook, text, flags=re.I)
+
+
+def attributed_rating_fact(text: str) -> bool:
+    """Clause-local reporting agency; not a blanket exception for an Agent."""
+    return bool(_VALUES.search(text) and (_EXTERNAL.search(text) or _named_external_report(text))
+                and not internal_rating_claims(text))
 
 
 def _transition_match(text: str):
@@ -197,13 +225,16 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             # Ownership includes transitions and evaluative holding advice,
             # not just labelled values and signal/status cells.
             labelled = _LABEL.search(cleaned)
+            asserted = next((value for value in _VALUES.finditer(cleaned)
+                             if (value[0].lower() not in _OUTLOOK_VALUES and _RATING_ASSERTION_BEFORE.search(cleaned[:value.start()]))
+                             or _RATING_ASSERTION_AFTER.search(cleaned[value.end():])), None)
             recommendation = _recommendation_match(cleaned)
             transition = _transition_match(cleaned)
             if _RECOMMENDATION.search(cleaned) and recommendation is None:
                 continue
             our = bool(_OUR_RECOMMENDATION.search(cleaned))
             bare = bool(re.fullmatch(r"(?:buy|hold|sell|overweight|underweight|买入|持有|卖出|增持|减持)\s*(?:[（(][^）)]*[）)])?[。.!]?", cleaned, re.I))
-            if not (labelled or our or pending_label or bare or table_rating or recommendation or transition or hold_stance):
+            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance):
                 continue
             external = bool(_EXTERNAL.search(cleaned)) or _named_external_report(cleaned) or (
                 (external_context or table_external or pending_external)
@@ -224,6 +255,8 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                     continue
             elif recommendation:
                 match = recommendation
+            elif asserted:
+                match = asserted
             rating = "Hold" if hold_stance and not transition and not recommendation else _canonical_rating(match[0])
             claims.append(RatingClaim(
                 offset + unit.start(), offset + unit.end(), unit[0], rating,

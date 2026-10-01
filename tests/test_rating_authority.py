@@ -209,7 +209,7 @@ def test_final_contract_blocks_signal_table_when_upstream_is_bypassed(signal):
 
 def test_signal_surviving_presentation_transform_cannot_close_audit():
     accepted = output.build_canonical_final_state(state_with("| 指标 | 状态 |\n| --- | --- |\n| EPS trend | 🟢 買い示唆 |"))
-    audit = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING"]
+    audit = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING" and x.get("agent") == "News Analyst"]
     assert audit
     tampered = accepted["accepted_report_markdown"] + "\n## 新闻附录\n| 指标 | 状态 |\n| --- | --- |\n| EPS trend | **買い示唆** |\n"
     findings, issues = output._finalize_audit(audit, accepted, accepted_report=tampered, execution_allowed=False)
@@ -317,7 +317,8 @@ def test_japanese_news_investment_rating_is_removed_but_broker_rating_remains():
     assert "野村證券 投資判断: 買い" in text
     assert "投資判断: 買い転換の可能性" not in text
     assert accepted["final_output_contract"]["status"] == "FINALIZED"
-    findings = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING"]
+    # Trader's raw recommendation is also now audited before replacement.
+    findings = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING" and x.get("agent") == "News Analyst"]
     assert len(findings) == 1
     assert findings[0]["agent"] == "News Analyst"
     assert findings[0]["claim_sha256"] == hashlib.sha256(findings[0]["original_claim"].encode()).hexdigest()
