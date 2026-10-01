@@ -79,6 +79,123 @@ _CURRENT_QUARTER_CONVICTION = re.compile(
     r"(?:latest|current|最新|当前)[^\n。！？;]*(?:quarter|季度)[^\n。！？;]*(?:fully|comprehensively|strongly|明确|全面|强劲|爆发|确认)",
     re.I,
 )
+_CURRENT_FINANCIAL_PERIOD = re.compile(
+    r"(?:latest|current|最新|当前|當前)[^\n。！？;|]{0,20}?(?:quarter|季度|四半期)", re.I
+)
+_FINANCIAL_RESULT_METRIC = re.compile(
+    r"盈利(?:能力)?|利润|利潤|营收|營收|收入|毛利|净利|淨利|每股收益|"
+    r"売上|利益|収益|\b(?:earnings|profit(?:ability)?|revenue|margin|EPS)\b", re.I
+)
+_FINANCIAL_RESULT_PREDICATE = re.compile(
+    r"回升|回落|增长|增長|下降|上升|改善|恶化|惡化|增加|减少|減少|稳健|穩健|强劲|強勁|"
+    r"(?:増加|減少|改善|回復|上昇|低下)|"
+    r"\b(?:improv(?:ed|ing|ement)|recover(?:ed|y)|increas(?:ed|ing)|decreas(?:ed|ing)|"
+    r"grew|growth|declin(?:ed|ing)|strong|weak|rose|fell)\b", re.I
+)
+_FINANCIAL_PROJECTION = re.compile(
+    r"预期|預期|预测|預測|预计|預計|有望|可能|未来|未來|如果|若|見込|予想|将来|"
+    r"\b(?:expected|forecast|estimate|could|may|might|future|if)\b", re.I
+)
+_FINANCIAL_ASSERTION_WITHHELD = re.compile(
+    r"(?:不能|无法|無法|尚未|未能)[^。！？；;]{0,12}(?:确认|確認|证明|證明|验证|驗證|声称|断言)|"
+    r"(?:仍|尚)?(?:待|未获|未獲)(?:确认|確認|验证|驗證)|"
+    r"\b(?:cannot|can't|unable\s+to)\s+(?:verify|confirm|conclude|assert)\b", re.I
+)
+# Economic regimes are distinct source events. In particular, the complement
+# of a recession market is *not* a soft-landing market, and another country's
+# probability cannot support the same numeric assertion. These concept aliases
+# bind event identity; they do not blacklist prose or remove macro facts.
+_ECONOMIC_REGIMES = {
+    "soft_landing": re.compile(r"软着陆|軟着陸|ソフトランディング|\bsoft[ -]landing\b", re.I),
+    "hard_landing": re.compile(r"硬着陆|硬着陸|ハードランディング|\bhard[ -]landing\b", re.I),
+    "recession": re.compile(r"衰退|リセッション|\brecession\b", re.I),
+    "stagflation": re.compile(r"滞胀|滯脹|スタグフレーション|\bstagflation\b", re.I),
+}
+_EVENT_JURISDICTIONS = {
+    "US": re.compile(r"美国|美國|米国|\b(?:US|U\.S\.|United States)\b", re.I),
+    "JP": re.compile(r"日本|\bJapan\b", re.I),
+    "UK": re.compile(r"英国|英國|\b(?:UK|U\.K\.|United Kingdom)\b", re.I),
+    "CN": re.compile(r"中国|中國|\bChina\b", re.I),
+    "EU": re.compile(r"欧元区|歐元區|ユーロ圏|\b(?:Eurozone|Euro area)\b", re.I),
+}
+_EVENT_PROBABILITY = re.compile(
+    r"(?:概率|機率|確率|\b(?:probability|chance|odds)\b)[^。！？；;|%]{0,20}?"
+    r"(\d+(?:\.\d+)?)\s*%", re.I
+)
+_SOURCE_EVENT_PROBABILITY = re.compile(
+    r"\*\*(?P<question>[^\n]+?)\*\*\s*[—-]\s*(?P<outcome>Yes|No)\s+"
+    r"(?P<probability>\d+(?:\.\d+)?)%", re.I
+)
+
+
+def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
+    """Ground quantified regime probabilities in their own source event.
+
+    This is deliberately narrower than arbitrary macro-language translation:
+    only named economic-regime assertions are classified. Unquantified research
+    opinions and other properly supported macro numbers remain unchanged.
+    """
+    probability = _EVENT_PROBABILITY.search(clause)
+    regime = next((key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(clause)), None)
+    if not probability or not regime:
+        return False
+    jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items() if pattern.search(clause)), None)
+    if not jurisdiction:
+        return True
+    years = set(re.findall(r"(?<!\d)20\d{2}(?!\d)", clause))
+    if not years:
+        as_of = str(state.get("trade_date") or "")
+        years = {as_of[:4]} if re.match(r"20\d{2}-", as_of) else set()
+    regime_match = _ECONOMIC_REGIMES[regime].search(clause)
+    negative = bool(re.search(r"(?:不(?:会|會)?|非|\b(?:no|not|without)\s+(?:a\s+)?)$",
+                              clause[:regime_match.start()].rstrip(), re.I))
+    for evidence in state.get("evidence_registry") or []:
+        if not isinstance(evidence, Mapping) or evidence.get("source") != "get_prediction_markets":
+            continue
+        if evidence.get("verification_status") != "VERIFIED_TOOL_OUTPUT":
+            continue
+        for event in _SOURCE_EVENT_PROBABILITY.finditer(str(evidence.get("value") or "")):
+            source_probability = float(event["probability"])
+            if (event["outcome"].casefold() == "no") != negative:
+                source_probability = 100 - source_probability
+            if (_ECONOMIC_REGIMES[regime].search(event["question"])
+                    and _EVENT_JURISDICTIONS[jurisdiction].search(event["question"])
+                    and (not years or years.issubset(set(re.findall(r"(?<!\d)20\d{2}(?!\d)", event["question"]))))
+                    and source_probability == float(probability[1])):
+                return False
+    return True
+
+
+def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
+    """Undated current-quarter actuals need the existing official Actual gate.
+
+    Qualitative metric assertions need the same authority as numeric ones.
+    Forecasts, historical periods and structural business analysis are not
+    assertions of the current quarter's observed results.
+    """
+    if _actual_gate_ok(state):
+        return False
+    periods = list(_CURRENT_FINANCIAL_PERIOD.finditer(clause))
+    for index, period in enumerate(periods):
+        # A sibling withholding statement does not waive another assertion.
+        # Keep its local prefix ("cannot confirm ...") and stop at the next
+        # explicitly named current period rather than exempting a whole line.
+        boundary = max(clause.rfind(",", 0, period.start()), clause.rfind("，", 0, period.start())) + 1
+        end = periods[index + 1].start() if index + 1 < len(periods) else len(clause)
+        proposition = clause[boundary:end]
+        if _FINANCIAL_ASSERTION_WITHHELD.search(proposition):
+            continue
+        if _CURRENT_QUARTER_CONVICTION.search(proposition):
+            return True
+        if _FINANCIAL_PROJECTION.search(proposition):
+            continue
+        result = clause[period.end():end]
+        metric = _FINANCIAL_RESULT_METRIC.search(result)
+        if metric and _FINANCIAL_RESULT_PREDICATE.search(result[metric.end():]):
+            return True
+    return False
+
+
 _OKU_VALUE = re.compile(r"([\d,]+(?:\.\d+)?)\s*(?:億円|亿元|亿)")
 _EXECUTION_INPUT = re.compile(
     r"(?:\*\*Entry Price\*\*|\*\*Stop Loss\*\*|\*\*Position Sizing\*\*|entry|stop(?:[ -]?loss)?|position sizing|入场|止损|仓位)",
@@ -227,11 +344,17 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "historical_outcome_as_current_evidence",
                 "【历史隔离：既往交易结果仅用于风险与信心校准，不构成本轮方向性证据。】",
             )
-        if _CURRENT_QUARTER_CONVICTION.search(clause) and not _actual_gate_ok(state):
+        if current_financial_gate_violation(state, clause):
             return resolve_claim(
                 clause,
                 "critical_gate_bypassed",
-                "【关键数据门控：当前季度证据不足，不能声称最新季度已被全面确认。】",
+                "【关键数据门控：当前季度证据不足，暂不发布当前实绩判断。】",
+            )
+        if probability_event_gate_violation(state, clause):
+            return resolve_claim(
+                clause,
+                "probability_event_mismatch",
+                "该定量概率未能与来源事件逐项对应，暂不纳入本次判断。",
             )
         if _unit_mismatch(clause, state):
             return resolve_claim(
@@ -694,6 +817,7 @@ def _audit_category(warning: str) -> str:
         "short_pressure_overclaim",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
+        "probability_event_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:

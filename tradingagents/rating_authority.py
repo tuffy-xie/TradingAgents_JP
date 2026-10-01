@@ -80,9 +80,20 @@ _HOLD_STANCE = re.compile(
     r"(?:值得|建议|推荐)[\s\"“”]*持有|持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
     r"\b(?:worth\s+holding|recommend\s+holding|maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
 )
+# A named rating can be the subject of an evaluative predicate, rather than
+# the value of a label. Ownership still applies, including future conditions.
+# Direction-only technical outlooks are deliberately excluded by the caller.
+_RATING_STANCE_PREDICATE = re.compile(
+    r"^\s*(?:是|为|為)[^。！？；;|]{0,32}(?:合理|最优|最優|最佳|适当|適當)"
+    r"[^。！？；;|]{0,24}(?:立场|立場|策略|选择|選擇|建议|建議)|"
+    r"^\s*\bis\s+(?:the\s+)?(?:only\s+)?(?:appropriate|optimal|best|reasonable)"
+    r"\b[^.!?;|]{0,32}\b(?:stance|strategy|choice|recommendation)\b|"
+    r"^\s*(?:が|は)[^。！？；;|]{0,24}(?:最適|妥当|適切)"
+    r"[^。！？；;|]{0,24}(?:判断|選択|方針|スタンス)", re.I
+)
 _NAMED_SOURCE_REPORT = re.compile(
     r"(?:^|[：:]\s*)(?P<source>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})\s+"
-    r"(?:upgraded|downgraded|maintains?|recommends?|raised|lowered)\b"
+    r"(?:upgraded|downgraded|maintains?|recommends?|raised|lowered|says?|reports?|argues?|notes?)\b"
 )
 _SYSTEM_SOURCE = re.compile(
     r"\b(?:we|our|i|research|manager|analyst|trader|portfolio|system|report)\b", re.I
@@ -227,7 +238,9 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             labelled = _LABEL.search(cleaned)
             asserted = next((value for value in _VALUES.finditer(cleaned)
                              if (value[0].lower() not in _OUTLOOK_VALUES and _RATING_ASSERTION_BEFORE.search(cleaned[:value.start()]))
-                             or _RATING_ASSERTION_AFTER.search(cleaned[value.end():])), None)
+                             or _RATING_ASSERTION_AFTER.search(cleaned[value.end():])
+                             or (value[0].lower() not in _OUTLOOK_VALUES
+                                 and _RATING_STANCE_PREDICATE.search(cleaned[value.end():]))), None)
             recommendation = _recommendation_match(cleaned)
             transition = _transition_match(cleaned)
             if _RECOMMENDATION.search(cleaned) and recommendation is None:

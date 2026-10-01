@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "published-rating-execution-ownership-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "predicate-rating-financial-closure-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -263,10 +263,13 @@ _EXECUTION_WITHHELD = (
     "方向性研究结论不等于已批准交易指令。"
 )
 _PUBLIC_NEWS_TEXT = {
+    "Market authority": "行情证据",
+    "Financial authority": "财务证据",
     "Japan company-news authority": "已核验的日本公司新闻",
     "The following timestamped Japan bundle headlines are available; a separate tool's empty result does not mean there is no company news.": "以下公司新闻均有明确发布时间；其他新闻工具返回空结果，不代表本次没有公司新闻。",
 }
 _INTERNAL_STATUS = {
+    "UNAVAILABLE": "不可用",
     "OK": "通过",
     "UNKNOWN": "未确认",
     "VERIFIED_FINANCIAL_AUTHORITY": "已核验的财务权威数据",
@@ -995,6 +998,7 @@ def _category_for_warning(warning: str) -> str:
         "short_pressure_overclaim",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
+        "probability_event_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:
@@ -2422,9 +2426,24 @@ def _validate_final_artifact(
         + claim.sha256
         for claim in _artifact_market_claims(state, accepted_report)
     )
+    # Re-run the existing Actual gate on the exact artifact, independently of
+    # upstream enforcement/Audit. A qualitative current-quarter assertion is
+    # not exempt merely because it contains no precise number.
+    issues.extend(
+        "CROSS_DOMAIN_AUTHORITY:"
+        + ("FINANCIAL:" if finding.warning == "critical_gate_bypassed" else "NEWS_PROBABILITY:")
+        + finding.claim_sha256
+        for finding in _artifact_evidence_gate_findings(state, accepted_report)
+    )
     rendered = render_markdown_fragment(accepted_report)
     issues.extend(validate_rendered_html(rendered))
     return list(dict.fromkeys(issues))
+
+
+def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
+    """Reuse evidence gates, but inspect the final published bytes."""
+    return [finding for finding in enforce_agent_output(state, text, "Canonical Final State").findings
+            if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch"}]
 
 
 def _artifact_without_validated_execution(state: Mapping[str, Any], text: str) -> str:
@@ -2785,6 +2804,10 @@ def _finalize_audit(
         "UNRESOLVED_RATING_AUTHORITY:"
         + hashlib.sha256(claim.text.encode("utf-8")).hexdigest()
         for claim in _rating_artifact_claims(state, accepted_report)
+    )
+    issues.extend(
+        "UNRESOLVED_EVIDENCE_AUTHORITY:" + finding.claim_sha256
+        for finding in _artifact_evidence_gate_findings(state, accepted_report)
     )
     unauthorized = _artifact_without_validated_execution(state, accepted_report) if execution_allowed else accepted_report
     issues.extend("UNRESOLVED_EXECUTION_AUTHORITY:" + hashlib.sha256(claim.encode("utf-8")).hexdigest()
