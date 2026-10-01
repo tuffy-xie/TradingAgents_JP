@@ -45,7 +45,123 @@ EXTERNAL = [
     "| 公司 | 分析师评级 | 强气（买入） | 机构看好 |",
     "Nomura maintains Buy rating",
     "野村證券 投資判断: 買い",
+    "| 外部来源 | 评级 |\n| --- | --- |\n| Nomura | Buy |",
+    "| 分析师共识 | 强劲买入 |",
+    "Yahoo 报道某券商维持 Buy",
+    "米系大手証券：強気（継続）",
+    "| External source | Signal |\n| --- | --- |\n| Broker research | Buy signal |",
+    "AI服务器需求是正面因素；EPS预期上调。",
+    "## 強気材料\nEPS 上方修正",
+    "## 買い材料 (Bulls)\nAIサーバー需要拡大",
+    "当前不建议买入。",
+    "Not a Buy signal.",
+    "| Signal | Status |\n| --- | --- |\n| Buy signal | 未确认 |",
+    "買い示唆ではない。",
 ]
+
+RECOMMENDATIONS = [
+    ("| 企业 (TEST.T) | EPS trend | 上方修正 | 🟢 買い示唆 |", "Buy"),
+    ("| 指标 | 状态 |\n| --- | --- |\n| EPS trend | 🟢 買い示唆 |", "Buy"),
+    ("| 状態 | 売り示唆 |", "Sell"),
+    ("| 判断 | 买入信号 |", "Buy"),
+    ("| 判断 | 卖出信号 |", "Sell"),
+    ("| Signal | Buy signal |", "Buy"),
+    ("| Signal | Sell signal |", "Sell"),
+    ("| Indicator | Signal |\n| --- | --- |\n| EPS trend | Buy |", "Buy"),
+    ("買い推奨", "Buy"), ("売り推奨", "Sell"),
+    ("買いの示唆", "Buy"), ("売りを推奨", "Sell"),
+    ("建议买入", "Buy"), ("建议卖出", "Sell"),
+]
+
+
+@pytest.mark.parametrize(("text", "rating"), RECOMMENDATIONS)
+def test_directional_recommendation_cell_has_row_claim_identity(text, rating):
+    claims = internal_rating_claims(text)
+    assert len(claims) == 1
+    assert claims[0].rating == rating
+    assert text[claims[0].start:claims[0].end] == claims[0].text
+    assert not internal_rating_claims(remove_internal_ratings(text))
+
+
+@pytest.mark.parametrize("field", ["news_report", "fundamentals_report", "investment_debate_state.judge_decision"])
+def test_signal_authority_is_enforced_across_nonportfolio_sections(field):
+    text = "| 指标 | 状态 |\n| --- | --- |\n| EPS trend | 🟢 買い示唆 |"
+    state = state_with(text, field)
+    accepted = output.build_canonical_final_state(state)
+    assert "買い示唆" not in accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    finding = next(x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING" and x.get("field") == field)
+    assert finding["original_claim"].strip() == "| EPS trend | 🟢 買い示唆 |"
+    assert finding["claim_sha256"] == hashlib.sha256(finding["original_claim"].encode()).hexdigest()
+    assert finding["detected_recommendation"] == "Buy"
+    assert finding["authority_owner"] == "Portfolio Manager"
+    assert finding["recommendation_semantics"] == "INVESTMENT_RECOMMENDATION"
+    assert finding["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert finding["accepted_artifact_sha256"] == accepted["final_output_contract"]["accepted_report_sha256"]
+
+
+@pytest.mark.parametrize("signal", ["🟢 買い示唆", "売り示唆", "Buy signal", "Sell signal", "买入信号", "卖出信号"])
+def test_final_contract_blocks_signal_table_when_upstream_is_bypassed(signal):
+    state = state_with(f"| 指标 | 状态 |\n| --- | --- |\n| EPS trend | {signal} |")
+    state["final_trade_decision"] = "Rating: Hold"
+    state["risk_debate_state"]["judge_decision"] = "Rating: Hold"
+    with patch.object(output, "_enforce_portfolio_rating_ownership", side_effect=lambda candidate: (candidate, [])):
+        accepted = output.build_canonical_final_state(state)
+    assert signal in accepted["accepted_report_markdown"]
+    contract = accepted["final_output_contract"]
+    assert contract["status"] == "BLOCKED"
+    assert contract["validation_dimensions"]["domain_authority_consistent"] is False
+    assert any(issue.startswith("CROSS_DOMAIN_AUTHORITY:INVESTMENT_RATING") for issue in contract["artifact_issues"])
+
+
+def test_signal_surviving_presentation_transform_cannot_close_audit():
+    accepted = output.build_canonical_final_state(state_with("| 指标 | 状态 |\n| --- | --- |\n| EPS trend | 🟢 買い示唆 |"))
+    audit = [x for x in accepted["evidence_audit"] if x.get("category") == "SECONDARY_INTERNAL_RATING"]
+    assert audit
+    tampered = accepted["accepted_report_markdown"] + "\n## 新闻附录\n| 指标 | 状态 |\n| --- | --- |\n| EPS trend | **買い示唆** |\n"
+    findings, issues = output._finalize_audit(audit, accepted, accepted_report=tampered, execution_allowed=False)
+    assert issues
+    assert all(x["resolution"] == "UNRESOLVED" for x in findings)
+
+
+def test_empty_source_column_does_not_authorize_external_recommendation():
+    text = "| 外部来源 | 评级 |\n| --- | --- |\n| — | Buy |"
+    assert internal_rating_claims(text)
+
+
+def test_attributed_table_does_not_exempt_later_internal_signal_table():
+    text = "| 外部来源 | 评级 |\n| --- | --- |\n| Nomura | Buy |\n\n| 指标 | 状态 |\n| --- | --- |\n| EPS trend | Buy signal |"
+    claims = internal_rating_claims(text)
+    assert len(claims) == 1
+    assert "EPS trend" in claims[0].text
+    assert "Nomura" in remove_internal_ratings(text)
+
+
+def test_external_rating_cannot_exempt_explicit_system_signal():
+    text = "某券商评级: Buy，但我们的卖出信号已经出现。"
+    claims = internal_rating_claims(text)
+    assert len(claims) == 1
+    assert claims[0].rating == "Sell"
+
+
+def test_signal_under_external_heading_still_respects_explicit_ownership():
+    text = "## Broker research\nOur Buy signal is confirmed."
+    assert internal_rating_claims(text)
+
+
+def test_recommendation_row_pruning_preserves_adjacent_valid_table_rows():
+    header = "| 指标 | 状态 |\n| --- | --- |\n"
+    valid = "| EPS trend | 上方修正 |\n"
+    signal = "| News。EPS | 🟢 買い示唆 |\n"
+    text = header + signal + valid
+    claims = internal_rating_claims(text)
+    assert len(claims) == 1
+    assert claims[0].text == signal.rstrip("\n")
+    assert remove_internal_ratings(text) == header + valid
+    accepted = output.build_canonical_final_state(state_with(text))
+    assert "| EPS trend | 上方修正 |" in accepted["accepted_report_markdown"]
+    assert "買い示唆" not in accepted["accepted_report_markdown"]
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
 
 
 @pytest.mark.parametrize("text", INTERNAL)

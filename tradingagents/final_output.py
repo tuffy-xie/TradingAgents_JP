@@ -55,7 +55,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "multilingual-market-rating-2026-09"
+_CONTRACT_SEMANTIC_REVISION = "news-recommendation-authority-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -869,6 +869,10 @@ def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[
                 "original_claim": claim.text,
                 "claim_sha256": hashlib.sha256(claim.text.encode("utf-8")).hexdigest(),
                 "rating": claim.rating,
+                "detected_recommendation": claim.rating,
+                "recommendation_semantics": claim.semantic_type,
+                "authority_owner": "Portfolio Manager",
+                "enforcement_action": "REMOVE_SECONDARY_INTERNAL_RECOMMENDATION",
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             })
