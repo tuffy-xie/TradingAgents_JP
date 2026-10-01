@@ -52,7 +52,7 @@ _OUR_RECOMMENDATION = re.compile(
     r"\b(?:we\s+recommend|our\s+(?:(?:buy|sell)\s+)?(?:rating|recommendation|signal)|i\s+recommend)\b", re.I
 )
 _EXTERNAL = re.compile(
-    r"券商|投行|証券会社|證券会社|証券|證券|アナリスト|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调)|"
+    r"券商|投行|証券会社|證券会社|証券|證券|アナリスト|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调|建议|推荐|认为)|"
     r"(?:位|名)分析师|评级分布|共识评级|\b(?:broker(?:age)?|consensus|"
     r"third[ -]party|according\s+to)\b|\banalysts?\b.{0,35}"
     r"\b(?:rate|rates|rated|maintain|maintains|recommend|recommendation|ratings?)\b", re.I
@@ -98,6 +98,59 @@ _NAMED_SOURCE_REPORT = re.compile(
 _SYSTEM_SOURCE = re.compile(
     r"\b(?:we|our|i|research|manager|analyst|trader|portfolio|system|report)\b", re.I
 )
+# Selection advice has an investment object and a normative predicate, but
+# need not name a rating. Attention to a business event is not stock selection.
+_INSTRUMENT = re.compile(r"股票|该股|標的|标的|证券|銘柄|この株|\b(?:stock|shares?|security|investment\s+target)\b", re.I)
+_INVESTOR_AUDIENCE = re.compile(r"投资者|投資家|\binvestors?\b", re.I)
+_ISSUER_TARGET = re.compile(r"公司|企业|企業|\bcompany\b", re.I)
+_SELECTION_OWNER = re.compile(r"本(?:系统|报告|分析师)|我们(?:认为|建议|推荐)|我(?:认为|建议|推荐)|"
+                              r"\b(?:we\s+(?:think|believe|recommend)|our\s+(?:view|recommendation))\b", re.I)
+_INVESTMENT_ADVICE = re.compile(
+    r"(?:值得|适合|適合|优先|優先|建议|建議|推荐|推薦)(?:投资者)?\s*(?:配置|投资(?!者)|投資(?!家)|买入|買入)|"
+    r"(?:投資|保有)(?:に適した|すべき)|"
+    r"\b(?:worth\s+investing\s+in|suitable\s+for\s+investment|"
+    r"(?:should|recommend(?:ed)?(?:\s+to)?)\s+(?:invest(?:ing)?\s+in|allocat(?:e|ing)\s+to))\b", re.I
+)
+_SELECTION_ADVICE = re.compile(
+    r"(?:值得|应当|應當|应该|應該|建议|建議|推荐|推薦)[^。！？；;|]{0,16}(?:关注|關注|选择|選擇)|"
+    r"(?:注目|選択)(?:すべき|に値する)|"
+    r"\b(?:worth\s+(?:watching|considering)|(?:should|recommend)\s+(?:watch|consider|select))\b", re.I
+)
+_MONITORING_OBJECT = re.compile(
+    r"(?:关注|關注|watch|consider)\s*(?:(?:该|这只|这家)?(?:股票|公司|标的|该股)(?:的|之)|"
+    r"(?:the\s+)?(?:stock|company)'s\s+)|"
+    r"(?:关注|關注|watch|consider)\s*(?:的|其|the\s+)?"
+    r"(?:风险|風險|订单|訂單|公告|指标|指標|业绩|業績|财报|事件|估值|盈利|risk|orders?|announcements?|indicators?|earnings|events?|valuation)", re.I
+)
+_ISSUER_ATTRIBUTE_SUBJECT = re.compile(
+    r"(?:股票|公司|标的|该股)(?:的|之)[^，,。！？；;|]{1,24}$|"
+    r"\b(?:stock|company)'s\s+[^,.;!?|]{1,40}$", re.I
+)
+_BUSINESS_INVESTMENT = re.compile(r"(?:配置|投资|投資|invest(?:ing)?\s+in|allocat(?:e|ing)\s+to)\s*"
+                                  r"(?:研发|研發|设备|設備|产能|產能|工厂|工廠|research|equipment|capacity|factories)", re.I)
+_ADVICE_HISTORY = re.compile(r"历史上|歷史上|曾经|曾經|当时|當時|\b(?:historically|previously|used\s+to)\b", re.I)
+_ADVICE_NEGATION = re.compile(r"(?:不|并非|並非|未|暂不|暫不|\b(?:not|never)\s*)$", re.I)
+
+
+def _selection_recommendation(text: str) -> bool:
+    for pattern in (_INVESTMENT_ADVICE, _SELECTION_ADVICE):
+        for match in pattern.finditer(text):
+            # Historical framing belongs to its proposition, not a sibling
+            # current recommendation after a discourse/condition separator.
+            prefix = re.split(r"[,，|]", text[:match.start()])[-1]
+            if _ADVICE_HISTORY.search(prefix):
+                continue
+            if _ADVICE_NEGATION.search(text[:match.start()].rstrip()):
+                continue
+            if pattern is _INVESTMENT_ADVICE and not _BUSINESS_INVESTMENT.search(match[0] + text[match.end():]):
+                return True
+            selection_object = (_INSTRUMENT.search(text) or
+                                (_INVESTOR_AUDIENCE.search(text) and _ISSUER_TARGET.search(text[match.end():])))
+            if (pattern is _SELECTION_ADVICE and selection_object
+                    and not _MONITORING_OBJECT.search(match[0] + text[match.end():])
+                    and not _ISSUER_ATTRIBUTE_SUBJECT.search(prefix)):
+                return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -105,7 +158,7 @@ class RatingClaim:
     start: int
     end: int
     text: str
-    rating: str
+    rating: str | None
     semantic_type: str = "INVESTMENT_RATING"
     from_rating: str | None = None
 
@@ -131,7 +184,7 @@ def normalize_technical_outlook_labels(text: str) -> str:
 
 def attributed_rating_fact(text: str) -> bool:
     """Clause-local reporting agency; not a blanket exception for an Agent."""
-    return bool(_VALUES.search(text) and (_EXTERNAL.search(text) or _named_external_report(text))
+    return bool((_VALUES.search(text) or _selection_recommendation(text)) and (_EXTERNAL.search(text) or _named_external_report(text))
                 and not internal_rating_claims(text))
 
 
@@ -178,7 +231,7 @@ def _recommendation_match(text: str):
 
 
 def internal_rating_claims(text: str) -> list[RatingClaim]:
-    """Find explicit internal rating assertions with original text offsets.
+    """Find internal rating/selection recommendations with original offsets.
 
     Formatting, labelled table cells and a label on the preceding line are
     supported. A rating word in ordinary risk prose is not a recommendation.
@@ -231,7 +284,8 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             cleaned = re.sub(r"^(?:[-+]\s+|\d+[.)、]\s*)", "", cleaned)
             match = _VALUES.search(cleaned)
             hold_stance = bool(_HOLD_STANCE.search(cleaned))
-            if not match and not hold_stance:
+            selection = _selection_recommendation(cleaned)
+            if not match and not hold_stance and not selection:
                 continue
             # Ownership includes transitions and evaluative holding advice,
             # not just labelled values and signal/status cells.
@@ -245,9 +299,9 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             transition = _transition_match(cleaned)
             if _RECOMMENDATION.search(cleaned) and recommendation is None:
                 continue
-            our = bool(_OUR_RECOMMENDATION.search(cleaned))
+            our = bool(_OUR_RECOMMENDATION.search(cleaned) or (selection and _SELECTION_OWNER.search(cleaned)))
             bare = bool(re.fullmatch(r"(?:buy|hold|sell|overweight|underweight|买入|持有|卖出|增持|减持)\s*(?:[（(][^）)]*[）)])?[。.!]?", cleaned, re.I))
-            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance):
+            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance or selection):
                 continue
             external = bool(_EXTERNAL.search(cleaned)) or _named_external_report(cleaned) or (
                 (external_context or table_external or pending_external)
@@ -264,17 +318,18 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 match = recommendation
             elif labelled:
                 match = _VALUES.search(cleaned, labelled.end())
-                if not match:
+                if not match and not selection:
                     continue
             elif recommendation:
                 match = recommendation
             elif asserted:
                 match = asserted
-            rating = "Hold" if hold_stance and not transition and not recommendation else _canonical_rating(match[0])
+            rating = ("Hold" if hold_stance and not transition and not recommendation else
+                      None if selection and not (transition or recommendation or asserted) else _canonical_rating(match[0]))
             claims.append(RatingClaim(
                 offset + unit.start(), offset + unit.end(), unit[0], rating,
                 "RATING_TRANSITION" if transition else (
-                    "INVESTMENT_RECOMMENDATION" if recommendation or hold_stance else "INVESTMENT_RATING"
+                    "INVESTMENT_RECOMMENDATION" if recommendation or hold_stance or selection else "INVESTMENT_RATING"
                 ), from_rating,
             ))
         if plain:
@@ -308,6 +363,6 @@ def artifact_rating_violations(text: str, portfolio_rating: str | None) -> list[
     for claim in internal_rating_claims(text):
         wrapper = next((m[1] for m in reversed(boundaries) if m.start() < claim.start), "")
         portfolio = bool(re.fullmatch(r"(?:[IVX]+\.\s*)?投资组合经理结论", wrapper))
-        if not portfolio or claim.rating != portfolio_rating:
+        if not portfolio or (claim.rating is not None and claim.rating != portfolio_rating):
             violations.append(claim)
     return violations

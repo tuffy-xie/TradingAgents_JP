@@ -126,17 +126,58 @@ _SOURCE_EVENT_PROBABILITY = re.compile(
     r"\*\*(?P<question>[^\n]+?)\*\*\s*[—-]\s*(?P<outcome>Yes|No)\s+"
     r"(?P<probability>\d+(?:\.\d+)?)%", re.I
 )
+_REGIME_CERTAINTY = re.compile(
+    r"(?:共识|共識|コンセンサス|\bconsensus\b)[^。！？；;|]{0,16}(?:稳固|穩固|确定|確定|确立|確立|強固|solid|firm|confirmed|established)|"
+    r"(?:已经|已經|已|すでに)[^。！？；;|]{0,12}(?:确认|確認|实现|實現)|"
+    r"\b(?:is|has\s+been)\s+(?:now\s+)?(?:confirmed|achieved|established)\b", re.I
+)
+_REGIME_MODAL = re.compile(r"可能|有望|或许|或許|预计|預計|尚未|未能|不能|无法|無法|若|如果|\b(?:may|might|could|expected|if|not|cannot)\b", re.I)
+_REGIME_ATTRIBUTION = re.compile(r"(?:报道|報道|报告|報告|称|指出|表示|による|と報じ|と述べ)|"
+                                  r"\b(?:reports?|says?|according\s+to)\b", re.I)
+
+
+def _unsupported_regime_certainty(state: Mapping[str, Any], clause: str) -> bool:
+    """A low probability of one event cannot prove a different regime/consensus.
+
+    Research possibilities are not confirmations. Attributed confirmations
+    require a verified source assertion, not a prediction-market question.
+    """
+    certainty = _REGIME_CERTAINTY.search(clause)
+    regimes = [(match.start(), pattern) for pattern in _ECONOMIC_REGIMES.values()
+               for match in pattern.finditer(clause)]
+    if not regimes or not certainty or _REGIME_MODAL.search(clause):
+        return False
+    # An editorial heading may name recession odds then assert a different
+    # regime. Bind certainty to its nearest subject, not any regime in a line.
+    preceding = [item for item in regimes if item[0] < certainty.start()]
+    _, asserted = max(preceding, key=lambda item: item[0]) if preceding else min(regimes, key=lambda item: item[0])
+    if _REGIME_ATTRIBUTION.search(clause):
+        for evidence in state.get("evidence_registry") or []:
+            if not isinstance(evidence, Mapping) or evidence.get("verification_status") != "VERIFIED_TOOL_OUTPUT":
+                continue
+            # Prediction questions and numerical odds are not confirmed states.
+            if evidence.get("source") == "get_prediction_markets":
+                continue
+            for statement in re.split(r"[\n。！？；;]", str(evidence.get("value") or "")):
+                if (_REGIME_CERTAINTY.search(statement) and not _REGIME_MODAL.search(statement)
+                        and asserted.search(statement)
+                        and all(not pattern.search(clause) or pattern.search(statement)
+                                for pattern in _EVENT_JURISDICTIONS.values())):
+                    return False
+    return True
 
 
 def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
-    """Ground quantified regime probabilities in their own source event.
+    """Ground regime probabilities and confirmations in their own source event.
 
     This is deliberately narrower than arbitrary macro-language translation:
-    only named economic-regime assertions are classified. Unquantified research
-    opinions and other properly supported macro numbers remain unchanged.
+    only named economic-regime assertions are classified. Unconfirmed research
+    possibilities and other properly supported macro numbers remain unchanged.
     """
     probability = _EVENT_PROBABILITY.search(clause)
     regime = next((key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(clause)), None)
+    if _unsupported_regime_certainty(state, clause):
+        return True
     if not probability or not regime:
         return False
     jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items() if pattern.search(clause)), None)
@@ -289,7 +330,7 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         )
         return replacement
 
-    def clean_clause(clause: str) -> str:
+    def clean_clause(clause: str, *, heading: bool = False) -> str:
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
             return resolve_claim(
                 clause,
@@ -351,10 +392,18 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "【关键数据门控：当前季度证据不足，暂不发布当前实绩判断。】",
             )
         if probability_event_gate_violation(state, clause):
+            replacement = "该定量概率未能与来源事件逐项对应，暂不纳入本次判断。"
+            if _unsupported_regime_certainty(state, clause):
+                replacement = "来源证据不足以确认该宏观情景或共识，暂不纳入本次判断。"
+                if heading:
+                    # Retain a factual heading subject, not its unsupported
+                    # editorial conclusion. No guessed replacement regime.
+                    subject = re.split(r"——|—|--|[:：]", clause, maxsplit=1)[0].strip()
+                    replacement = subject if subject != clause.strip() and not probability_event_gate_violation(state, subject) else "宏观情景证据"
             return resolve_claim(
                 clause,
                 "probability_event_mismatch",
-                "该定量概率未能与来源事件逐项对应，暂不纳入本次判断。",
+                replacement,
             )
         if _unit_mismatch(clause, state):
             return resolve_claim(
@@ -626,11 +675,16 @@ def _clean_line(line: str, clean_clause) -> str:
         return (
             heading.group("heading")
             + heading.group("ordinal")
-            + clean_clause(heading.group("body"))
+            + clean_clause(heading.group("body"), heading=True)
             + ending
         )
-    parts = re.split(r"(?<=[。！？；;])", line)
-    return "".join(clean_clause(part) for part in parts if part)
+    plain_heading = re.match(r"^(#{1,6}\s+)(.*)$", content)
+    if plain_heading:
+        return plain_heading[1] + clean_clause(plain_heading[2], heading=True) + ending
+    parts = re.split(r"(?<=[。！？；;])", content)
+    cleaned = "".join(clean_clause(part) for part in parts if part)
+    # A removed table row must not leave a blank line terminating its table.
+    return cleaned + ending if cleaned or not content.lstrip().startswith("|") else ""
 
 
 def _sanitize_legacy_enforcement_artifacts(text: str) -> str:

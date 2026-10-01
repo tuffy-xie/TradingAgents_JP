@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "predicate-rating-financial-closure-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "investor-selection-regime-closure-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -936,7 +936,7 @@ def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[
                 "original_claim": claim.text,
                 "claim_sha256": hashlib.sha256(claim.text.encode("utf-8")).hexdigest(),
                 "rating": claim.rating,
-                "detected_recommendation": claim.rating,
+                "detected_recommendation": claim.rating or claim.semantic_type,
                 "detected_from_rating": claim.from_rating,
                 "detected_target_rating": claim.rating,
                 "recommendation_semantics": claim.semantic_type,
@@ -2676,7 +2676,9 @@ def _finalize_audit(
             # Re-scan the exact artifact by ownership and canonical rating,
             # not literal equality of an Agent field before composition.
             survivors = _rating_artifact_claims(state, accepted_report)
-            surviving = any(claim.rating == entry.get("rating") for claim in survivors)
+            surviving = any(claim.rating == entry.get("rating")
+                            and (claim.rating is not None or claim.semantic_type == entry.get("recommendation_semantics"))
+                            for claim in survivors)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
             entry["resolution_basis"] = "SECONDARY_RATING_AUTHORITY_PRESENT" if surviving else "SECONDARY_RATING_AUTHORITY_ABSENT_FROM_EXACT_ARTIFACT"
