@@ -7,7 +7,7 @@ canonical acceptance collects and removes unapproved plans; Audit proves claim
 closure; renderers display the accepted artifact. No provider, agent topology,
 financial authority or US execution policy is changed by this revision.
 
-The v5 semantic revision is `portfolio-rating-authority-2026-09`.
+The v5 semantic revision is `rating-transition-authority-2026-10`.
 
 ## User-facing investment rating ownership
 
@@ -23,6 +23,27 @@ broker ratings and consensus distributions remain third-party facts, not
 internal recommendations. Attribution is clause/row-local; a broker citation
 cannot exempt a sibling internal recommendation. Label/value lines, headings,
 table cells and first-person recommendations share this policy.
+
+Rating transitions also assign investment authority. A from-rating linked to a
+target-rating (arrow or change/upgrade/downgrade relation) is an internal rating
+proposition regardless of its table heading or future condition. Reassessment
+without a specified target remains research input. Explicitly attributed broker
+transitions and consensus remain external facts. Named-source reporting verbs
+provide attribution without a broker-name allowlist; internal Agent role names
+cannot claim that exemption.
+
+Evaluative advice to hold an asset (e.g. worth holding or maintaining a position
+as the optimal strategy) is a Hold recommendation, not merely a positive factor.
+General risk/quality assessments and descriptive policy status are not investment
+recommendations. The Research Manager still produces an upstream investment plan
+for the Trader; only its published user-facing recommendation propositions are
+removed. Its raw plan and debate remain in the technical log.
+
+Transition findings use the existing `SECONDARY_INTERNAL_RATING` category and
+retain the original row/claim hash, from-rating and target-rating, Portfolio
+ownership, enforcement and exact accepted-artifact digest. Presentation changes
+cannot close a surviving transition. The exact-artifact scanner independently
+blocks a secondary target even if all upstream pruning was bypassed.
 
 Each removal has its original claim, SHA, rating and field in Audit. Closure
 rechecks secondary rating ownership against the exact composed artifact;

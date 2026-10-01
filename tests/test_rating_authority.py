@@ -73,6 +73,99 @@ RECOMMENDATIONS = [
     ("建议买入", "Buy"), ("建议卖出", "Sell"),
 ]
 
+TRANSITIONS = [
+    ("Hold → Overweight", "Hold", "Overweight"),
+    ("Hold -> Buy", "Hold", "Buy"),
+    ("Buy ⇒ Sell", "Buy", "Sell"),
+    ("Upgrade to Buy", None, "Buy"),
+    ("Downgrade to Sell", None, "Sell"),
+    ("上调至增持", None, "Overweight"),
+    ("评级调整为买入", None, "Buy"),
+    ("買いへ変更", None, "Buy"),
+    ("Sellへ引き下げ", None, "Sell"),
+    ("Overweightへ引き上げ", None, "Overweight"),
+]
+
+
+@pytest.mark.parametrize(("transition", "origin", "target"), TRANSITIONS)
+@pytest.mark.parametrize("formatting", ["{}", "若订单落地：{}", "| 事件 | 评级调整方向 |\n| --- | --- |\n| 订单落地 | **{}** |"])
+def test_rating_transition_has_target_ownership_even_when_hypothetical(transition, origin, target, formatting):
+    text = formatting.format(transition)
+    claims = internal_rating_claims(text)
+    assert len(claims) == 1
+    claim = claims[0]
+    assert claim.semantic_type == "RATING_TRANSITION"
+    assert (claim.from_rating, claim.rating) == (origin, target)
+    assert text[claim.start:claim.end] == claim.text
+    assert not internal_rating_claims(remove_internal_ratings(text))
+
+
+@pytest.mark.parametrize("text", [
+    "若订单落地，则重新评估。", "若 MACD 发生变化，则重新评估。",
+    "Nomura upgraded the stock from Hold to Buy.",
+    "Example Capital downgraded the stock to Sell.",
+    "分析师一致预期为 Buy。", "野村証券はOverweightへ引き上げ。",
+    "| 外部来源 | 评级变化 |\n| --- | --- |\n| Sample Research | Hold → Buy |",
+    "评级下调至Hold会增加风险。", "Downgrade to Hold would increase risk.",
+    "资产质量稳健，但事件风险偏高。", "BOJ大概率维持现状。",
+])
+def test_reassessment_external_transition_and_risk_description_remain(text):
+    assert not internal_rating_claims(text)
+    assert remove_internal_ratings(text) == text
+
+
+@pytest.mark.parametrize("text", [
+    '是"值得持有等待"的资产：维持现状是最优策略。',
+    "该股票值得持有。", "The stock is worth holding.",
+    "Our Research Manager upgraded the stock to Buy.",
+    "Research Manager upgraded the stock from Hold to Buy.",
+])
+def test_internal_investment_stance_cannot_borrow_named_source_attribution(text):
+    assert internal_rating_claims(text)
+
+
+def test_transition_audit_preserves_origin_target_and_exact_artifact_lineage():
+    text = "| 事件 | 评级调整方向 |\n| --- | --- |\n| 订单落地 | Hold → Overweight |"
+    accepted = output.build_canonical_final_state(state_with(text, "investment_debate_state.judge_decision"))
+    assert accepted["final_output_contract"]["status"] == "FINALIZED"
+    findings = [x for x in accepted["evidence_audit"] if x.get("recommendation_semantics") == "RATING_TRANSITION"]
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["agent"] == "Research Manager"
+    assert finding["detected_from_rating"] == "Hold"
+    assert finding["detected_target_rating"] == "Overweight"
+    assert finding["claim_sha256"] == hashlib.sha256(finding["original_claim"].encode()).hexdigest()
+    assert finding["resolution"] == "CLAIM_REMOVED_OR_REPLACED"
+    assert finding["authority_owner"] == "Portfolio Manager"
+    assert finding["accepted_artifact_sha256"] == accepted["final_output_contract"]["accepted_report_sha256"]
+    assert "Hold → Overweight" not in accepted["accepted_report_markdown"]
+    tampered = accepted["accepted_report_markdown"] + "\n## 研究附录\n| 未来条件 | 评级变化 |\n| --- | --- |\n| 订单落地 | **HOLD -> Overweight** |\n"
+    closed, issues = output._finalize_audit(findings, accepted, accepted_report=tampered, execution_allowed=False)
+    assert issues
+    assert closed[0]["resolution"] == "UNRESOLVED"
+
+
+@pytest.mark.parametrize("transition", [x[0] for x in TRANSITIONS])
+def test_exact_final_artifact_blocks_future_transition_without_upstream_pruning(transition):
+    text = f"| 未来条件 | 评级调整方向 |\n| --- | --- |\n| 订单落地 | {transition} |"
+    compose = output.compose_user_report_markdown
+    # Inject after *all* field pruning, so the exact-artifact scanner alone must
+    # defend against an upstream miss (including execution filtering).
+    with patch.object(output, "compose_user_report_markdown", side_effect=lambda state: compose(state) + "\n## 研究附录\n" + text):
+        accepted = output.build_canonical_final_state(state_with("风险偏高。"))
+    contract = accepted["final_output_contract"]
+    assert transition in accepted["accepted_report_markdown"]
+    assert contract["status"] == "BLOCKED"
+    assert not contract["validation_dimensions"]["domain_authority_consistent"]
+    assert any(x.startswith("CROSS_DOMAIN_AUTHORITY:INVESTMENT_RATING") for x in contract["artifact_issues"])
+
+
+def test_transition_pruning_retains_monitoring_and_external_sibling_rows():
+    text = "| 事件 | 评级调整方向 |\n| --- | --- |\n| 订单落地 | Hold → Overweight |\n| 盈利改善 | 需要重新评估 |"
+    result = remove_internal_ratings(text)
+    assert "需要重新评估" in result
+    assert "Overweight" not in result
+
 
 @pytest.mark.parametrize(("text", "rating"), RECOMMENDATIONS)
 def test_directional_recommendation_cell_has_row_claim_identity(text, rating):

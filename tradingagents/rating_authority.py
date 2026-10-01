@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_VALUES = re.compile(r"\b(overweight|underweight|buy|hold|sell)\b|买入|增持|持有|减持|卖出|買い|売り", re.I)
+_VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り", re.I)
 _CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell"}
 _LABEL = re.compile(
     r"(?:评级|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
@@ -56,6 +56,31 @@ _EXTERNAL_HEADING = re.compile(
 )
 _OWN_LABEL = re.compile(r"(?:综合|最终|本系统|本报告)(?:投资)?(?:评级|建议)|\b(?:our|overall|final)\s+(?:rating|recommendation)\b", re.I)
 
+# Transitions are rating-ownership propositions, even in future monitoring
+# context. Their relation (not an exact header or sentence) supplies ownership.
+_TRANSITION_LINK = re.compile(r"^\s*(?:→|⇒|⟶|->|=>|to|至|到|から)\s*$", re.I)
+_TRANSITION_BEFORE = re.compile(
+    r"(?:\b(?:upgrad(?:e|ed|ing)|downgrad(?:e|ed|ing)|rais(?:e|ed|ing)|lower(?:ed|ing)?)\b"
+    r"[^。！？；;|]*\bto\s+|(?:上调|下调|调升|调降|调整|变更|変更|引き上げ|引き下げ)"
+    r"(?:评级|評級|評価|判断)?\s*(?:为|至|到|成|へ|に)\s*)$", re.I
+)
+_TRANSITION_AFTER = re.compile(r"^\s*(?:へ|に)\s*(?:変更|転換|引き上げ|引き下げ)")
+_TRANSITION_CONSEQUENCE = re.compile(
+    r"^\s*(?:会|将|可能)(?:增加|降低|加大|减少)风险|"
+    r"^\s*\b(?:would|could)\s+(?:increase|reduce|raise|lower)\s+risk\b", re.I
+)
+_HOLD_STANCE = re.compile(
+    r"(?:值得|建议|推荐)[\s\"“”]*持有|持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
+    r"\b(?:worth\s+holding|recommend\s+holding|maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
+)
+_NAMED_SOURCE_REPORT = re.compile(
+    r"(?:^|[：:]\s*)(?P<source>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})\s+"
+    r"(?:upgraded|downgraded|maintains?|raised|lowered)\b"
+)
+_SYSTEM_SOURCE = re.compile(
+    r"\b(?:we|our|i|research|manager|analyst|trader|portfolio|system|report)\b", re.I
+)
+
 
 @dataclass(frozen=True)
 class RatingClaim:
@@ -64,6 +89,42 @@ class RatingClaim:
     text: str
     rating: str
     semantic_type: str = "INVESTMENT_RATING"
+    from_rating: str | None = None
+
+
+def _canonical_rating(value: str) -> str:
+    return _CANONICAL.get(value, value.capitalize())
+
+
+def _transition_match(text: str):
+    """Extract a rating target and optional origin from their relation.
+
+    No current/future exemption: specifying a target rating is distinct from
+    describing an event that might require reassessment without a rating target.
+    """
+    values = list(_VALUES.finditer(text))
+    for origin, target in zip(values, values[1:], strict=False):
+        if _TRANSITION_LINK.fullmatch(text[origin.end():target.start()]):
+            return target, _canonical_rating(origin[0])
+    for target in values:
+        if _TRANSITION_BEFORE.search(text[:target.start()]) or _TRANSITION_AFTER.search(text[target.end():]):
+            # Here a rating event is the subject of a risk assessment, not a
+            # prescribed target. Future target instructions have no such waiver.
+            if _TRANSITION_CONSEQUENCE.search(text[target.end():]):
+                continue
+            origin = next((v for v in reversed(values) if v.end() < target.start()), None)
+            return target, _canonical_rating(origin[0]) if origin else None
+    return None
+
+
+def _named_external_report(text: str) -> bool:
+    """A named reporting source owns its rating fact, not the internal Agent.
+
+    This is a subject/reporting-verb relation, not a broker-name allowlist.
+    Internal role names and explicit first-person ownership cannot qualify.
+    """
+    match = _NAMED_SOURCE_REPORT.search(text.strip(" |"))
+    return bool(match and not _SYSTEM_SOURCE.search(match["source"]))
 
 
 def _recommendation_match(text: str):
@@ -130,19 +191,21 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             cleaned = re.sub(r"[*`#_]", "", unit[0]).strip()
             cleaned = re.sub(r"^(?:[-+]\s+|\d+[.)、]\s*)", "", cleaned)
             match = _VALUES.search(cleaned)
-            if not match:
+            hold_stance = bool(_HOLD_STANCE.search(cleaned))
+            if not match and not hold_stance:
                 continue
-            # Require an assertion of rating ownership, not e.g. 'downgrade to
-            # Hold would increase risk' or a passing mention of the word Buy.
+            # Ownership includes transitions and evaluative holding advice,
+            # not just labelled values and signal/status cells.
             labelled = _LABEL.search(cleaned)
             recommendation = _recommendation_match(cleaned)
+            transition = _transition_match(cleaned)
             if _RECOMMENDATION.search(cleaned) and recommendation is None:
                 continue
             our = bool(_OUR_RECOMMENDATION.search(cleaned))
             bare = bool(re.fullmatch(r"(?:buy|hold|sell|overweight|underweight|买入|持有|卖出|增持|减持)\s*(?:[（(][^）)]*[）)])?[。.!]?", cleaned, re.I))
-            if not (labelled or our or pending_label or bare or table_rating or recommendation):
+            if not (labelled or our or pending_label or bare or table_rating or recommendation or transition or hold_stance):
                 continue
-            external = bool(_EXTERNAL.search(cleaned)) or (
+            external = bool(_EXTERNAL.search(cleaned)) or _named_external_report(cleaned) or (
                 (external_context or table_external or pending_external)
                 and not _OWN_LABEL.search(cleaned)
             )
@@ -150,7 +213,10 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 continue
             # Explicit system recommendations take precedence over quoted
             # broker values; otherwise use the value belonging to the label.
-            if recommendation and our:
+            from_rating = None
+            if transition and not (recommendation and our):
+                match, from_rating = transition
+            elif recommendation and our:
                 match = recommendation
             elif labelled:
                 match = _VALUES.search(cleaned, labelled.end())
@@ -158,11 +224,12 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                     continue
             elif recommendation:
                 match = recommendation
-            value = match[0]
-            rating = _CANONICAL.get(value, value.capitalize())
+            rating = "Hold" if hold_stance and not transition and not recommendation else _canonical_rating(match[0])
             claims.append(RatingClaim(
                 offset + unit.start(), offset + unit.end(), unit[0], rating,
-                "INVESTMENT_RECOMMENDATION" if recommendation else "INVESTMENT_RATING",
+                "RATING_TRANSITION" if transition else (
+                    "INVESTMENT_RECOMMENDATION" if recommendation or hold_stance else "INVESTMENT_RATING"
+                ), from_rating,
             ))
         if plain:
             pending_label = bool(_LABEL_HEADING.fullmatch(plain.rstrip(":：")))
