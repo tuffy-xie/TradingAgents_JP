@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "investor-selection-regime-closure-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "execution-strategy-presentation-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -113,7 +113,8 @@ _EXECUTION_INSTRUCTIONS = re.compile(
 _EXECUTION_ACTION = re.compile(
     r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
     r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
-    r"了结|了結|退出|布局|逢高减码|逢高減碼|"
+    r"了结|了結|退出|布局|配置|对冲|對沖|高(?:抛|賣|卖)低(?:吸|買|买)|逢高减码|逢高減碼|"
+    r"hedg(?:e|ing)|buy\s+low\s+and\s+sell\s+high|"
     r"调整仓位|調整倉位|调整敞口|調整敞口|"
     r"open\s+(?:a\s+)?position|increase\s+(?:the\s+)?position|"
     r"reduce\s+(?:the\s+)?position|close\s+(?:the\s+)?position|"
@@ -124,12 +125,18 @@ _EXECUTION_ACTION = re.compile(
 _EXECUTION_DIRECTIVE_CONTEXT = re.compile(
     r"(?:建议|建議|应|應|应该|應該|宜|可(?:以)?|考虑|考慮|等待[^。；;\n]{0,20}后|"
     r"确认[^。；;\n]{0,20}后|突破[^。；;\n]{0,20}后|跌破[^。；;\n]{0,20}后|"
-    r"逢低|逢高|分批|积极|積極|现有持仓|現有持倉|未投资者|未投資者|"
-    r"目标水平|目標水平|策略|操作|计划|計畫|plan|recommend|should|consider|if\b)",
+    r"逢低|逢高|分批|分层|分層|支持|积极|積極|现有持仓|現有持倉|未投资者|未投資者|"
+    r"目标水平|目標水平|策略|框架|操作|计划|計畫|plan|recommend|should|consider|if\b)",
     re.I,
 )
+_EXECUTION_OPPORTUNITY = re.compile(
+    r"(?:买入|買入|卖出|賣出|建仓|建倉|加仓|加倉|配置|对冲|對沖)\s*(?:良机|机会|機會)|"
+    r"\b(?:opportunity|opportunities)\s+to\s+(?:buy|sell|hedge|enter|add)\b",
+    re.I,
+)
+_COMPOUND_TRADE_STRATEGY = re.compile(r"高(?:抛|賣|卖)低(?:吸|買|买)|\bbuy\s+low\s+and\s+sell\s+high\b", re.I)
 _EXECUTION_PROHIBITION = re.compile(
-    r"(?:不(?:建议|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
+    r"(?:不(?:建议|采用|實施|实施|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
     r"加仓|加倉|建仓|建倉|减仓|減倉|做空|执行|提供)|"
     r"暂不|暫不|禁止|不得|避免|没有获准|未获批准|尚未获准|"
     r"(?:无法|無法|不能|未能)(?:支持|提供|批准|授權|授权)|"
@@ -1097,7 +1104,7 @@ def _clean_empty_markdown(text: str) -> str:
             bold_heading = (
                 line.strip().startswith("**")
                 and line.strip().endswith("**")
-                and not re.search(r"[。；;.!?：:]", label)
+                and not re.search(r"[。；;.!?：:]", re.sub(r"^\d{1,2}[.)]\s+", "", label))
             )
             if heading is not None or lead_in or bold_heading:
                 next_index = next(
@@ -1527,6 +1534,7 @@ def normalize_markdown_structure(text: str) -> str:
     lines = _normalize_heading_numbers(lines)
     lines = _normalize_heading_count_claims(lines)
     lines = _normalize_numbered_lists(lines)
+    lines = _normalize_bold_numbered_leadins(lines)
     lines = _normalize_inline_parenthetical_numbers(lines)
     lines = _normalize_circled_lists(lines)
     lines = _remove_orphan_structures(lines)
@@ -1548,11 +1556,49 @@ def normalize_markdown_structure(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
 
 
+def _normalize_bold_numbered_leadins(lines: list[str]) -> list[str]:
+    """Treat standalone emphasized list labels as a sequence, not fact values."""
+    output: list[str] = []
+    number = 0
+    for line in lines:
+        if _heading_level(line) is not None:
+            number = 0
+        match = re.fullmatch(r"(\s*)\*\*(\d{1,2})[.)]\s+([^*\n]+)\*\*(\n?)", line)
+        if match:
+            number += 1
+            line = f"{match.group(1)}**{number}. {match.group(3)}**{match.group(4)}"
+        output.append(line)
+    return output
+
+
 def _strip_inert_markdown_inside_fences(lines: list[str]) -> list[str]:
-    """Remove presentation markers that a fenced block would print literally."""
+    """Render explicitly declared Markdown; keep genuine code blocks inert.
+
+    Unwrap only a complete matching fence. An incomplete block must remain
+    visible to the structural validator rather than silently gaining validity.
+    """
+    expanded: list[str] = []
+    index = 0
+    while index < len(lines):
+        opening = re.match(r"^\s*(`{3,}|~{3,})([^\n]*)$", lines[index])
+        if opening:
+            fence = opening.group(1)
+            closing = next((end for end in range(index + 1, len(lines))
+                            if re.fullmatch(rf"\s*{re.escape(fence[0])}{{{len(fence)},}}\s*", lines[end])), None)
+            if closing is not None:
+                if opening.group(2).strip().lower() in {"markdown", "md"}:
+                    expanded.extend(lines[index + 1:closing])
+                else:
+                    expanded.extend(lines[index:closing + 1])
+                index = closing + 1
+                continue
+            expanded.extend(lines[index:])
+            break
+        expanded.append(lines[index])
+        index += 1
     output: list[str] = []
     fence: str | None = None
-    for line in lines:
+    for line in expanded:
         marker = re.match(r"^\s*(`{3,}|~{3,})", line)
         if marker:
             token = marker.group(1)[0]
@@ -2093,6 +2139,8 @@ def _execution_clause_violation(text: str) -> str | None:
         return None
     if _EXECUTION_INSTRUCTIONS.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    if _COMPOUND_TRADE_STRATEGY.search(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
     imperative = _ENGLISH_TRADE_ACTION.match(plain)
     if imperative and re.match(
         r"\s+(?:the|a|an|your|this|that|shares|stock|position|at|below|above)\b",
@@ -2103,6 +2151,7 @@ def _execution_clause_violation(text: str) -> str | None:
         _EXECUTION_DIRECTIVE_CONTEXT.search(plain)
         or _CONDITIONAL_EXECUTION.search(plain)
         or _ACTIONABLE_PRICE.search(plain)
+        or _EXECUTION_OPPORTUNITY.search(plain)
     ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
@@ -2120,6 +2169,13 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
     Likewise a prohibition never carries across contrast or clause boundaries.
     """
     before = re.split(r"[，,。；;!?！？]|→|⇒|=>|->", text[:action.start()])[-1]
+    after = text[action.end():]
+    # An opportunity is an authorization only when asserted, not withheld or
+    # still awaiting confirmation. This scope belongs to this action/object.
+    if re.search(r"(?:不存在|没有|尚无|未有|\bno\b)\s*$", before, re.I):
+        return True
+    if re.match(r"\s*(?:良机|机会|機會)\s*(?:尚未|未|没有|不)[^。；;]{0,12}(?:确认|確認|成立|出现|出現)", after):
+        return True
     prohibitions = list(_EXECUTION_PROHIBITION.finditer(before))
     if prohibitions:
         # A later modal/coordination starts a new authorization scope. A ban
@@ -2127,13 +2183,13 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
         tail = before[prohibitions[-1].end():]
         if not re.search(r"(?:但|且|并|而|可(?:以)?|应当|应该|建议|\b(?:but|and|then|can|may|should|recommend)\b)", tail, re.I):
             return True
-    if action.group() == "布局":
+    if action.group().casefold() in {"布局", "配置", "对冲", "對沖", "hedge", "hedging"}:
         # Business deployment has a different object from investor exposure.
         # Keep action-local negation above, and let price/portfolio context
         # take precedence over an incidental business noun.
         nearby = text[max(0, action.start() - 24):action.end() + 24]
-        business = re.search(r"业务|产业|产品|研发|战略|5G|6G|海外市场|business|product|R&D", nearby, re.I)
-        trading = re.search(r"股价|回调|支撑|阻力|价位|仓位|敞口|position|exposure", nearby, re.I)
+        business = re.search(r"业务|产业|产品|研发|战略|生产设备|外汇|5G|6G|海外市场|business|product|R&D|currency|foreign.exchange", nearby, re.I)
+        trading = re.search(r"股价|股票|该股|標的|标的|投资者|逢低|逢高|回调|支撑|阻力|价位|仓位|敞口|position|exposure", nearby, re.I)
         if business and not trading:
             return True
     subject = re.search(r"(?:公司|企业|企業|发行人|發行人|\b(?:company|issuer|firm)\b)", before, re.I)
@@ -2144,7 +2200,7 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
     )
     if subject and corporate_target:
         return True
-    historical = re.search(r"(?:历史上|歷史上|此前|去年|曾经|曾經|\bhistorically\b|\blast year\b)", before, re.I)
+    historical = re.search(r"(?:历史上|歷史上|此前|去年|曾经|曾經|曾|\bhistorically\b|\blast year\b)", before, re.I)
     return bool(historical and not re.search(r"(?:建议|建議|应当|recommend|should)", before, re.I))
 
 
@@ -2170,7 +2226,7 @@ def _prune_unapproved_execution(text: str) -> str:
         # Remove complete clauses, retaining independent directional judgments.
         clauses = re.split(r"(?<=[。！？；;])", line)
         lines.append("".join(clause for clause in clauses if not _execution_violation(clause)))
-    return _fold_empty_sections("\n".join(lines))
+    return _clean_empty_markdown(_fold_empty_sections("\n".join(lines)))
 
 
 def _apply_validated_execution(state: dict[str, Any]) -> dict[str, Any]:
@@ -2250,7 +2306,10 @@ def _is_execution_heading(heading: str) -> bool:
         return False
     if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", folded):
         return False
-    return _EXECUTION_HEADING.search(folded) is not None
+    # A strategy-bearing title owns its subordinate trigger/parameter context.
+    # Dropping only the title would orphan conditional plan fragments and can
+    # make a hypothetical price trigger read like a current market assertion.
+    return _EXECUTION_HEADING.search(folded) is not None or _execution_clause_violation(folded) is not None
 
 
 def _strip_execution_plan(text: str, *, include_target: bool) -> str:
@@ -2289,6 +2348,8 @@ def _publicize_inline_text(text: str) -> str:
     text = text.replace("DATA UNAVAILABLE", "数据不可用")
     for value, label in (("true", "可用于当前判断"), ("false", "不可用于当前判断")):
         text = re.sub(rf"\bcurrent_eligible\s*=\s*{value}\b", label, text, flags=re.I)
+    text = _INTERNAL_ENGINEERING_ASSIGNMENT.sub("", text)
+    text = re.sub(r"[（(][\s,，;；/]*[）)]", "", text)
     # All-tool parentheses are omitted; standalone identifiers retain a source label.
     text = re.sub(
         r"[（(]\s*(?:(?:get|fetch|load|resolve|retrieve|query|search)_[a-z][a-z0-9_]*\s*[、,，/]?\s*)+[）)]",

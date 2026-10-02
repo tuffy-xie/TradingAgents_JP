@@ -45,6 +45,11 @@ _PRICE_INFERENCE = re.compile(
     r"following\s+the\s+(?:news|announcement))\b)",
     re.I,
 )
+_CAPITAL_FLOW = re.compile(
+    r"(?:机构|機構|市场|市場)?资金[^。；;\n]{0,8}(?:流入|流出)|"
+    r"\b(?:institutional\s+)?(?:capital|fund)\s+(?:inflows?|outflows?)\b", re.I,
+)
+_POSSIBLE_FLOW = re.compile(r"可能|有望|预计|預計|未来|未來|\b(?:may|might|could|future|expected)\b", re.I)
 # Market claims are propositions, not language-specific whole phrases: an
 # issuer-price/technical subject plus a directional state and an asserted
 # interpretation needs current Market authority in any Agent section.
@@ -178,6 +183,8 @@ def _claim_type(text: str, *, analysis_as_of: str) -> str | None:
         return None
     if _DATED_SOURCE_HEADLINE.search(text.strip()):
         return None
+    if _CAPITAL_FLOW.search(plain) and _PRICE_INFERENCE.search(plain) and not _POSSIBLE_FLOW.search(plain):
+        return "CURRENT_PRICE_OR_MOMENTUM_ASSERTION"
     if (
         (_MARKET_SUBJECT.search(plain) or _IMPLICIT_MARKET_STATE.search(plain))
         and _MARKET_DIRECTION.search(plain)

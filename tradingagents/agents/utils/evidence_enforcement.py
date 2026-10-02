@@ -129,7 +129,9 @@ _SOURCE_EVENT_PROBABILITY = re.compile(
 _REGIME_CERTAINTY = re.compile(
     r"(?:共识|共識|コンセンサス|\bconsensus\b)[^。！？；;|]{0,16}(?:稳固|穩固|确定|確定|确立|確立|強固|solid|firm|confirmed|established)|"
     r"(?:已经|已經|已|すでに)[^。！？；;|]{0,12}(?:确认|確認|实现|實現)|"
-    r"\b(?:is|has\s+been)\s+(?:now\s+)?(?:confirmed|achieved|established)\b", re.I
+    r"(?:经济|經濟)[^。！？；;|]{0,12}(?:未陷入|没有陷入|已避免)|"
+    r"\b(?:is|has\s+been)\s+(?:now\s+)?(?:confirmed|achieved|established)\b|"
+    r"\b(?:has|have)\s+(?:avoided|escaped)\b", re.I
 )
 _REGIME_MODAL = re.compile(r"可能|有望|或许|或許|预计|預計|尚未|未能|不能|无法|無法|若|如果|\b(?:may|might|could|expected|if|not|cannot)\b", re.I)
 _REGIME_ATTRIBUTION = re.compile(r"(?:报道|報道|报告|報告|称|指出|表示|による|と報じ|と述べ)|"
@@ -145,11 +147,16 @@ def _unsupported_regime_certainty(state: Mapping[str, Any], clause: str) -> bool
     certainty = _REGIME_CERTAINTY.search(clause)
     regimes = [(match.start(), pattern) for pattern in _ECONOMIC_REGIMES.values()
                for match in pattern.finditer(clause)]
-    if not regimes or not certainty or _REGIME_MODAL.search(clause):
+    relation = re.search(r"→|⇒|=>|->", clause)
+    # A regime used as the antecedent of an unqualified implication is an
+    # asserted premise too. A prediction question/odds cannot establish it.
+    premise = bool(relation and any(position < relation.start() for position, _ in regimes))
+    if not regimes or not (certainty or premise) or _REGIME_MODAL.search(clause):
         return False
     # An editorial heading may name recession odds then assert a different
     # regime. Bind certainty to its nearest subject, not any regime in a line.
-    preceding = [item for item in regimes if item[0] < certainty.start()]
+    assertion_start = certainty.start() if certainty else relation.start()
+    preceding = [item for item in regimes if item[0] < assertion_start]
     _, asserted = max(preceding, key=lambda item: item[0]) if preceding else min(regimes, key=lambda item: item[0])
     if _REGIME_ATTRIBUTION.search(clause):
         for evidence in state.get("evidence_registry") or []:
