@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "execution-business-precision-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "position-maintenance-regime-closure-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -153,7 +153,7 @@ _EXECUTION_OPPORTUNITY = re.compile(
 )
 _COMPOUND_TRADE_STRATEGY = re.compile(r"高(?:抛|賣|卖)低(?:吸|買|买)|\bbuy\s+low\s+and\s+sell\s+high\b", re.I)
 _EXECUTION_PROHIBITION = re.compile(
-    r"(?:不(?:支持|建议|采用|實施|实施|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
+    r"(?:不(?:支持|建议|建議|采用|實施|实施|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
     r"加仓|加倉|建仓|建倉|减仓|減倉|做空|执行|提供)|"
     r"暂不|暫不|禁止|不得|避免|没有获准|未获批准|尚未获准|"
     r"(?:无法|無法|不能|未能)(?:支持|提供|批准|授權|授权)|"
@@ -228,11 +228,10 @@ _ACTIONABLE_HORIZON_FIELD = re.compile(
     r"(?:个?交易日|天|日(?!元|均线)|周|週|月|days?|weeks?|months?)",
     re.I,
 )
-_POSITION_MAINTENANCE = re.compile(
-    r"(?:持仓者|持倉者|现有持仓|現有持倉|existing\s+(?:holder|position))"
-    r"[^。；;\n]{0,24}(?:继续持有|繼續持有|维持持有|維持持有|维持仓位|維持倉位|"
-    r"hold|maintain\s+(?:the\s+)?position)",
-    re.I,
+_POSITION_ENTITY = re.compile(r"仓位|倉位|持仓|持倉|敞口|\b(?:positions?|exposure|holdings?|holders?)\b", re.I)
+_POSITION_PRESERVATION = re.compile(
+    r"维持|維持|保持|保留|继续持有|繼續持有|"
+    r"\b(?:maintain(?:ed|ing)?|retain(?:ed|ing)?|keep|kept|hold)\b", re.I,
 )
 _EXECUTION_TRIGGER_SETUP = re.compile(
     r"(?:设置|設置|设定|設定|建立)[^。；;\n]{0,16}"
@@ -254,6 +253,7 @@ _PRESENTATION_HEADING_TRANSLATIONS = {
     "strategic actions": "策略说明",
     "rating": "评级",
     "investment thesis": "投资逻辑",
+    "rationale": "研究依据",
     "time horizon": "研究周期",
     "action": "交易动作",
     "trading plan": "交易计划",
@@ -271,8 +271,8 @@ _POSITION_RECOMMENDATION = re.compile(
 )
 _POSITION_DIRECTIVE = re.compile(
     r"(?:(?:仓位|倉位|敞口|净暴露|position|allocation)"
-    r"[^。；;\n]{0,32}(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制|降低|增加)|"
-    r"(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|维持|限制|降低|增加)"
+    r"[^。；;\n]{0,32}(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|限制|降低|增加)|"
+    r"(?:建议|必须|应当|应该|应|宜|控制|缩放|配置|调整|限制|降低|增加)"
     r"[^。；;\n]{0,32}(?:仓位|倉位|敞口|净暴露|position|allocation))",
     re.I,
 )
@@ -287,6 +287,8 @@ _EXECUTION_WITHHELD = (
     "方向性研究结论不等于已批准交易指令。"
 )
 _PUBLIC_NEWS_TEXT = {
+    "Canonical Market authority": "正式行情证据",
+    "Canonical Financial authority": "正式财务证据",
     "Market authority": "行情证据",
     "Financial authority": "财务证据",
     "Japan company-news authority": "已核验的日本公司新闻",
@@ -1416,12 +1418,28 @@ def _normalize_numbered_lists(lines: list[str]) -> list[str]:
 _INLINE_PAREN_NUMBER = re.compile(
     r"(?P<prefix>^|(?<=[。；;]))(?P<space>\s*)[（(](?P<number>\d{1,2})[）)]"
 )
+_INLINE_DOT_NUMBER = re.compile(r"(?:^|(?<=[。；;:：]))\s*(?P<number>\d{1,2})\.\s+")
+_INLINE_LIST_LABEL = re.compile(r"^\s*(?:\*\*[^*\n]+\*\*|[^\n:：]{1,40})\s*[:：]\s*$")
 
 
 def _normalize_inline_parenthetical_numbers(lines: list[str]) -> list[str]:
     """Renumber inline list items without touching years or ordinary numbers."""
     output = list(lines)
     for index, line in enumerate(output):
+        # Structured prose can carry a list on the same line as its label.
+        # Clause pruning leaves gaps (1 -> 4) or a single surviving item (4).
+        # Require a leading label/list relation; decimals, years and quoted
+        # source prose are not formatting markers.
+        dots = list(_INLINE_DOT_NUMBER.finditer(line))
+        label = line[:dots[0].start()].rstrip() if dots else ""
+        if dots and _INLINE_LIST_LABEL.fullmatch(label) and not line.lstrip().startswith(('>', '`')):
+            items = [line[match.end():dots[i + 1].start() if i + 1 < len(dots) else len(line)].strip()
+                     for i, match in enumerate(dots)]
+            ending = '\n' if line.endswith('\n') else ''
+            output[index] = label + '\n\n' + '\n'.join(
+                f'{i}. {item}' for i, item in enumerate(items, 1)
+            ) + ending
+            continue
         matches = list(_INLINE_PAREN_NUMBER.finditer(line))
         if len(matches) < 2:
             continue
@@ -1979,7 +1997,10 @@ def _collect_unapproved_execution_claims(
                         "semantic_type": "EXECUTION_RECOMMENDATION",
                         "authority_owner": "validated_execution",
                         "detected_actions": list(dict.fromkeys(
-                            match.group() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
+                            match.group() for pattern in (
+                                _EXECUTION_ACTION, _ENGLISH_TRADE_ACTION,
+                                *([_POSITION_PRESERVATION] if _position_preservation_instruction(claim) else []),
+                            )
                             for match in pattern.finditer(claim)
                         )),
                         "canonical_action": (state.get("validated_execution") or {}).get("action"),
@@ -2127,19 +2148,20 @@ def _execution_clause_violation(text: str) -> str | None:
     if actions and all(_non_authorizing_action(plain, match) for match in actions) and not (
         _ACTIONABLE_HOLDING_PERIOD.search(plain)
         or _POSITION_DIRECTIVE.search(plain)
+        or _position_preservation_instruction(plain)
         or _STOP_TRIGGER.search(plain)
     ):
         # Polarity/subject belong to the action, not to a conditional elsewhere.
         return None
     if _POSITION_DIRECTIVE.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
+    if _position_preservation_instruction(plain):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _POSITION_RECOMMENDATION.search(plain):
         return "POSITION_SIZE_RECOMMENDATION"
     if _ACTIONABLE_HOLDING_PERIOD.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _ACTIONABLE_HORIZON_FIELD.search(plain):
-        return "UNAPPROVED_EXECUTION_INSTRUCTION"
-    if _POSITION_MAINTENANCE.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_TRIGGER_SETUP.search(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
@@ -2226,6 +2248,32 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
         return True
     historical = re.search(r"(?:历史上|歷史上|此前|去年|曾经|曾經|曾|\bhistorically\b|\blast year\b)", before, re.I)
     return bool(historical and not re.search(r"(?:建议|建議|应当|recommend|should)", before, re.I))
+
+
+def _position_preservation_instruction(text: str) -> bool:
+    """Position object + preservation predicate is a plan in either order.
+
+    Keep the existing action-local polarity/history boundary. A generic
+    business allocation or a call to remain observant has no portfolio object;
+    a prohibition on adding later cannot waive an earlier keep-position plan.
+    """
+    for clause in re.split(r"[，,。；;!?！？]", text):
+        if not _POSITION_ENTITY.search(clause):
+            continue
+        for predicate in _POSITION_PRESERVATION.finditer(clause):
+            before = clause[:predicate.start()]
+            corporate = re.search(r"公司|企业|企業|\b(?:company|issuer|firm)\b", before, re.I)
+            investor_directive = re.search(
+                r"投资者|投資者|建议|建議|应当|應當|\b(?:investors?|recommend|should|your)\b",
+                clause, re.I,
+            )
+            operating_position = re.search(r"\b(?:competitive|leadership|business|industry)\s+position\b", clause, re.I)
+            investor_recipient = re.search(r"投资者|投資者|用户|用戶|\b(?:investors?|your|you)\b", clause, re.I)
+            if corporate and (not investor_directive or operating_position and not investor_recipient):
+                continue
+            if not _non_authorizing_action(clause, predicate):
+                return True
+    return False
 
 
 def _prune_unapproved_execution(text: str) -> str:

@@ -110,6 +110,7 @@ _ECONOMIC_REGIMES = {
     "hard_landing": re.compile(r"硬着陆|硬着陸|ハードランディング|\bhard[ -]landing\b", re.I),
     "recession": re.compile(r"衰退|リセッション|\brecession\b", re.I),
     "stagflation": re.compile(r"滞胀|滯脹|スタグフレーション|\bstagflation\b", re.I),
+    "deflation": re.compile(r"通缩|通縮|デフレ|\bdeflation\b", re.I),
 }
 _EVENT_JURISDICTIONS = {
     "US": re.compile(r"美国|美國|米国|\b(?:US|U\.S\.|United States)\b", re.I),
@@ -130,6 +131,8 @@ _REGIME_CERTAINTY = re.compile(
     r"(?:共识|共識|コンセンサス|\bconsensus\b)[^。！？；;|]{0,16}(?:稳固|穩固|确定|確定|确立|確立|強固|solid|firm|confirmed|established)|"
     r"(?:已经|已經|已|すでに)[^。！？；;|]{0,12}(?:确认|確認|实现|實現)|"
     r"(?:经济|經濟)[^。！？；;|]{0,12}(?:未陷入|没有陷入|已避免)|"
+    r"(?:反映|表明|证明|證明)[^。！？；;|]{0,40}(?:转变|轉變|改变|改變|转折|轉折)|"
+    r"(?:告别|告別|走出|结束|結束)[^。！？；;|]{0,12}(?:通缩|通縮|デフレ|\bdeflation\b)|"
     r"\b(?:is|has\s+been)\s+(?:now\s+)?(?:confirmed|achieved|established)\b|"
     r"\b(?:has|have)\s+(?:avoided|escaped)\b", re.I
 )
