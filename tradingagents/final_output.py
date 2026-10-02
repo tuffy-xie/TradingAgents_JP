@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "execution-strategy-presentation-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "execution-business-precision-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -77,6 +77,23 @@ _CURRENT_FINANCIAL_HEADINGS = (
     "管理层指引",
     "公司指引",
     "当前财务权威摘要",
+)
+_CORPORATE_OPERATION = re.compile(
+    r"(?:股票|股份|share\s+|stock\s+)?(?:回购|回購|buyback|repurchase)|"
+    r"资本开支|資本支出|capex|capital\s+expenditure|订单|訂單|order\s+fulfilment|"
+    r"(?:company|customer|sales|purchase)\s+orders?|"
+    r"并购|併購|收购|收購|merger|acquisition|经营|營運|business\s+operations?", re.I,
+)
+_BUSINESS_EXECUTION_OBJECT = re.compile(
+    r"业务|产业|产品|研发|经营资源|战略|生产(?:设备|基地|网络)|供应链|供應鏈|"
+    r"地缘(?:集中)?风险|地緣風險|海外收入|汇率|外汇|5G|6G|海外市场|"
+    r"business|product|R&D|production\s+(?:network|base|facilit)|supply.chain|"
+    r"currency|foreign.exchange|operating\s+resources?", re.I,
+)
+_PORTFOLIO_EXECUTION_OBJECT = re.compile(
+    r"股价|股票|该股|標的|标的|投资者|持仓|期货|期權|期权|ETF|指数|"
+    r"逢低|逢高|回调|支撑|阻力|价位|仓位|敞口|"
+    r"\b(?:stock|shares|investors?|portfolio|position|exposure|futures?|options?|index)\b", re.I,
 )
 _EXECUTION_HEADING = re.compile(
     r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
@@ -136,7 +153,7 @@ _EXECUTION_OPPORTUNITY = re.compile(
 )
 _COMPOUND_TRADE_STRATEGY = re.compile(r"高(?:抛|賣|卖)低(?:吸|買|买)|\bbuy\s+low\s+and\s+sell\s+high\b", re.I)
 _EXECUTION_PROHIBITION = re.compile(
-    r"(?:不(?:建议|采用|實施|实施|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
+    r"(?:不(?:支持|建议|采用|實施|实施|應|应|要|可|宜|追高|新增|入场|買入|买入|賣出|卖出|"
     r"加仓|加倉|建仓|建倉|减仓|減倉|做空|执行|提供)|"
     r"暂不|暫不|禁止|不得|避免|没有获准|未获批准|尚未获准|"
     r"(?:无法|無法|不能|未能)(?:支持|提供|批准|授權|授权)|"
@@ -2187,10 +2204,17 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
         # Business deployment has a different object from investor exposure.
         # Keep action-local negation above, and let price/portfolio context
         # take precedence over an incidental business noun.
-        nearby = text[max(0, action.start() - 24):action.end() + 24]
-        business = re.search(r"业务|产业|产品|研发|战略|生产设备|外汇|5G|6G|海外市场|business|product|R&D|currency|foreign.exchange", nearby, re.I)
-        trading = re.search(r"股价|股票|该股|標的|标的|投资者|逢低|逢高|回调|支撑|阻力|价位|仓位|敞口|position|exposure", nearby, re.I)
-        if business and not trading:
+        # Resolve the action's business object, not a short lexical window.
+        # Agency can precede a comma (a production network, then its effect).
+        # A later investor action must independently resolve to trade scope.
+        context = text[:action.start()] + text[action.end():]
+        business = _BUSINESS_EXECUTION_OBJECT.search(context)
+        hedge = action.group().casefold() in {"对冲", "對沖", "hedge", "hedging"}
+        operating_agency = re.search(
+            r"公司|企业|生产(?:设备|基地|网络)|供应链|供應鏈|收入|成本|自然|"
+            r"\b(?:company|firm|issuer|production|supply.chain|revenue|cost|natural)\b", context, re.I,
+        )
+        if business and (not hedge or operating_agency) and not _PORTFOLIO_EXECUTION_OBJECT.search(context):
             return True
     subject = re.search(r"(?:公司|企业|企業|发行人|發行人|\b(?:company|issuer|firm)\b)", before, re.I)
     target = text[action.end():]
@@ -2305,6 +2329,15 @@ def _is_execution_heading(heading: str) -> bool:
     if folded in _WITHHELD_EXECUTION_HEADINGS:
         return False
     if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", folded):
+        return False
+    # "Execution" alone is ambiguous: an issuer executes orders, capex and
+    # buybacks too. A business heading cannot waive a real trade instruction
+    # in the heading or in its independently scanned subordinate content.
+    if (_CORPORATE_OPERATION.search(folded)
+            and not _execution_clause_violation(folded)
+            and all(match.group().casefold() in {"执行", "execution"}
+                    for match in _EXECUTION_HEADING.finditer(folded))
+            and not _PORTFOLIO_EXECUTION_OBJECT.search(_CORPORATE_OPERATION.sub("", folded))):
         return False
     # A strategy-bearing title owns its subordinate trigger/parameter context.
     # Dropping only the title would orphan conditional plan fragments and can

@@ -123,7 +123,10 @@ def test_unsupported_heading_qualifier_removed_and_replacement_preserves_line_bo
     checked = enforce_agent_output(state, text, "News Analyst")
     assert "### 2.3 衰退概率\n" in checked.text
     assert "共识稳固" not in checked.text
-    assert "本次判断。\n- 日本经济情况需要观察\n" in checked.text
+    lines = checked.text.splitlines()
+    index = lines.index("- 日本经济情况需要观察")
+    assert lines[index - 1].endswith("。")
+    assert "不影响其他独立绑定的来源概率" in lines[index - 1]
     assert enforce_agent_output(state, checked.text, "News Analyst").text == checked.text
 
 

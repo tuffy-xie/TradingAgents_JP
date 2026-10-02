@@ -174,6 +174,26 @@ def _unsupported_regime_certainty(state: Mapping[str, Any], clause: str) -> bool
     return True
 
 
+def _unsupported_market_pricing(state: Mapping[str, Any], clause: str) -> bool:
+    """Event odds are not proof that asset markets fully priced a policy path."""
+    assertion = re.search(
+        r"(?:市场|市場)[^。；;\n]{0,100}(?:充分|完全)[^。；;\n]{0,8}(?:定价|定價)|"
+        r"\bmarkets?\b[^.;\n]{0,100}\b(?:fully|completely)\s+priced\s+in\b", clause, re.I,
+    )
+    if not assertion or _REGIME_MODAL.search(clause):
+        return False
+    # Only an actual verified assertion can witness this proposition. Numbers
+    # or a prediction-market question (even matching odds) cannot do so.
+    normalized = re.sub(r"[\s*`\"“”]", "", clause).casefold().strip("。.")
+    return not any(
+        isinstance(evidence, Mapping)
+        and evidence.get("source") != "get_prediction_markets"
+        and evidence.get("verification_status") == "VERIFIED_TOOL_OUTPUT"
+        and normalized in re.sub(r"[\s*`\"“”]", "", str(evidence.get("value") or "")).casefold()
+        for evidence in state.get("evidence_registry") or []
+    )
+
+
 def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
     """Ground regime probabilities and confirmations in their own source event.
 
@@ -183,7 +203,7 @@ def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> b
     """
     probability = _EVENT_PROBABILITY.search(clause)
     regime = next((key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(clause)), None)
-    if _unsupported_regime_certainty(state, clause):
+    if _unsupported_regime_certainty(state, clause) or _unsupported_market_pricing(state, clause):
         return True
     if not probability or not regime:
         return False
@@ -399,7 +419,9 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "【关键数据门控：当前季度证据不足，暂不发布当前实绩判断。】",
             )
         if probability_event_gate_violation(state, clause):
-            replacement = "该定量概率未能与来源事件逐项对应，暂不纳入本次判断。"
+            replacement = "本项概率推导未能与来源事件逐项对应；已移除该推导，不影响其他独立绑定的来源概率。"
+            if _unsupported_market_pricing(state, clause):
+                replacement = "来源证据不足以确认该市场定价判断，暂不纳入本次判断。"
             if _unsupported_regime_certainty(state, clause):
                 replacement = "来源证据不足以确认该宏观情景或共识，暂不纳入本次判断。"
                 if heading:
@@ -509,10 +531,35 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     # unit for reports and avoids splitting decimal values at their dot.
     cleaned = "".join(_clean_line(line, clean_clause) for line in text.splitlines(keepends=True))
     cleaned = _sanitize_legacy_enforcement_artifacts(cleaned)
+    cleaned = _collapse_adjacent_replacements(cleaned, findings)
     if not warnings:
         return EvidenceEnforcementResult(cleaned)
     unique_warnings = tuple(dict.fromkeys(warnings))
     return EvidenceEnforcementResult(cleaned, unique_warnings, tuple(findings))
+
+
+def _collapse_adjacent_replacements(text: str, findings: list[EvidenceFinding]) -> str:
+    """Deduplicate adjacent generated notices without merging claim identities.
+
+    Only whole replacement paragraphs from this enforcement pass qualify.
+    Ordinary repeated facts, tables and notices across section boundaries do
+    not. Both original findings remain available for exact-artifact closure.
+    """
+    replacements = {
+        item.replacement_claim.strip() for item in findings
+        if item.replacement_claim.strip().endswith("。")
+        and not re.search(r"[|\n]|^\s*#", item.replacement_claim)
+    }
+    output: list[str] = []
+    previous = None
+    for line in text.splitlines(keepends=True):
+        content = re.sub(r"^[-*+]\s+", "", line.strip()).strip("*")
+        if content and content == previous and content in replacements:
+            continue
+        output.append(line)
+        if content:
+            previous = content
+    return "".join(output)
 
 
 def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent_name: str) -> dict[str, Any]:
@@ -690,6 +737,12 @@ def _clean_line(line: str, clean_clause) -> str:
         return plain_heading[1] + clean_clause(plain_heading[2], heading=True) + ending
     parts = re.split(r"(?<=[。！？；;])", content)
     cleaned = "".join(clean_clause(part) for part in parts if part)
+    # A whole-clause replacement still belongs to the original list item.
+    # Losing its marker turns it into lazy continuation of a legal sibling,
+    # misleadingly attaching a notice to independently bound evidence.
+    bullet = re.match(r"^(\s*[-*+]\s+)", content)
+    if bullet and cleaned and not re.match(r"^\s*[-*+]\s+", cleaned):
+        cleaned = bullet[1] + cleaned
     # A removed table row must not leave a blank line terminating its table.
     return cleaned + ending if cleaned or not content.lstrip().startswith("|") else ""
 
