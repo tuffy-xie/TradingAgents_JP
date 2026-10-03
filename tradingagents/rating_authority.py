@@ -30,6 +30,12 @@ _LABEL_HEADING = re.compile(
     r"^final\s+transaction\s+proposal$|"
     r"^(?:(?:investment|trading)\s+)?signal$|^(?:投资|交易)?信号$|^(?:投資|取引)?シグナル$", re.I
 )
+_ADVICE_SURFACE = re.compile(
+    r"^(?:[一二三四五六七八九十\d]+[、.)]\s*)?"
+    r"(?:(?:核心|最终|最終|综合|綜合)?(?:结论|結論)(?:与|與|和|及)?)?"
+    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦)$|"
+    r"^(?:(?:final|investment|trading)\s+)?recommendations?$", re.I
+)
 # A recommendation can be expressed as a short signal/status cell without a
 # rating label. Match the direction's relation to recommendation semantics,
 # not a direction word alone (e.g. 買い材料 is a research factor).
@@ -256,6 +262,9 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             external = bool(_EXTERNAL_HEADING.search(title))
             heading_context.append((level, external))
             plain = title
+            if _ADVICE_SURFACE.fullmatch(title) and not any(ext for _, ext in heading_context):
+                claims.append(RatingClaim(offset, offset + len(line.rstrip("\n")),
+                                          line.rstrip("\n"), None, "RECOMMENDATION_SURFACE"))
         external_context = any(external for _, external in heading_context)
         is_table = line.lstrip().startswith("|")
         if not is_table:
@@ -342,6 +351,13 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
 def remove_internal_ratings(text: str) -> str:
     """Remove only complete recommendation propositions; retain outside facts."""
     for claim in reversed(internal_rating_claims(text)):
+        if claim.semantic_type == "RECOMMENDATION_SURFACE":
+            # The surface promises unowned trading advice even if pruning has
+            # left only business analysis. Preserve that analysis and heading
+            # structure, but make its research role explicit.
+            marker = re.match(r"^\s*#{1,6}\s+(?:[一二三四五六七八九十\d]+[、.)]\s*)?", claim.text)
+            text = text[:claim.start] + (marker[0] if marker else "") + "研究分析" + text[claim.end:]
+            continue
         end = claim.end
         # Leaving an empty line where a table row stood terminates the table
         # and can make structural cleanup discard otherwise valid siblings.

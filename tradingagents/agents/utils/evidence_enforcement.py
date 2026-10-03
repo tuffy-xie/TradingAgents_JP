@@ -12,6 +12,7 @@ import hashlib
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any
 
 from tradingagents.agents.utils.market_authority import canonical_market_authority
@@ -140,6 +141,130 @@ _REGIME_MODAL = re.compile(r"可能|有望|或许|或許|预计|預計|尚未|�
 _REGIME_ATTRIBUTION = re.compile(r"(?:报道|報道|报告|報告|称|指出|表示|による|と報じ|と述べ)|"
                                   r"\b(?:reports?|says?|according\s+to)\b", re.I)
 
+# Event odds and realized outcomes are distinct propositions. These roles
+# describe the asserted object/predicate, not positive/negative sentiment.
+_MACRO_PREMISE = re.compile(
+    r"衰退|リセッション|\brecession\b|央行|日央行|聯準會|美联储|美聯儲|"
+    r"\b(?:BOJ|Fed|central\s+bank)\b", re.I
+)
+_DEMAND_OUTCOME = re.compile(
+    r"(?:需求|需要|\bdemand\b)[^。！？；;|]{0,24}(?:保障|保证|保證|稳健|穩健|正面|有利)|"
+    r"(?:保障|保证|保證)[^。！？；;|]{0,24}(?:需求|需要)|"
+    r"\b(?:guarantees?|ensures?|supports?)\b[^.;!?|]{0,35}\bdemand\b|"
+    r"\bdemand\b[^.;!?|]{0,24}\b(?:secured|guaranteed|strong|positive)\b", re.I
+)
+_MONETARY_OUTCOME = re.compile(
+    r"(?:金融|融资|融資|货币|貨幣)条件[^。！？；;|]{0,18}(?:宽松|寬鬆|收紧|收緊|改善)|"
+    r"(?:金融|融資|貨幣)條件[^。！？；;|]{0,18}(?:寬鬆|收緊|改善)|"
+    r"(?:套利交易|套息交易)[^。！？；;|]{0,24}(?:风险|風險)[^。！？；;|]{0,16}(?:降低|減少|减少|减轻|減輕)|"
+    r"\b(?:financial|financing|monetary)\s+conditions\b[^.;!?|]{0,28}\b(?:loose|easy|tight|eased|improved)\b|"
+    r"\bcarry\s+trade\b[^.;!?|]{0,28}\brisk\b[^.;!?|]{0,24}\b(?:decreased|declined|reduced)\b", re.I
+)
+_POLICY_ODDS_CHANGE = re.compile(
+    r"(?:加息|降息|利率)[^。！？；;|]{0,16}(?:概率|機率|確率)[^。！？；;|]{0,16}(?:下降|上升|降低|增加)|"
+    r"(?:收紧|收緊|宽松|寬鬆)[^。！？；;|]{0,16}(?:预期|預期)[^。！？；;|]{0,12}(?:降温|降溫|升温|升溫)|"
+    r"\brate\s+(?:hike|cut)\s+(?:probability|odds)\b[^.;!?|]{0,20}\b(?:declined|increased|decreased)\b", re.I
+)
+
+
+def _evidence_statement_key(text: str) -> str:
+    return re.sub(r"[\s*`\"“”]", "", text).casefold().strip("。.")
+
+
+def _independent_macro_statement(state: Mapping[str, Any], assertion: str) -> bool:
+    """Require the asserted outcome itself, not odds or Agent inference.
+
+    Exact proposition correspondence is intentionally fail-closed: unrelated
+    countries, issuers, periods and a matching number cannot act as witnesses.
+    """
+    key = _evidence_statement_key(assertion)
+    return any(
+        isinstance(item, Mapping)
+        and item.get("source") != "get_prediction_markets"
+        and item.get("verification_status") in {"VERIFIED_TOOL_OUTPUT", "VERIFIED_SOURCE"}
+        and item.get("allowed_for_current_decision") is not False
+        and item.get("claim_type") != "INFERENCE"
+        and any(key == _evidence_statement_key(statement.strip(" >-#"))
+                for statement in re.split(r"[\n。！？;]", str(item.get("value") or "")) if statement.strip())
+        for item in state.get("evidence_registry") or []
+    )
+
+
+def _outcome_is_hypothetical(clause: str, start: int, end: int) -> bool:
+    # Modal scope belongs to the outcome's cell/clause. A sibling possibility
+    # must not waive an asserted state after "but" or another table cell.
+    prefix = clause[:start]
+    left = max(prefix.rfind("，"), prefix.rfind(","), prefix.rfind("|")) + 1
+    local = clause[left:end]
+    local = re.split(r"但(?:是)?|然而|\bbut\b", local, flags=re.I)[-1]
+    if _REGIME_MODAL.search(local):
+        return True
+    antecedent = re.sub(r"^[\s>*`|]+", "", clause)
+    return bool(re.match(r"(?:若|如果|假如|\bif\b)", antecedent, re.I)
+                and not re.search(r"但(?:是)?|然而|\bbut\b", prefix, re.I))
+
+
+def _bound_policy_odds_change(state: Mapping[str, Any], clause: str) -> bool:
+    """A direct weekly odds change needs the same bank, meeting and rate step.
+
+    This does not authorize any carry-risk, demand or financial-state outcome.
+    An annual path cannot borrow a change in one specific meeting's odds.
+    """
+    month = re.search(r"(?<!\d)(1[0-2]|[1-9])月", clause)
+    months = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"]
+    if month:
+        month_name = months[int(month[1]) - 1]
+    else:
+        month_name = next((m for m in months if re.search(rf"\b{m}\b", clause, re.I)), None)
+    years = set(re.findall(r"(?<!\d)20\d{2}(?!\d)", clause))
+    step = re.search(r"(?<!\d)(\d+)\s*(?:bps|bp|基点|基點)", clause, re.I)
+    change = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(?:pp|个百分点|個百分點)", clause, re.I)
+    bank = next((key for key, pattern in {
+        "JP": re.compile(r"日本央行|日央行|\b(?:BOJ|Bank of Japan)\b", re.I),
+        "US": re.compile(r"美联储|美聯儲|聯準會|\b(?:Fed|Federal Reserve)\b", re.I),
+    }.items() if pattern.search(clause)), None)
+    down = bool(re.search(r"下降|降低|\b(?:declined|decreased)\b", clause, re.I))
+    rate_up = bool(re.search(r"加息|\b(?:hike|increase)\b", clause, re.I))
+    if not (month_name and years and step and change and bank
+            and re.search(r"本周|本週|一周|一週|\b(?:this\s+week|1-week|weekly)\b", clause, re.I)):
+        return False
+    for item in state.get("evidence_registry") or []:
+        if (not isinstance(item, Mapping) or item.get("source") != "get_prediction_markets"
+                or item.get("verification_status") != "VERIFIED_TOOL_OUTPUT"
+                or item.get("allowed_for_current_decision") is False):
+            continue
+        for line in str(item.get("value") or "").splitlines():
+            event = _SOURCE_EVENT_PROBABILITY.search(line)
+            delta = re.search(r"1-week\s+([-+]?\d+(?:\.\d+)?)pp", line)
+            if not event or event["outcome"].casefold() != "yes" or not delta:
+                continue
+            question = event["question"]
+            if (_EVENT_JURISDICTIONS[bank].search(question)
+                    and re.search(rf"\b{month_name}\b", question, re.I)
+                    and years.issubset(set(re.findall(r"20\d{2}", question)))
+                    and re.search(rf"(?<!\d){step[1]}\s+bps\b", question, re.I)
+                    and bool(re.search(r"increases?|hikes?", question, re.I)) == rate_up
+                    and (Decimal(delta[1]) < 0) == down
+                    and abs(Decimal(delta[1])) == abs(Decimal(change[1]))):
+                return True
+    return False
+
+
+def _unsupported_macro_outcome(state: Mapping[str, Any], clause: str) -> bool:
+    """Probabilities cannot establish demand, carry risk or financial regimes."""
+    patterns = [_MONETARY_OUTCOME]
+    if _MACRO_PREMISE.search(clause):
+        patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE))
+    for pattern in patterns:
+        for outcome in pattern.finditer(clause):
+            if _outcome_is_hypothetical(clause, outcome.start(), outcome.end()):
+                continue
+            if pattern is _POLICY_ODDS_CHANGE and _bound_policy_odds_change(state, clause):
+                continue
+            if not _independent_macro_statement(state, clause):
+                return True
+    return False
+
 
 def _unsupported_regime_certainty(state: Mapping[str, Any], clause: str) -> bool:
     """A low probability of one event cannot prove a different regime/consensus.
@@ -206,7 +331,8 @@ def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> b
     """
     probability = _EVENT_PROBABILITY.search(clause)
     regime = next((key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(clause)), None)
-    if _unsupported_regime_certainty(state, clause) or _unsupported_market_pricing(state, clause):
+    if (_unsupported_regime_certainty(state, clause) or _unsupported_market_pricing(state, clause)
+            or _unsupported_macro_outcome(state, clause)):
         return True
     if not probability or not regime:
         return False
@@ -425,6 +551,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             replacement = "本项概率推导未能与来源事件逐项对应；已移除该推导，不影响其他独立绑定的来源概率。"
             if _unsupported_market_pricing(state, clause):
                 replacement = "来源证据不足以确认该市场定价判断，暂不纳入本次判断。"
+            if _unsupported_macro_outcome(state, clause):
+                replacement = "事件概率不直接证明公司需求或当前金融状态；缺少独立证据的推导不纳入本次判断。"
             if _unsupported_regime_certainty(state, clause):
                 replacement = "来源证据不足以确认该宏观情景或共识，暂不纳入本次判断。"
                 if heading:
@@ -553,6 +681,11 @@ def _collapse_adjacent_replacements(text: str, findings: list[EvidenceFinding]) 
         if item.replacement_claim.strip().endswith("。")
         and not re.search(r"[|\n]|^\s*#", item.replacement_claim)
     }
+    # Two sentence claims in one prose line may receive the same deterministic
+    # notice. This is provenance-scoped replacement dedup, not fact dedup.
+    for replacement in replacements:
+        escaped = re.escape(replacement)
+        text = re.sub(rf"{escaped}(?:\s*{escaped})+", replacement, text)
     output: list[str] = []
     previous = None
     for line in text.splitlines(keepends=True):
@@ -989,7 +1122,19 @@ def _number_tokens(text: str) -> tuple[str, ...]:
 
 
 def _normalise_number(token: str) -> str:
-    return token.replace(",", "")
+    # -8pp and -8.0pp are the same source value, not different evidence.
+    # Retain units and sign; Decimal avoids float rounding or calculations.
+    token = token.replace(",", "")
+    suffix = "%" if token.endswith("%") else ""
+    numeric = token[:-1] if suffix else token
+    if not re.fullmatch(r"[-+]?\d+(?:\.\d+)?", numeric):
+        return token
+    rendered = format(Decimal(numeric), "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    if numeric.startswith("+"):
+        rendered = "+" + rendered
+    return rendered + suffix
 
 
 def _financial_authority_replacement(
