@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from tradingagents.agents.utils.evidence_enforcement import (
+from tradingagents.agents.evidence_enforcement import (
     enforce_agent_output,
     enforce_agent_result,
 )

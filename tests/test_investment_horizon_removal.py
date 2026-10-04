@@ -3,9 +3,9 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+from tradingagents.agents.context import get_trade_constraints_from_state
 from tradingagents.agents.managers.portfolio_manager import create_portfolio_manager
 from tradingagents.agents.trader.trader import create_trader
-from tradingagents.agents.utils.agent_utils import get_trade_constraints_from_state
 from tradingagents.dataflows.market import resolve_market_context
 from tradingagents.final_output import build_canonical_final_state
 from tradingagents.graph.propagation import Propagator

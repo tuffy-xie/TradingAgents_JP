@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from tradingagents.agents.utils.agent_utils import get_japan_data_context_from_state
+from tradingagents.agents.context import get_japan_data_context_from_state
 from tradingagents.dataflows.japan.context import (
     collect_japan_data_bundle,
     render_japan_report_sections,
@@ -152,8 +152,12 @@ def test_us_sentiment_preload_call_contract_is_unchanged(monkeypatch):
     state = Propagator().create_initial_state("NVDA", "2026-08-13")
     module.create_sentiment_analyst(llm)(state)
 
-    assert social_calls["stocktwits"] == (("NVDA",), {"limit": 30})
-    assert social_calls["reddit"] == (("NVDA",), {})
+    assert social_calls["stocktwits"][0] == social_calls["reddit"][0] == ("NVDA",)
+    assert social_calls["stocktwits"][1]["limit"] == 30
+    for source in ("stocktwits", "reddit"):
+        assert social_calls[source][1]["start_date"] == "2026-08-06"
+        assert social_calls[source][1]["end_date"] == "2026-08-13"
+        assert social_calls[source][1]["screen"] is None or callable(social_calls[source][1]["screen"])
 
 
 def test_japan_source_windows_are_independent_of_user_investment_horizon(monkeypatch):

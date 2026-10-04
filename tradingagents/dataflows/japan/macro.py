@@ -11,9 +11,9 @@ from io import StringIO
 import requests
 import yfinance as yf
 
-from tradingagents.dataflows import fred
 from tradingagents.dataflows.config import get_config
 from tradingagents.dataflows.market import MarketContext
+from tradingagents.dataflows.vendors import fred
 
 from .models import DataStatus, InformationLayer, MarketInformation, ProviderResponse, SourceStatus
 from .tdnet import extract_pdf_text

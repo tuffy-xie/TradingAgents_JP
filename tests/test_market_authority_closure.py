@@ -8,12 +8,12 @@ from datetime import date, timedelta
 import pytest
 from langchain_core.messages import ToolMessage
 
-from tradingagents.agents.utils.evidence_registry import capture_agent_evidence
-from tradingagents.agents.utils.market_authority import (
+from tradingagents.agents.evidence_registry import capture_agent_evidence
+from tradingagents.agents.market_authority import (
     canonical_market_authority,
     summarize_market_tool_response,
 )
-from tradingagents.agents.utils.market_claims import (
+from tradingagents.agents.market_claims import (
     current_market_claims,
     remove_current_market_claims,
 )

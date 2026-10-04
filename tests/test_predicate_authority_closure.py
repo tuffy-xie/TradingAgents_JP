@@ -6,7 +6,7 @@ import pytest
 
 from tests.test_rating_authority import state_with
 from tradingagents import final_output as f
-from tradingagents.agents.utils.evidence_enforcement import (
+from tradingagents.agents.evidence_enforcement import (
     current_financial_gate_violation,
     enforce_agent_output,
     probability_event_gate_violation,

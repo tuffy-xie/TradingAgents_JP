@@ -15,7 +15,7 @@ from rich.console import Console
 
 import tradingagents.dataflows.config as config_module
 import tradingagents.default_config as default_config
-from tradingagents.dataflows import interface
+from tradingagents.dataflows import router as interface
 from tradingagents.dataflows.config import set_config
 from tradingagents.reporting import write_report_tree
 from tradingagents.secret_redaction import (

@@ -28,13 +28,32 @@ def _agent_section(name: str, text: str, market: str) -> str:
     return f"### {name}\n{text}"
 
 
-def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
-    """Save a completed run's reports to ``save_path``; return the complete-report path."""
+def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
+    """The report's title and what produced it: analysis date, version, models, analysts, vendors."""
+    lines = [f"# Trading Analysis Report: {ticker}", ""]
+    if final_state.get("trade_date"):
+        lines.append(f"- Analysis date: {final_state['trade_date']}")
+    lines.append(f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if settings:
+        s = settings.get
+        lines.append(f"- TradingAgents {s('version', '?')}: {s('llm_provider', '?')}, "
+                     f"deep {s('deep_think_llm', '?')}, quick {s('quick_think_llm', '?')}")
+        lines.append(f"- Analysts: {', '.join(s('analysts') or [])}; "
+                     f"research debate rounds {s('max_debate_rounds', '?')}, "
+                     f"risk debate rounds {s('max_risk_discuss_rounds', '?')}")
+        vendors = {**(s("data_vendors") or {}), **(s("tool_vendors") or {})}
+        if vendors:
+            lines.append("- Data vendors: " + ", ".join(f"{k} {v}" for k, v in vendors.items()))
+    return "\n".join(lines) + "\n\n"
+
+
+def write_report_tree(final_state: dict, ticker: str, save_path, settings: dict | None = None) -> Path:
+    """Save a completed run's reports to ``save_path``; return the complete-report path.
+
+    ``settings`` (``TradingAgentsGraph.run_settings()``) adds what produced the run
+    to the report's header.
+    """
     require_canonical_final_state(final_state)
-    # Persistence is a security boundary. Agent/tool diagnostics can contain a
-    # transport exception even when the accepted report is otherwise valid, so
-    # sanitize one detached copy before writing either the user artifact or the
-    # technical full-agent log.
     final_state = sanitize_data(final_state)
     ticker = sanitize_text(ticker)
     save_path = Path(save_path)
@@ -124,13 +143,13 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             (research_dir / "bear.md").write_text(debate["bear_history"], encoding="utf-8")
             raw_debate = raw_outputs.get("investment_debate_state") or {}
             agent_log_parts.append(f"## 空头研究员\n\n{raw_debate.get('bear_history', debate['bear_history'])}")
-        if debate.get("judge_decision"):
+        if final_state.get("investment_plan") or debate.get("judge_decision"):
             research_dir.mkdir(exist_ok=True)
-            report = debate["judge_decision"]
+            report = final_state.get("investment_plan") or debate["judge_decision"]
             (research_dir / "manager.md").write_text(report, encoding="utf-8")
             research_parts.append(("Research Manager", report))
             raw_debate = raw_outputs.get("investment_debate_state") or {}
-            agent_log_parts.append(f"## 研究经理原始评判\n\n{raw_debate.get('judge_decision', debate['judge_decision'])}")
+            agent_log_parts.append(f"## 研究经理原始评判\n\n{raw_debate.get('judge_decision', report)}")
         if research_parts:
             content = "\n\n".join(_agent_section(name, text, market) for name, text in research_parts)
             sections.append(f"## II. Research Team Decision\n\n{content}")
@@ -165,16 +184,16 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             agent_log_parts.append(f"## 中性风控分析师\n\n{raw_risk.get('neutral_history', risk['neutral_history'])}")
 
         # 5. Portfolio Manager
-        if risk.get("judge_decision"):
+        if final_state.get("final_trade_decision") or risk.get("judge_decision"):
             portfolio_dir = save_path / "5_portfolio"
             portfolio_dir.mkdir(exist_ok=True)
-            report = risk["judge_decision"]
+            report = final_state.get("final_trade_decision") or risk["judge_decision"]
             (portfolio_dir / "decision.md").write_text(report, encoding="utf-8")
             sections.append(
                 "## V. Portfolio Manager Decision\n\n" + _agent_section("Portfolio Manager", report, market)
             )
             raw_risk = raw_outputs.get("risk_debate_state") or {}
-            agent_log_parts.append(f"## 投资组合经理原始决策\n\n{raw_risk.get('judge_decision', risk['judge_decision'])}")
+            agent_log_parts.append(f"## 投资组合经理原始决策\n\n{raw_risk.get('judge_decision', report)}")
 
     # The JP final-output contract already owns and validates the exact user
     # artifact. The writer only persists it; it must not become a second
@@ -185,11 +204,8 @@ def write_report_tree(final_state: dict, ticker: str, save_path) -> Path:
             raise ValueError("Canonical Japan report artifact is unavailable")
     else:
         display_symbol = metadata["symbol"] or ticker
-        header = (
-            f"# Trading Analysis Report: {display_symbol}\n\n"
-            f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
-            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-        )
+        header = _header(display_symbol, final_state, settings)
+        header += f"Market: {metadata['market']} | Currency: {metadata['currency']} | Instrument type: {metadata['instrument_type']}\n\n"
         complete_report = normalize_markdown_structure(header + "\n\n".join(sections))
     published_report = sanitize_text(complete_report)
     if market != "JP":

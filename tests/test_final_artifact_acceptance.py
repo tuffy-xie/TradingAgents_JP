@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from tests.test_final_output_contract import _jp_state
-from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
-from tradingagents.agents.utils.execution_validation import (
+from tradingagents.agents.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.execution_validation import (
     parse_execution_action,
     validate_execution_plan,
 )

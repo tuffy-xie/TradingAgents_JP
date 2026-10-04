@@ -4,7 +4,7 @@ import re
 
 import pytest
 
-from tradingagents.agents.utils.execution_validation import validate_execution_plan
+from tradingagents.agents.execution_validation import validate_execution_plan
 from tradingagents.dataflows.japan.context import (
     render_japan_audience_context,
     render_japan_report_sections,

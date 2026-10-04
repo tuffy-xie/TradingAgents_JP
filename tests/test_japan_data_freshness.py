@@ -9,7 +9,8 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from tradingagents.dataflows import interface
+from tradingagents.dataflows import router as interface
+from tradingagents.dataflows.errors import NoMarketDataError
 from tradingagents.dataflows.japan.cache import JapanDataCache
 from tradingagents.dataflows.japan.decision import build_japan_decision_context
 from tradingagents.dataflows.japan.freshness import (
@@ -40,12 +41,11 @@ from tradingagents.dataflows.japan.models import (
 from tradingagents.dataflows.japan.service import JapanDataService
 from tradingagents.dataflows.japan.trading_calendar import latest_japan_trading_day
 from tradingagents.dataflows.market import resolve_market_context
-from tradingagents.dataflows.reddit import _reddit_post_in_window
-from tradingagents.dataflows.stockstats_utils import _assert_ohlcv_not_stale
-from tradingagents.dataflows.stocktwits import _inside_explicit_window
-from tradingagents.dataflows.symbol_utils import NoMarketDataError
-from tradingagents.dataflows.y_finance import get_stock_stats_indicators_window
-from tradingagents.dataflows.yfinance_news import _in_news_window
+from tradingagents.dataflows.vendors.reddit import _reddit_post_in_window
+from tradingagents.dataflows.vendors.stocktwits import _inside_explicit_window
+from tradingagents.dataflows.vendors.yahoo.market import get_stock_stats_indicators_window
+from tradingagents.dataflows.vendors.yahoo.news import _in_news_window
+from tradingagents.dataflows.vendors.yahoo.ohlcv import _assert_ohlcv_not_stale
 
 
 def _item(
@@ -171,7 +171,7 @@ def test_configured_market_fallback_runs_after_stale_primary(monkeypatch):
 
 def test_indicator_output_labels_underlying_latest_bar(monkeypatch):
     monkeypatch.setattr(
-        "tradingagents.dataflows.y_finance._get_stock_stats_bulk",
+        "tradingagents.dataflows.vendors.yahoo.market._get_stock_stats_bulk",
         lambda *_args: {"2026-08-27": "99", "2026-08-28": "100"},
     )
     result = get_stock_stats_indicators_window("5016.T", "rsi", "2026-08-30", 3)

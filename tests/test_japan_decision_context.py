@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from tradingagents.agents.utils.agent_utils import get_japan_decision_context_from_state
-from tradingagents.agents.utils.decision_consistency import enforce_decision_consistency
+from tradingagents.agents.context import get_japan_decision_context_from_state
+from tradingagents.agents.decision_consistency import enforce_decision_consistency
 from tradingagents.dataflows.japan.decision import build_japan_decision_context
 from tradingagents.graph.propagation import Propagator
 

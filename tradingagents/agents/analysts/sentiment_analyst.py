@@ -1,27 +1,20 @@
-"""Sentiment analyst — multi-source sentiment analysis for a target ticker.
+"""Sentiment analyst: one sentiment report from three sources.
 
-Previously named ``social_media_analyst``. Renamed and redesigned because
-the old version had a prompt that demanded social-media analysis but the
-only tool available was Yahoo Finance news — which led LLMs to fabricate
-Reddit/X/StockTwits content under prompt pressure (verified live).
+The node fetches its sources before calling the model and puts them in the
+prompt, so the model reports on data it was given rather than inventing posts:
 
-The redesigned agent pre-fetches three complementary data sources before
-the LLM is invoked and injects them into the prompt as structured blocks:
+  1. News headlines: Yahoo Finance
+  2. StockTwits messages: the cashtag stream, with Bullish/Bearish tags
+  3. Reddit posts: r/wallstreetbets, r/stocks, r/investing
 
-  1. News headlines     — Yahoo Finance (institutional framing)
-  2. StockTwits messages — retail-trader posts indexed by cashtag, with
-                           user-labeled Bullish/Bearish sentiment tags
-  3. Reddit posts        — r/wallstreetbets, r/stocks, r/investing
+Each source is trimmed to the analysis window. With a TypeSafe key, the social
+posts are screened by Jev first (see post_screen). These feeds serve recent items
+and are not archived, so a historical run's sentiment inputs are not
+point-in-time.
 
-The agent does not use tool-calling; the data is in the prompt from
-turn 0. Output uses the structured-output pattern (json_schema for
-OpenAI/xAI, response_schema for Gemini, tool-use for Anthropic), falling
-back to free-text generation for providers that lack native support, so
-the sentiment header (band + score + confidence) is deterministic across
-runs and providers instead of free-form per-model prose.
-
-See: https://github.com/TauricResearch/TradingAgents/issues/557
-See: https://github.com/TauricResearch/TradingAgents/issues/796
+The report is a SentimentReport through structured output where the provider
+supports it and free text otherwise, so the band, score and confidence header
+reads the same across providers.
 """
 
 import re
@@ -32,20 +25,21 @@ from typing import Any
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
-from tradingagents.agents.utils.agent_utils import (
+from tradingagents.agents.context import (
     get_instrument_context_from_state,
     get_japan_sentiment_context_from_state,
     get_language_instruction,
-    get_news,
 )
-from tradingagents.agents.utils.structured import (
+from tradingagents.agents.post_screen import jev_screen
+from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
+from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
     invoke_structured_or_freetext,
 )
-from tradingagents.dataflows.reddit import fetch_reddit_posts
-from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
+from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.vendors.reddit import fetch_reddit_posts
+from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -83,9 +77,9 @@ def create_sentiment_analyst(llm):
                 ticker, start_date=start_date, end_date=end_date
             )
         else:
-            # Preserve the original US path byte-for-byte.
-            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
-            reddit_block = fetch_reddit_posts(ticker)
+            screen = jev_screen(ticker)
+            stocktwits_block = fetch_stocktwits_messages(ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen)
+            reddit_block = fetch_reddit_posts(ticker, start_date=start_date, end_date=end_date, screen=screen)
         system_message = _build_system_message(
             ticker=ticker,
             start_date=start_date,
@@ -104,8 +98,7 @@ def create_sentiment_analyst(llm):
                 (
                     "system",
                     "You are a helpful AI assistant, collaborating with other assistants."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+                    " Report what your tools support; another agent decides the trade."
                     # No tool-calling here: the data is pre-fetched into the
                     # prompt, so tool-range wording would only invite a
                     # hallucinated tool call (#1130).
@@ -174,6 +167,8 @@ def _apply_source_status_integrity(report_text: str, reddit_block: str) -> str:
         "TIMEOUT": "本次请求超时",
         "FETCH_FAILED": "本次获取失败",
     }
+    if "Reddit unavailable:" in reddit_block:
+        reddit_block = "reddit status=FETCH_FAILED"
     for status, reason in unavailable.items():
         if f"reddit status={status}" in reddit_block:
             return (
@@ -415,7 +410,7 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 <end_of_stocktwits>
 
 ### Reddit posts — r/wallstreetbets, r/stocks, r/investing (past 7 days)
-Community discussion. Engagement signal via upvote score and comment count. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
+Community discussion, without vote or comment counts. Subreddit character matters (r/wallstreetbets is often contrarian/exuberant; r/stocks more measured; r/investing longer-term).
 
 <start_of_reddit>
 {reddit_block}
@@ -423,11 +418,11 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 ## How to analyze this data (best practices)
 
-1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone.
+1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone. A block headed "Screened by Jev" has had off-topic posts removed; its stance count is a classifier's read of every on-topic post fetched, labelled or not, of which the posts listed are a sample. Read it alongside the user tags.
 
 2. **Look for cross-source divergences.** If news framing is bearish but StockTwits is overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
 
-3. **Weight Reddit posts by engagement.** A 400-upvote / 200-comment thread reflects community attention; a 3-upvote post is noise. Read the body excerpts for context — the title alone often misleads.
+3. **Read Reddit posts for substance.** The feed carries no vote or comment counts, so judge a post by its body excerpt, not its title alone, and do not infer engagement.
 
 4. **Distinguish opinion from event.** A news headline ("Nvidia announces $500M Corning deal") is an event; a StockTwits post ("buying NVDA, this is going to moon") is opinion. Both are inputs but should be weighted differently in your conclusions.
 

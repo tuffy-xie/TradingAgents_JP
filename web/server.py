@@ -20,15 +20,12 @@ from sse_starlette.sse import EventSourceResponse
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from tradingagents.agents.utils.agent_utils import (
-    build_instrument_context,
+from tradingagents.agents.context import (
     resolve_instrument_identity,
 )
-from tradingagents.agents.utils.evidence_registry import build_run_manifest
-from tradingagents.agents.utils.rating import parse_rating
+from tradingagents.agents.rating import parse_rating
 from tradingagents.dataflows.market import enrich_market_context, resolve_market_context
-from tradingagents.dataflows.market_data_validator import build_verified_market_snapshot
-from tradingagents.dataflows.utils import safe_ticker_component
+from tradingagents.dataflows.symbols import safe_ticker_component
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.final_output import (
     build_canonical_final_state,
@@ -90,7 +87,7 @@ PROVIDER_EFFORT_KIND = {
     "google": "google_thinking_level",
 }
 
-# Crypto ticker suffix detection — kept in sync with cli/utils.py
+# Crypto ticker suffix detection — kept in sync with cli/selections.py
 CRYPTO_SUFFIXES = ("-USD", "-USDT", "-USDC", "-BTC", "-ETH")
 
 
@@ -181,7 +178,7 @@ def list_models(provider: str):
 
 @app.get("/api/languages")
 def list_languages():
-    # Mirrors cli/utils.ask_output_language. ``value`` is what gets
+    # Mirrors cli/prompts.ask_output_language. ``value`` is what gets
     # forwarded to ``config["output_language"]`` (the prompt template
     # passes the raw string straight into the LLM).
     return {
@@ -251,6 +248,7 @@ async def analyze(
             asyncio.run_coroutine_threadsafe(queue.put(_safe_web_event(data)), loop)
 
     def run():
+        ta = None
         try:
             base_market_context = resolve_market_context(ticker)
             identity = resolve_instrument_identity(base_market_context.symbol)
@@ -290,53 +288,13 @@ async def analyze(
                 config[effort_key] = effort
 
             ta = TradingAgentsGraph(selected_analysts=analyst_list, config=config)
-            # ``propagate()`` normally sets this; the web path drives the graph
-            # manually, so set it here. Without it ``_log_state`` calls
-            # ``safe_ticker_component(None)`` → ValueError, the JSON state log is
-            # never written, and the run never shows up in /api/history.
-            ta.ticker = canonical_ticker
-            ta._resolve_pending_entries(canonical_ticker)
-
-            past_ctx = ta.memory_log.get_past_context(canonical_ticker)
-            # Mirror the CLI: resolve instrument identity once at start so
-            # every agent anchors to the real company, not just the raw
-            # ticker (graph/trading_graph.py:resolve_instrument_context).
-            instrument_ctx = build_instrument_context(canonical_ticker, asset_type, identity)
-            # The graph's programmatic ``propagate`` path collects this itself.
-            # The web path constructs state directly, so mirror that behavior.
-            from tradingagents.dataflows.japan.context import collect_japan_data_bundle
-
-            japan_data_bundle = collect_japan_data_bundle(market_context, date)
-            try:
-                verified_market_snapshot = build_verified_market_snapshot(canonical_ticker, date)
-            except Exception as exc:
-                logger.warning(
-                    "[VerifiedSnapshot] unavailable ticker=%s class=%s",
-                    canonical_ticker,
-                    type(exc).__name__,
-                )
-                verified_market_snapshot = (
-                    "VERIFIED_MARKET_SNAPSHOT_UNAVAILABLE: optional diagnostic unavailable; "
-                    "use valid Market Analyst market-tool results."
-                )
-            init_state = ta.propagator.create_initial_state(
-                canonical_ticker,
-                date,
-                asset_type=asset_type,
-                past_context=past_ctx,
-                instrument_context=instrument_ctx,
-                trade_constraints=trade_constraints,
-                market_context=market_context,
-                japan_data_bundle=japan_data_bundle,
-                verified_market_snapshot=verified_market_snapshot,
-                run_manifest=build_run_manifest(
-                    analysis_as_of=date,
-                    market_context=market_context.to_dict(),
-                    config=config,
-                ),
-            )
+            # All production entry points share initialization and checkpoint semantics.
+            init_state = ta.create_run_state(canonical_ticker, date, asset_type=asset_type)
+            init_state["trade_constraints"] = trade_constraints
             graph_args = ta.propagator.get_graph_args()
-            graph_args["stream_mode"] = "updates"
+            checkpoint_id = ta.begin_checkpoint(canonical_ticker, date, asset_type)
+            if checkpoint_id is not None:
+                graph_args.setdefault("config", {}).setdefault("configurable", {})["thread_id"] = checkpoint_id
 
             # Seed final_state with init fields; add defaults for fields set only by nodes
             final_state: dict = dict(init_state)
@@ -345,7 +303,10 @@ async def analyze(
             final_state.setdefault("final_trade_decision", "")
             done_agents: set = set()
 
-            for chunk in ta.graph.stream(init_state, **graph_args):
+            for _messages, state_update in ta.stream_run(ta.checkpoint_input(init_state), **graph_args):
+                if state_update is None:
+                    continue
+                chunk = {"state": state_update}
                 if stop_event.is_set():
                     logger.info("Client disconnected — stopping analysis for %s", ticker)
                     return
@@ -367,17 +328,9 @@ async def analyze(
                                 }
                             )
 
-                    # Merge updates into final_state
-                    for k, v in updates.items():
-                        if k in ("investment_debate_state", "risk_debate_state") and isinstance(
-                            final_state.get(k), dict
-                        ):
-                            final_state[k].update(v or {})
-                        elif k == "messages":
-                            final_state.setdefault("messages", [])
-                            final_state["messages"].extend(v if isinstance(v, list) else [v])
-                        else:
-                            final_state[k] = v
+                    # stream_run returns complete top-level values or private branch results.
+                    # The final top-level values replace provisional branch metadata.
+                    final_state.update(updates)
 
                     # ── Analyst reports: trigger only from this chunk's updates ──
                     for report_key, display_id in [
@@ -405,9 +358,7 @@ async def analyze(
                             {"type": "agent_update", "id": "Bear Researcher", "status": "completed"}
                         )
 
-                    judge = debate.get("judge_decision") or final_state[
-                        "investment_debate_state"
-                    ].get("judge_decision", "")
+                    judge = updates.get("investment_plan") or debate.get("judge_decision")
                     if judge and "Research Manager" not in done_agents:
                         done_agents.add("Research Manager")
                         put(
@@ -466,8 +417,8 @@ async def analyze(
             # Persist results.  The web path drives the graph directly, so it
             # must establish the same canonical final state as CLI/API runs
             # before any persisted or user-facing final artifact is created.
-            final_state = build_canonical_final_state(final_state)
-            if (final_state.get("final_output_contract") or {}).get("status") != "FINALIZED":
+            final_state = ta.record_decision(canonical_ticker, date, final_state)
+            if market_context.market == "JP" and (final_state.get("final_output_contract") or {}).get("status") != "FINALIZED":
                 try:
                     ta._log_state(date, final_state)
                 except Exception as log_exc:
@@ -500,12 +451,13 @@ async def analyze(
                         }
                     )
             research = final_state.get("investment_debate_state") or {}
-            if research.get("judge_decision"):
+            research_text = research.get("judge_decision") or final_state.get("investment_plan")
+            if research_text:
                 put(
                     {
                         "type": "section",
                         "key": "research_decision",
-                        "content": research["judge_decision"],
+                        "content": research_text,
                     }
                 )
             if final_state.get("trader_investment_plan"):
@@ -532,18 +484,7 @@ async def analyze(
                     safe_exception_text(report_exc),
                 )
 
-            if final_state.get("final_trade_decision"):
-                try:
-                    ta.memory_log.store_decision(
-                        ticker=ticker,
-                        trade_date=date,
-                        final_trade_decision=final_state["final_trade_decision"],
-                    )
-                except Exception as mem_exc:
-                    logger.warning(
-                        "Memory store failed (non-fatal): %s",
-                        safe_exception_text(mem_exc),
-                    )
+            ta.clear_checkpoint_on_success(canonical_ticker, date, asset_type)
 
             put({"type": "done", "report_path": str(report_path) if report_path else None})
 
@@ -551,6 +492,9 @@ async def analyze(
             safe_error = safe_exception_text(exc)
             logger.exception("Analysis failed: %s", safe_error)
             put({"type": "error", "message": safe_error})
+        finally:
+            if ta is not None:
+                ta.end_checkpoint()
 
     loop.run_in_executor(executor, run)
 
@@ -559,7 +503,7 @@ async def analyze(
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=60)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"data": json.dumps({"type": "ping"})}
                     continue
                 yield {"data": json.dumps(event, ensure_ascii=False)}

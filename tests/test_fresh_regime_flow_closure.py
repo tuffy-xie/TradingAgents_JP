@@ -5,8 +5,8 @@ import pytest
 
 from tests.test_predicate_authority_closure import regime_state
 from tradingagents import final_output as f
-from tradingagents.agents.utils.evidence_enforcement import probability_event_gate_violation
-from tradingagents.agents.utils.market_claims import current_market_claims
+from tradingagents.agents.evidence_enforcement import probability_event_gate_violation
+from tradingagents.agents.market_claims import current_market_claims
 
 
 @pytest.mark.parametrize('text', [

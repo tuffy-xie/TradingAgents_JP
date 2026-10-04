@@ -6,7 +6,7 @@ import pytest
 from tests.test_predicate_authority_closure import regime_state
 from tests.test_rating_authority import state_with
 from tradingagents import final_output as f
-from tradingagents.agents.utils.evidence_enforcement import (
+from tradingagents.agents.evidence_enforcement import (
     enforce_agent_output,
     probability_event_gate_violation,
 )
@@ -71,7 +71,7 @@ def test_macro_pricing_exact_artifact_bypass_blocked():
 
 
 def test_replacement_dedup_does_not_cross_heading_or_change_regular_repetitions():
-    from tradingagents.agents.utils.evidence_enforcement import _collapse_adjacent_replacements
+    from tradingagents.agents.evidence_enforcement import _collapse_adjacent_replacements
     checked = enforce_agent_output(regime_state(), '美国经济未陷入衰退。', 'News Analyst')
     notice = checked.text
     text = notice + '\n\n## 第二节\n\n' + notice + '\n公司增长。\n公司增长。'

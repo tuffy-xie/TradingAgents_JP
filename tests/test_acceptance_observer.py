@@ -243,7 +243,7 @@ def test_normal_production_propagate_forwards_once_without_sources(monkeypatch, 
     monkeypatch.setattr(module, "build_verified_market_snapshot", lambda *_: "local only")
     monkeypatch.setattr(module, "build_run_manifest", lambda **_: {"run_id": "offline"})
     monkeypatch.setattr(module, "build_canonical_final_state", lambda state: state)
-    initial = {"final_trade_decision": "local test output"}
+    initial = {"final_trade_decision": "Rating: Hold\nlocal test output"}
     compiled = FakeCompiledGraph()
     compiled.result = initial
     observer = AcceptanceGraphObserver(compiled)
@@ -252,7 +252,7 @@ def test_normal_production_propagate_forwards_once_without_sources(monkeypatch, 
     graph.config = {"checkpoint_enabled": False}
     graph.debug = False
     graph._checkpointer_ctx = None
-    graph._resolve_pending_entries = Mock()
+    graph.settle_pending = Mock()
     graph.memory_log = Mock()
     graph.memory_log.get_past_context.return_value = "existing memory"
     graph.propagator = Mock()
@@ -267,11 +267,11 @@ def test_normal_production_propagate_forwards_once_without_sources(monkeypatch, 
     observer.request_propagation()
     state, signal = graph.propagate("AAPL", "2026-01-05")
     assert state is initial
-    assert signal == "local signal"
+    assert signal == "Hold"
     assert len(compiled.invoke_calls) == len(compiled.stream_calls) == 1
     assert compiled.invoke_calls[0][1] is args["config"]
     graph._log_state.assert_called_once_with("2026-01-05", initial)
     graph.memory_log.store_decision.assert_called_once_with(
-        ticker="AAPL", trade_date="2026-01-05", final_trade_decision=initial["final_trade_decision"]
+        ticker="AAPL", trade_date="2026-01-05", final_trade_decision=initial["final_trade_decision"], rating="Hold"
     )
     assert observer.lifecycle.graph_completed == 1

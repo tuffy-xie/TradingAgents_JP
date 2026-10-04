@@ -107,7 +107,7 @@ def test_stale_revision_fails_at_direct_publication(publisher, revision, tmp_pat
         elif publisher == "html":
             _render_report_html(state, auto_print=False)
         else:
-            from cli.main import display_complete_report
+            from cli.display import display_complete_report
             display_complete_report(state)
     rebuilt = output.build_canonical_final_state(state)
     output.require_canonical_final_state(rebuilt)

@@ -14,18 +14,18 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from tradingagents.agents.utils.evidence_enforcement import enforce_agent_output
-from tradingagents.agents.utils.execution_validation import (
+from tradingagents.agents.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.execution_validation import (
     parse_execution_action,
     reconcile_execution_authority,
     validate_execution_plan,
 )
-from tradingagents.agents.utils.market_authority import canonical_market_authority
-from tradingagents.agents.utils.market_claims import (
+from tradingagents.agents.market_authority import canonical_market_authority
+from tradingagents.agents.market_claims import (
     current_market_claims,
     remove_current_market_claims,
 )
-from tradingagents.agents.utils.rating import parse_explicit_rating
+from tradingagents.agents.rating import parse_explicit_rating
 from tradingagents.dataflows.japan.context import (
     render_japan_financial_report,
     render_japan_report_sections,
@@ -57,7 +57,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "macro-outcome-recommendation-surface-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "macro-outcome-recommendation-stop-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -208,8 +208,8 @@ _ACTION_AMOUNT = re.compile(
 )
 _STOP_TRIGGER = re.compile(
     r"(?:跌破|突破|低于|高于|低於|高於)\s*[¥￥]?\d[\d,]*(?:\.\d+)?"
-    r"[^。；;\n]{0,24}(?:止损|止盈)|"
-    r"(?:止损|止盈)(?:价|位|设在|設在|设置在|設置在|于|於)?\s*"
+    r"[^。；;\n]{0,24}(?:止[损損]|止盈)|"
+    r"(?:止[损損]|止盈)(?:价|價|位|设在|設在|设置在|設置在|于|於)?\s*[:：]?\s*"
     r"[¥￥]?\d[\d,]*(?:\.\d+)?",
     re.I,
 )
@@ -367,10 +367,18 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         and not _validate_final_artifact(result, bool(contract.get("execution_allowed")),
                                         accepted_report=str(result.get("accepted_report_markdown") or ""))
     ):
-        return result
+        return _sync_upstream_manager_reports(result)
     if contract and isinstance(result.get("raw_agent_outputs"), Mapping):
         # Re-accept archived v1 state under the current output contract.
         result.update(copy.deepcopy(result["raw_agent_outputs"]))
+    # Upstream v0.5 publishes managers at top-level; archived JP state used
+    # judge_decision. Feed the same acceptance boundary, not another pipeline.
+    for debate_key, report_key in (("investment_debate_state", "investment_plan"),
+                                  ("risk_debate_state", "final_trade_decision")):
+        debate = dict(result.get(debate_key) or {})
+        if not debate.get("judge_decision") and isinstance(result.get(report_key), str):
+            debate["judge_decision"] = result[report_key]
+        result[debate_key] = debate
     # A reacceptance must derive Portfolio authority anew. Publishers use the
     # frozen rating in the completed contract, never a later raw-prose mutation.
     result.pop("final_output_contract", None)
@@ -575,7 +583,20 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
             "persistence_byte_contract": "UTF8_EXACT_NO_APPENDED_BYTES",
         },
     }
-    return result
+    return _sync_upstream_manager_reports(result)
+
+
+def _sync_upstream_manager_reports(state: dict[str, Any]) -> dict[str, Any]:
+    """Thin state adapter: upstream's report field is the accepted JP decision.
+
+    Gate rules and artifact assembly still have one implementation. The CLI and
+    report writer now read upstream's top-level field, so it cannot retain an
+    unaccepted copy of the raw research decision after acceptance.
+    """
+    research = state.get("investment_debate_state") or {}
+    if isinstance(research.get("judge_decision"), str):
+        state["investment_plan"] = research["judge_decision"]
+    return state
 
 
 def compose_user_report_markdown(state: Mapping[str, Any], *, ticker: str | None = None) -> str:
@@ -2092,7 +2113,8 @@ def _table_execution_violation(cells: list[str], headers: list[str] | None) -> s
     # Parameter label/value relations can cross cells just like actions do.
     # Cell-local scanning alone cannot see `Entry | 8513` or `仓位 | 3%`.
     joined = " ".join(cells)
-    if _EXECUTION_PARAMETER.search(joined) or _POSITION_RECOMMENDATION.search(joined):
+    if (_EXECUTION_PARAMETER.search(joined) or _POSITION_RECOMMENDATION.search(joined)
+            or _STOP_TRIGGER.search(joined)):
         return _execution_clause_violation(joined)
     return None
 

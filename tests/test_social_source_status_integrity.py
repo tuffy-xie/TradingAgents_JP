@@ -4,7 +4,7 @@ from tradingagents.agents.analysts.sentiment_analyst import (
     _apply_source_status_integrity,
     _build_system_message,
 )
-from tradingagents.agents.utils.evidence_enforcement import enforce_agent_result
+from tradingagents.agents.evidence_enforcement import enforce_agent_result
 
 
 def test_rate_limited_reddit_is_not_rendered_as_zero_mentions():

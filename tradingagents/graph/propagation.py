@@ -1,12 +1,10 @@
-# TradingAgents/graph/propagation.py
-
 from typing import Any
 
-from tradingagents.agents.utils.agent_states import (
+from tradingagents.agents.evidence_registry import initialize_evidence_registry
+from tradingagents.agents.state import (
     InvestDebateState,
     RiskDebateState,
 )
-from tradingagents.agents.utils.evidence_registry import initialize_evidence_registry
 from tradingagents.dataflows.japan.decision import build_japan_decision_context
 from tradingagents.dataflows.market import MarketContext, resolve_market_context
 
@@ -30,6 +28,7 @@ class Propagator:
         japan_data_bundle: dict[str, Any] | None = None,
         verified_market_snapshot: str = "",
         run_manifest: dict[str, Any] | None = None,
+        portfolio_context: str = "",
     ) -> dict[str, Any]:
         """Create the initial state for the agent graph.
 
@@ -68,13 +67,13 @@ class Propagator:
             "trade_date": str(trade_date),
             "trade_constraints": trade_constraints or {},
             "past_context": past_context,
+            "portfolio_context": portfolio_context,
             "investment_debate_state": InvestDebateState(
                 {
                     "bull_history": "",
                     "bear_history": "",
                     "history": "",
                     "current_response": "",
-                    "judge_decision": "",
                     "count": 0,
                 }
             ),
@@ -88,7 +87,6 @@ class Propagator:
                     "current_aggressive_response": "",
                     "current_conservative_response": "",
                     "current_neutral_response": "",
-                    "judge_decision": "",
                     "count": 0,
                 }
             ),
