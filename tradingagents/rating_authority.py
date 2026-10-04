@@ -39,6 +39,65 @@ _ADVICE_SURFACE = re.compile(
     r"\b(?:investment|trading|portfolio)\s+(?:advice|recommendations?|management))$|"
     r"^(?:(?:final|investment|trading)\s+)?recommendations?$", re.I
 )
+# A report title's role survives suffixes (summary/risk notes/report/issuer).
+# Corporate investment decisions and externally owned advice are not this role.
+_INVESTMENT_SURFACE_ROLE = re.compile(
+    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦|决策|決策)|"
+    r"\b(?:investment|trading)\s+(?:advice|recommendations?|decisions?)\b", re.I
+)
+_CORPORATE_DECISION = re.compile(
+    r"(?:公司|企业|企業|董事会|管理层|资本开支|产能|研发|并购).{0,12}(?:投资|投資)(?:决策|決策)|"
+    r"\b(?:company|corporate|board|management|capex)\b.{0,24}\binvestment\s+decisions?\b", re.I
+)
+_DECISION_FRAME = re.compile(
+    r"(?:本次|此次|本报告|我们(?:的)?|最终|最終)(?:投资|投資|交易)?(?:决策|決策)|"
+    r"\b(?:our|this|final)\s+(?:investment\s+|trading\s+)?decision\b", re.I
+)
+_DIRECTIONAL_FRAME = re.compile(r"(?:看空|看跌|看多|看涨)(?:的)?立场|\b(?:bullish|bearish)\s+stance\b", re.I)
+_OTHER_DECISION_OWNER = re.compile(
+    r"(?:投资者|投資家|公司|企业|企業|董事会|管理层|客户|看涨方|看空方|多方|空方)|"
+    r"\b(?:investors?|company|board|management|clients?|bull\s+case|bear\s+case)\b", re.I
+)
+
+
+def _advice_surface(title: str) -> bool:
+    role = _INVESTMENT_SURFACE_ROLE.search(title)
+    if role and (
+        re.search(r"(?:不(?:提供|构成|发布)|无|没有|\b(?:no|without|not\s+providing))\s*$",
+                  title[:role.start()], re.I)
+        or re.match(r"\s*(?:的(?:限制|边界|定义|含义|风险)|\b(?:limitations?|definition|boundaries)\b)",
+                    title[role.end():], re.I)
+    ):
+        # Discussing the limits/meaning of advice is not promising advice.
+        # This exemption owns the title only, never a recommendation below it.
+        return False
+    return bool(_ADVICE_SURFACE.search(title) or (
+        role and not _CORPORATE_DECISION.search(title)
+    ))
+
+
+def _research_framing(text: str) -> str | None:
+    """Relabel internal decision agency, preserving the underlying analysis.
+
+    An investor's independent decision, corporate decisions and attributed
+    Bull/Bear/broker positions do not grant the report its own decision role.
+    """
+    replacements = []
+    for match in sorted([*_DECISION_FRAME.finditer(text), *_DIRECTIONAL_FRAME.finditer(text)],
+                        key=lambda item: item.start()):
+        prefix = re.split(r"[，,：:；;。|]", text[:match.start()])[-1]
+        if _OTHER_DECISION_OWNER.search(prefix) or _ADVICE_HISTORY.search(prefix):
+            continue
+        if match.re is _DIRECTIONAL_FRAME:
+            negative = bool(re.search(r"看空|看跌|bearish", match[0], re.I))
+            replacement = "下行风险判断" if negative else "上行潜力判断"
+        else:
+            replacement = "研究判断"
+        replacements.append((match.start(), match.end(), replacement))
+    result = text
+    for start, end, replacement in reversed(replacements):
+        result = result[:start] + replacement + result[end:]
+    return result if replacements else None
 # Recommendation ownership is not action authorization. A causal/evaluative
 # reason for rejecting a trade is an investment stance; a bare ban or statement
 # that execution is unavailable remains pure withholding.
@@ -184,6 +243,7 @@ class RatingClaim:
     rating: str | None
     semantic_type: str = "INVESTMENT_RATING"
     from_rating: str | None = None
+    replacement: str | None = None
 
 
 def _canonical_rating(value: str) -> str:
@@ -281,15 +341,15 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             heading_context.append((level, external))
             while stance_context and stance_context[-1][0] >= level:
                 stance_context.pop()
-            stance_context.append((level, bool(_STANCE_CONTEXT.search(title) or _ADVICE_SURFACE.search(title))))
+            stance_context.append((level, bool(_STANCE_CONTEXT.search(title) or _advice_surface(title))))
             plain = title
-            if _ADVICE_SURFACE.search(title) and not any(ext for _, ext in heading_context):
+            if _advice_surface(title) and not any(ext for _, ext in heading_context):
                 claims.append(RatingClaim(offset, offset + len(line.rstrip("\n")),
                                           line.rstrip("\n"), None, "RECOMMENDATION_SURFACE"))
         elif re.fullmatch(r"\s*\*\*[^\n]+\*\*\s*", line):
             # Bold numbered lead-ins are report surfaces too, not only # headings.
             title = re.sub(r"^[一二三四五六七八九十\d]+[、.)]\s*", "", plain)
-            if _ADVICE_SURFACE.search(title) and not any(ext for _, ext in heading_context):
+            if _advice_surface(title) and not any(ext for _, ext in heading_context):
                 claims.append(RatingClaim(offset, offset + len(line.rstrip("\n")),
                                           line.rstrip("\n"), None, "RECOMMENDATION_SURFACE"))
         external_context = any(external for _, external in heading_context)
@@ -316,6 +376,11 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
         # punctuation. Keep its identity whole through detection and pruning.
         unit_pattern = r"[^\n]+" if is_table else r"[^\n。！？；;]+[。！？；;]?"
         for unit in re.finditer(unit_pattern, line):
+            # A title already has one stable surface identity; do not create
+            # overlapping sentence claims for its decision-role vocabulary.
+            if any(claim.start <= offset + unit.start() and claim.end >= offset + unit.end()
+                   for claim in claims):
+                continue
             cleaned = re.sub(r"[*`#_]", "", unit[0]).strip()
             cleaned = re.sub(r"^(?:[-+]\s+|\d+[.)、]\s*)", "", cleaned)
             match = _VALUES.search(cleaned)
@@ -339,7 +404,8 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 for predicate in _REASONED_TRADE_STANCE.finditer(cleaned)
             )
             stance = bool(reasoned_stance or status_quo or _OWN_ADVICE_DISCOURSE.search(cleaned))
-            if not match and not hold_stance and not selection and not stance:
+            framing = _research_framing(unit[0])
+            if not match and not hold_stance and not selection and not stance and framing is None:
                 continue
             # Ownership includes transitions and evaluative holding advice,
             # not just labelled values and signal/status cells.
@@ -355,13 +421,18 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 continue
             our = bool(_OUR_RECOMMENDATION.search(cleaned) or (selection and _SELECTION_OWNER.search(cleaned)))
             bare = bool(re.fullmatch(r"(?:buy|hold|sell|overweight|underweight|买入|持有|卖出|增持|减持)\s*(?:[（(][^）)]*[）)])?[。.!]?", cleaned, re.I))
-            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance or selection or stance):
+            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance or selection or stance or framing is not None):
                 continue
             external = bool(_EXTERNAL.search(cleaned)) or _named_external_report(cleaned) or (
                 (external_context or table_external or pending_external)
                 and not _OWN_LABEL.search(cleaned)
             )
             if external and not our:
+                continue
+            if framing is not None and not (asserted or recommendation or transition or hold_stance
+                                           or selection or stance or (match and (labelled or bare or pending_label or table_rating))):
+                claims.append(RatingClaim(offset + unit.start(), offset + unit.end(), unit[0],
+                                          None, "RECOMMENDATION_FRAMING", replacement=framing))
                 continue
             # Explicit system recommendations take precedence over quoted
             # broker values; otherwise use the value belonging to the label.
@@ -397,6 +468,9 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
 def remove_internal_ratings(text: str) -> str:
     """Remove only complete recommendation propositions; retain outside facts."""
     for claim in reversed(internal_rating_claims(text)):
+        if claim.semantic_type == "RECOMMENDATION_FRAMING":
+            text = text[:claim.start] + claim.replacement + text[claim.end:]
+            continue
         if claim.semantic_type == "RECOMMENDATION_SURFACE":
             # The surface promises unowned trading advice even if pruning has
             # left only business analysis. Preserve that analysis and heading

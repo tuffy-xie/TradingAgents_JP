@@ -58,7 +58,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "reasoned-stance-scenario-target-presentation-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "nonportfolio-recommendation-framing-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -1030,8 +1030,11 @@ def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[
                 "authority_owner": "Portfolio Manager",
                 "enforcement_action": ("RELABEL_UNOWNED_RECOMMENDATION_SURFACE"
                                        if claim.semantic_type == "RECOMMENDATION_SURFACE"
+                                       else "RELABEL_UNOWNED_DECISION_FRAMING"
+                                       if claim.semantic_type == "RECOMMENDATION_FRAMING"
                                        else "REMOVE_SECONDARY_INTERNAL_RECOMMENDATION"),
-                "replacement_claim": "研究分析" if claim.semantic_type == "RECOMMENDATION_SURFACE" else "",
+                "replacement_claim": ("研究分析" if claim.semantic_type == "RECOMMENDATION_SURFACE"
+                                      else claim.replacement or ""),
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             })
