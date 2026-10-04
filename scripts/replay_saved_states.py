@@ -51,6 +51,7 @@ def main():
     from bs4 import BeautifulSoup
 
     from tradingagents import final_output as f
+    from tradingagents.agents.execution_validation import EXECUTION_PLAN_FIELDS
     from tradingagents.reporting import write_report_tree
     from tradingagents.secret_redaction import sanitize_data, sanitize_text
     from web.server import _render_report_html
@@ -87,6 +88,8 @@ def main():
             "market_authority_violations": len(f._artifact_market_claims(state, text)),
             "evidence_gate_violations": len(f._artifact_evidence_gate_findings(state, text)),
             "unresolved": sum(e.get("resolution") == "UNRESOLVED" for e in state["evidence_audit"]),
+            "withheld_execution_parameters": 0 if allowed else sum(
+                state["validated_execution"].get(key) is not None for key in EXECUTION_PLAN_FIELDS),
         }
         issues = f._validate_final_artifact(state, allowed, accepted_report=text)
         _, closure = f._finalize_audit(state["evidence_audit"], state, accepted_report=text, execution_allowed=allowed)

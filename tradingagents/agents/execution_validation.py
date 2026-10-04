@@ -54,6 +54,21 @@ _RISK_CLAUSE = re.compile(
     re.I,
 )
 
+# Parsed proposals remain in raw_agent_outputs. A rejected canonical plan must
+# not carry actionable numbers or their derived risk math into publication.
+EXECUTION_PLAN_FIELDS = (
+    "entry", "stop", "target", "target_price", "position_pct", "position_size",
+    "distance", "risk_pct", "portfolio_stop_risk_pct", "derivation",
+)
+
+
+def _withheld_plan(value: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(value)
+    for field in EXECUTION_PLAN_FIELDS:
+        if field in result or field in {"entry", "stop", "position_pct"}:
+            result[field] = None
+    return result
+
 
 def validate_execution_plan(text: str) -> dict[str, Any]:
     """Calculate plan risk from model-chosen entry, stop, and position inputs."""
@@ -62,7 +77,7 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
     stop = _first_decimal(_STOP, text)
     position = _first_decimal(_POSITION, text)
     if action == "Hold":
-        return {
+        return _withheld_plan({
             "version": "v2",
             "status": "DATA_UNAVAILABLE",
             "detail": "HOLD_DOES_NOT_AUTHORIZE_NEW_EXECUTION",
@@ -70,9 +85,9 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
             "entry": _float(entry),
             "stop": _float(stop),
             "position_pct": _float(position),
-        }
+        })
     if action is None:
-        return {
+        return _withheld_plan({
             "version": "v2",
             "status": "DATA_UNAVAILABLE",
             "detail": "ACTION_UNAVAILABLE",
@@ -80,9 +95,9 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
             "entry": _float(entry),
             "stop": _float(stop),
             "position_pct": _float(position),
-        }
+        })
     if entry is None or stop is None or entry <= 0:
-        return {
+        return _withheld_plan({
             "version": "v2",
             "status": "DATA_UNAVAILABLE",
             "detail": "ENTRY_OR_STOP_UNAVAILABLE",
@@ -90,7 +105,7 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
             "entry": _float(entry),
             "stop": _float(stop),
             "position_pct": _float(position),
-        }
+        })
     distance = abs(entry - stop)
     risk_pct = distance / entry * Decimal("100")
     portfolio_risk = (
@@ -182,7 +197,7 @@ def reconcile_execution_authority(
                 "detail": detail,
             }
         )
-    return result
+    return _withheld_plan(result) if result.get("status") != "OK" else result
 
 
 def _plain_field(value: str) -> str:

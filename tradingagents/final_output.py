@@ -16,6 +16,7 @@ from typing import Any
 
 from tradingagents.agents.evidence_enforcement import enforce_agent_output
 from tradingagents.agents.execution_validation import (
+    EXECUTION_PLAN_FIELDS,
     parse_execution_action,
     reconcile_execution_authority,
     validate_execution_plan,
@@ -57,7 +58,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "macro-outcome-recommendation-stop-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "relational-macro-withheld-plan-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -210,7 +211,9 @@ _STOP_TRIGGER = re.compile(
     r"(?:跌破|突破|低于|高于|低於|高於)\s*[¥￥]?\d[\d,]*(?:\.\d+)?"
     r"[^。；;\n]{0,24}(?:止[损損]|止盈)|"
     r"(?:止[损損]|止盈)(?:价|價|位|设在|設在|设置在|設置在|于|於)?\s*[:：]?\s*"
-    r"[¥￥]?\d[\d,]*(?:\.\d+)?",
+    r"[¥￥]?\d[\d,]*(?:\.\d+)?|"
+    r"(?:执行|執行|严守|嚴守|设置|設置|设定|設定)\s*[¥￥]?\d[\d,]*(?:\.\d+)?"
+    r"\s*(?:日元|日圓|円|元|美元|USD|JPY)?\s*(?:止[损損]|止盈)",
     re.I,
 )
 _EXECUTION_TRIGGER_ACTION = re.compile(
@@ -2170,11 +2173,13 @@ def _execution_clause_violation(text: str) -> str | None:
         [*_EXECUTION_ACTION.finditer(plain), *_ENGLISH_TRADE_ACTION.finditer(plain)],
         key=lambda match: match.start(),
     )
+    authorized_stop = any(not _non_authorizing_action(plain, match)
+                          for match in _STOP_TRIGGER.finditer(plain))
     if actions and all(_non_authorizing_action(plain, match) for match in actions) and not (
         _ACTIONABLE_HOLDING_PERIOD.search(plain)
         or _POSITION_DIRECTIVE.search(plain)
         or _position_preservation_instruction(plain)
-        or _STOP_TRIGGER.search(plain)
+        or authorized_stop
     ):
         # Polarity/subject belong to the action, not to a conditional elsewhere.
         return None
@@ -2192,7 +2197,7 @@ def _execution_clause_violation(text: str) -> str | None:
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if (
         _ACTION_AMOUNT.search(plain)
-        or _STOP_TRIGGER.search(plain)
+        or authorized_stop
         or _EXECUTION_TRIGGER_ACTION.search(plain)
         or _CONDITION_ACTION_LINK.search(plain)
     ):
@@ -2462,6 +2467,8 @@ def _publicize_inline_text(text: str) -> str:
         "", text, flags=re.I,
     )
     text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
+    # Internal enforcement labels are not user-facing financial terminology.
+    text = re.sub(r"(?:关键数据|关键指标|证据|数据)门控\s*[:：]?\s*", "", text)
     return _localize_presentation_labels(text)
 
 
@@ -2682,7 +2689,10 @@ def _artifact_execution_claims(text: str) -> list[str]:
 def _execution_cross_state_issues(state: Mapping[str, Any], execution_allowed: bool) -> list[str]:
     """Reject executable plans without two compatible decision authorities."""
     if not execution_allowed:
-        return []
+        validation = state.get("validated_execution") or {}
+        return ["EXECUTION_WITHHELD_PARAMETERS_PRESENT"] if any(
+            validation.get(field) is not None for field in EXECUTION_PLAN_FIELDS
+        ) else []
     validation = state.get("validated_execution") or {}
     action = validation.get("action")
     rating = validation.get("portfolio_rating") or parse_explicit_rating(
@@ -2710,6 +2720,8 @@ def validate_final_report_text(
         issues.append("INTERNAL_ENGINEERING_METADATA_VISIBLE")
     if _INTERNAL_TOOL_IDENTIFIER.search(text):
         issues.append("INTERNAL_TOOL_IDENTIFIER_VISIBLE")
+    if re.search(r"(?:关键数据|关键指标|证据|数据)门控", text):
+        issues.append("INTERNAL_GATE_LABEL_VISIBLE")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):
         issues.append("SHORT_MARKET_OVERCLAIM")
     if _remove_generation_process_prose(text) != text:

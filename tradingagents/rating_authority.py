@@ -83,8 +83,10 @@ _TRANSITION_CONSEQUENCE = re.compile(
     r"^\s*\b(?:would|could)\s+(?:increase|reduce|raise|lower)\s+risk\b", re.I
 )
 _HOLD_STANCE = re.compile(
-    r"(?:值得|建议|推荐)[\s\"“”]*持有|持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
-    r"\b(?:worth\s+holding|recommend\s+holding|maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
+    r"(?:值得|建议|推荐)[\s\"“”]*(?:(?:现有持仓)?投资者\s*)?(?:继续|保持|维持)?\s*持有|"
+    r"持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
+    r"\b(?:worth\s+holding|recommend\s+(?:investors?\s+)?(?:continu(?:e|ing)\s+)?holding|"
+    r"maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
 )
 # A named rating can be the subject of an evaluative predicate, rather than
 # the value of a label. Ownership still applies, including future conditions.
@@ -292,7 +294,11 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             cleaned = re.sub(r"[*`#_]", "", unit[0]).strip()
             cleaned = re.sub(r"^(?:[-+]\s+|\d+[.)、]\s*)", "", cleaned)
             match = _VALUES.search(cleaned)
-            hold_stance = bool(_HOLD_STANCE.search(cleaned))
+            hold_stance = any(
+                not _RECOMMENDATION_WITHHELD_BEFORE.search(cleaned[:stance.start()])
+                and not _ADVICE_HISTORY.search(re.split(r"[,，|]", cleaned[:stance.start()])[-1])
+                for stance in _HOLD_STANCE.finditer(cleaned)
+            )
             selection = _selection_recommendation(cleaned)
             if not match and not hold_stance and not selection:
                 continue

@@ -114,15 +114,23 @@ _ECONOMIC_REGIMES = {
     "deflation": re.compile(r"通缩|通縮|デフレ|\bdeflation\b", re.I),
 }
 _EVENT_JURISDICTIONS = {
-    "US": re.compile(r"美国|美國|米国|\b(?:US|U\.S\.|United States)\b", re.I),
+    "US": re.compile(r"美国|美國|米国|(?<![A-Za-z])(?:US|U\.S\.|United States)(?![A-Za-z])", re.I),
     "JP": re.compile(r"日本|\bJapan\b", re.I),
-    "UK": re.compile(r"英国|英國|\b(?:UK|U\.K\.|United Kingdom)\b", re.I),
+    "UK": re.compile(r"英国|英國|(?<![A-Za-z])(?:UK|U\.K\.|United Kingdom)(?![A-Za-z])", re.I),
     "CN": re.compile(r"中国|中國|\bChina\b", re.I),
     "EU": re.compile(r"欧元区|歐元區|ユーロ圏|\b(?:Eurozone|Euro area)\b", re.I),
 }
 _EVENT_PROBABILITY = re.compile(
     r"(?:概率|機率|確率|\b(?:probability|chance|odds)\b)[^。！？；;|%]{0,20}?"
     r"(\d+(?:\.\d+)?)\s*%", re.I
+)
+_QUALITATIVE_EVENT_ODDS = re.compile(
+    r"(?:概率|機率|確率)[^。！？；;|]{0,12}(?:高|低|大|小)|"
+    r"\b(?:probability|chance|odds)\b[^.;!?|]{0,20}\b(?:high|low|likely|unlikely)\b", re.I
+)
+_ECONOMIC_STATE = re.compile(
+    r"(?:经济|經濟|経済|景气|景氣)[^。！？；;|]{0,12}(?:稳健|穩健|强劲|強勁|复苏|復甦|增长|增長|成長)|"
+    r"\beconom(?:y|ic\s+conditions)\b[^.;!?|]{0,20}\b(?:robust|strong|healthy|recovering)\b", re.I
 )
 _SOURCE_EVENT_PROBABILITY = re.compile(
     r"\*\*(?P<question>[^\n]+?)\*\*\s*[—-]\s*(?P<outcome>Yes|No)\s+"
@@ -148,12 +156,13 @@ _MACRO_PREMISE = re.compile(
     r"\b(?:BOJ|Fed|central\s+bank)\b", re.I
 )
 _DEMAND_OUTCOME = re.compile(
-    r"(?:需求|需要|\bdemand\b)[^。！？；;|]{0,24}(?:保障|保证|保證|稳健|穩健|正面|有利)|"
+    r"(?:需求|需要|\bdemand\b)[^。！？；;|]{0,24}(?:保障|保证|保證|稳健|穩健|正面|有利|底堅)|"
     r"(?:保障|保证|保證)[^。！？；;|]{0,24}(?:需求|需要)|"
     r"\b(?:guarantees?|ensures?|supports?)\b[^.;!?|]{0,35}\bdemand\b|"
     r"\bdemand\b[^.;!?|]{0,24}\b(?:secured|guaranteed|strong|positive)\b", re.I
 )
 _MONETARY_OUTCOME = re.compile(
+    r"(?:日本|市场|市場|金融)(?:的)?(?:流动性|流動性)[^。！？；;|]{0,18}(?:无|無|没有|沒有)(?:收紧|收緊)压力|"
     r"(?:金融|融资|融資|货币|貨幣)条件[^。！？；;|]{0,18}(?:宽松|寬鬆|收紧|收緊|改善)|"
     r"(?:金融|融資|貨幣)條件[^。！？；;|]{0,18}(?:寬鬆|收緊|改善)|"
     r"(?:套利交易|套息交易)[^。！？；;|]{0,24}(?:风险|風險)[^。！？；;|]{0,16}(?:降低|減少|减少|减轻|減輕)|"
@@ -254,7 +263,7 @@ def _unsupported_macro_outcome(state: Mapping[str, Any], clause: str) -> bool:
     """Probabilities cannot establish demand, carry risk or financial regimes."""
     patterns = [_MONETARY_OUTCOME]
     if _MACRO_PREMISE.search(clause):
-        patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE))
+        patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE, _ECONOMIC_STATE))
     for pattern in patterns:
         for outcome in pattern.finditer(clause):
             if _outcome_is_hypothetical(clause, outcome.start(), outcome.end()):
@@ -264,6 +273,78 @@ def _unsupported_macro_outcome(state: Mapping[str, Any], clause: str) -> bool:
             if not _independent_macro_statement(state, clause):
                 return True
     return False
+
+
+def _probability_row_outcomes(state: Mapping[str, Any], clause: str) -> list[int]:
+    """An event/odds cell does not witness a sibling regime/result cell.
+
+    Keep the whole row as Audit identity. Only the unbound outcome cell is
+    replaced, so independent source probabilities remain visible. Modality
+    belongs to the outcome cell, not another sibling's confidence wording.
+    """
+    if not clause.strip().startswith("|") or not re.search(r"\d+(?:\.\d+)?%", clause):
+        return []
+    cells = [cell.strip() for cell in clause.strip().strip("|").split("|")]
+    event_columns = [i for i, cell in enumerate(cells)
+                     if any(pattern.search(cell) for pattern in _ECONOMIC_REGIMES.values())]
+    if not event_columns:
+        return []
+    event_column = event_columns[0]
+    return [i for i, cell in enumerate(cells)
+            if i != event_column and not _REGIME_MODAL.search(cell)
+            and (any(pattern.search(cell) for pattern in _ECONOMIC_REGIMES.values())
+                 or _ECONOMIC_STATE.search(cell) or _DEMAND_OUTCOME.search(cell)
+                 or _MONETARY_OUTCOME.search(cell))
+            and not _independent_macro_statement(state, clause)]
+
+
+def _source_regime_odds_bound(state: Mapping[str, Any], clause: str, regime: str,
+                             probability: float | None = None) -> bool:
+    """Bind both numeric and qualitative odds to the same outcome event.
+
+    A qualitative likelihood still needs its own source event; a recession
+    question cannot stand in for a soft-landing question. No qualitative odds
+    threshold is invented here; numeric claims additionally require exact odds.
+    """
+    jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items()
+                         if pattern.search(clause)), None)
+    if not jurisdiction:
+        return False
+    years = set(re.findall(r"(?<!\d)20\d{2}(?!\d)", clause))
+    if not years:
+        as_of = str(state.get("trade_date") or "")
+        years = {as_of[:4]} if re.match(r"20\d{2}-", as_of) else set()
+    regime_match = _ECONOMIC_REGIMES[regime].search(clause)
+    negative = bool(re.search(r"(?:不(?:会|會)?|非|\b(?:no|not|without)\s+(?:a\s+)?)$",
+                              clause[:regime_match.start()].rstrip(), re.I))
+    for evidence in state.get("evidence_registry") or []:
+        if (not isinstance(evidence, Mapping) or evidence.get("source") != "get_prediction_markets"
+                or evidence.get("verification_status") != "VERIFIED_TOOL_OUTPUT"
+                or evidence.get("allowed_for_current_decision") is False):
+            continue
+        for event in _SOURCE_EVENT_PROBABILITY.finditer(str(evidence.get("value") or "")):
+            source_probability = float(event["probability"])
+            if (event["outcome"].casefold() == "no") != negative:
+                source_probability = 100 - source_probability
+            if (_ECONOMIC_REGIMES[regime].search(event["question"])
+                    and _EVENT_JURISDICTIONS[jurisdiction].search(event["question"])
+                    and (not years or years.issubset(set(re.findall(r"(?<!\d)20\d{2}(?!\d)", event["question"]))))
+                    and (probability is None or source_probability == probability)):
+                return True
+    return False
+
+
+def _row_event_probability(clause: str) -> tuple[str, float] | None:
+    """Recover the event/value relation, not a number from an unrelated cell."""
+    if not clause.strip().startswith("|"):
+        return None
+    cells = [cell.strip(" *") for cell in clause.strip().strip("|").split("|")]
+    for index, cell in enumerate(cells):
+        probability = re.match(r"^(\d+(?:\.\d+)?)%", cell)
+        subject = " ".join(cells[:index])
+        if probability and any(pattern.search(subject) for pattern in _ECONOMIC_REGIMES.values()):
+            return subject, float(probability[1])
+    return None
 
 
 def _unsupported_regime_certainty(state: Mapping[str, Any], clause: str) -> bool:
@@ -322,45 +403,39 @@ def _unsupported_market_pricing(state: Mapping[str, Any], clause: str) -> bool:
     )
 
 
-def probability_event_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
+def probability_event_gate_violation(state: Mapping[str, Any], clause: str,
+                                     *, jurisdiction_context: str | None = None) -> bool:
     """Ground regime probabilities and confirmations in their own source event.
 
     This is deliberately narrower than arbitrary macro-language translation:
     only named economic-regime assertions are classified. Unconfirmed research
     possibilities and other properly supported macro numbers remain unchanged.
     """
+    if _probability_row_outcomes(state, clause):
+        return True
+    row_event = _row_event_probability(clause)
+    if row_event:
+        subject, value = row_event
+        if jurisdiction_context and not any(p.search(subject) for p in _EVENT_JURISDICTIONS.values()):
+            subject = jurisdiction_context + " " + subject
+        regime = next(key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(subject))
+        if not _source_regime_odds_bound(state, subject, regime, value):
+            return True
     probability = _EVENT_PROBABILITY.search(clause)
     regime = next((key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(clause)), None)
     if (_unsupported_regime_certainty(state, clause) or _unsupported_market_pricing(state, clause)
             or _unsupported_macro_outcome(state, clause)):
         return True
-    if not probability or not regime:
+    if not regime:
         return False
-    jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items() if pattern.search(clause)), None)
-    if not jurisdiction:
-        return True
-    years = set(re.findall(r"(?<!\d)20\d{2}(?!\d)", clause))
-    if not years:
-        as_of = str(state.get("trade_date") or "")
-        years = {as_of[:4]} if re.match(r"20\d{2}-", as_of) else set()
-    regime_match = _ECONOMIC_REGIMES[regime].search(clause)
-    negative = bool(re.search(r"(?:不(?:会|會)?|非|\b(?:no|not|without)\s+(?:a\s+)?)$",
-                              clause[:regime_match.start()].rstrip(), re.I))
-    for evidence in state.get("evidence_registry") or []:
-        if not isinstance(evidence, Mapping) or evidence.get("source") != "get_prediction_markets":
-            continue
-        if evidence.get("verification_status") != "VERIFIED_TOOL_OUTPUT":
-            continue
-        for event in _SOURCE_EVENT_PROBABILITY.finditer(str(evidence.get("value") or "")):
-            source_probability = float(event["probability"])
-            if (event["outcome"].casefold() == "no") != negative:
-                source_probability = 100 - source_probability
-            if (_ECONOMIC_REGIMES[regime].search(event["question"])
-                    and _EVENT_JURISDICTIONS[jurisdiction].search(event["question"])
-                    and (not years or years.issubset(set(re.findall(r"(?<!\d)20\d{2}(?!\d)", event["question"]))))
-                    and source_probability == float(probability[1])):
-                return False
-    return True
+    binding_clause = clause
+    if jurisdiction_context and not any(p.search(clause) for p in _EVENT_JURISDICTIONS.values()):
+        binding_clause = jurisdiction_context + " " + clause
+    if not probability:
+        return bool(_QUALITATIVE_EVENT_ODDS.search(clause)
+                    and not _source_regime_odds_bound(state, binding_clause, regime)
+                    and not _independent_macro_statement(state, clause))
+    return not _source_regime_odds_bound(state, binding_clause, regime, float(probability[1]))
 
 
 def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
@@ -470,6 +545,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     catalog = _catalog_from_state(state)
     warnings: list[str] = []
     findings: list[EvidenceFinding] = []
+    macro_headings: list[tuple[int, str | None]] = []
+    macro_jurisdiction: str | None = None
 
     def resolve_claim(claim: str, warning: str, replacement: str) -> str:
         warnings.append(warning)
@@ -545,9 +622,26 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(
                 clause,
                 "critical_gate_bypassed",
-                "【关键数据门控：当前季度证据不足，暂不发布当前实绩判断。】",
+                "当前季度证据不足，暂不发布当前实绩判断。",
             )
-        if probability_event_gate_violation(state, clause):
+        if probability_event_gate_violation(state, clause, jurisdiction_context=macro_jurisdiction):
+            outcome_cells = _probability_row_outcomes(state, clause)
+            event = _row_event_probability(clause)
+            if event and macro_jurisdiction and not any(p.search(event[0]) for p in _EVENT_JURISDICTIONS.values()):
+                event = macro_jurisdiction + " " + event[0], event[1]
+            event_bound = event and _source_regime_odds_bound(
+                state, event[0], next(key for key, pattern in _ECONOMIC_REGIMES.items()
+                                     if pattern.search(event[0])), event[1])
+            if outcome_cells and event_bound:
+                cells = [cell.strip() for cell in clause.strip().strip("|").split("|")]
+                for index in outcome_cells:
+                    cells[index] = "不据此推断宏观状态"
+                return resolve_claim(clause, "probability_event_mismatch",
+                                     "| " + " | ".join(cells) + " |")
+            if clause.lstrip().startswith("|"):
+                # An unbound probability row is removed, not replaced with a
+                # prose paragraph in the middle of its valid sibling rows.
+                return resolve_claim(clause, "probability_event_mismatch", "")
             replacement = "本项概率推导未能与来源事件逐项对应；已移除该推导，不影响其他独立绑定的来源概率。"
             if _unsupported_market_pricing(state, clause):
                 replacement = "来源证据不足以确认该市场定价判断，暂不纳入本次判断。"
@@ -660,7 +754,19 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
 
     # Preserve markdown structure.  One line is a deliberately small enough
     # unit for reports and avoids splitting decimal values at their dot.
-    cleaned = "".join(_clean_line(line, clean_clause) for line in text.splitlines(keepends=True))
+    lines = []
+    for line in text.splitlines(keepends=True):
+        heading = re.match(r"^\s*(#{1,6})\s+(.+)", line)
+        if heading:
+            level = len(heading[1])
+            while macro_headings and macro_headings[-1][0] >= level:
+                macro_headings.pop()
+            jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items()
+                                 if pattern.search(heading[2])), None)
+            macro_headings.append((level, jurisdiction))
+            macro_jurisdiction = next((country for _, country in reversed(macro_headings) if country), None)
+        lines.append(_clean_line(line, clean_clause))
+    cleaned = "".join(lines)
     cleaned = _sanitize_legacy_enforcement_artifacts(cleaned)
     cleaned = _collapse_adjacent_replacements(cleaned, findings)
     if not warnings:
