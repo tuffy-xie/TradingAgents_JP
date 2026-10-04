@@ -58,7 +58,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "relational-macro-withheld-plan-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "reasoned-stance-scenario-target-presentation-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -282,6 +282,13 @@ _POSITION_DIRECTIVE = re.compile(
 _EXECUTION_PARAMETER = re.compile(
     r"(?:入场|建仓|目标价|第一目标|第二目标|\bentry\b|\bstop\b|\btarget\b)"
     r"[^。；;\n]*\d",
+    re.I,
+)
+# Scenario target projections remain price-plan parameters even without the
+# optional 价 / price suffix. Business metric goals have a different object.
+_SCENARIO_TARGET = re.compile(
+    r"(?:(?:情形|情景|场景|場景|\b(?:case|scenario)\b)[^。；;\n|]{0,24}|^\s*)"
+    r"(?:目标|目標|\btarget\b)(?:价|價|\s+price)?\s*[:：]?\s*[¥￥]?\d[\d,]*(?:\.\d+)?",
     re.I,
 )
 _TRADER_WITHHELD = "确定性执行校验未通过，因此没有获准的入场、止损、目标价或仓位计划。"
@@ -765,6 +772,11 @@ def _remove_generation_process_prose(text: str) -> str:
     )
     lines = []
     for line in text.splitlines(keepends=True):
+        # Archived deterministic notices may appear inside an otherwise valid
+        # quotation. Their internal cleanup agency is not company speech.
+        for claim in _enforcement_process_claims(line):
+            line = line.replace(claim, "")
+        line = _ENFORCEMENT_LABEL.sub(lambda match: match[1], line)
         if _process_quotation(line):
             lines.append(line)
             continue
@@ -788,7 +800,8 @@ def _generation_process_claims(text: str) -> list[str]:
     Quoted speech and business explanations do not have assistant agency.
     Inspect separate sentences, not a blacklist of entire model preambles.
     """
-    claims = []
+    claims = _enforcement_process_claims(text)
+    claims.extend(match[0] for match in _ENFORCEMENT_LABEL.finditer(text))
     for line in text.splitlines():
         # Preserve attributed speech, blockquotes and quoted first-person text.
         if _process_quotation(line):
@@ -804,6 +817,30 @@ def _generation_process_claims(text: str) -> list[str]:
             ready = re.search(r"\bhave\b.*\b(?:all|required|needed|enough)\b.*\b(?:data|information)\b|\bhave\b.*\b(?:data|information)\b.*\b(?:required|needed)\b", plain, re.I)
             if agency and ((work and object_) or ready or re.match(r"here\s+is\s+(?:the|my|our)\s+(?:report|analysis)\b", plain, re.I)):
                 claims.append(unit)
+    return claims
+
+
+# These are typed wrappers emitted by deterministic enforcement, not a ban on
+# the ordinary word evidence. Keep their information without exposing labels.
+_ENFORCEMENT_LABEL = re.compile(
+    r"【(?:证据(?:约束|连续性)|来源约束|单位校验|语义约束|历史隔离)\s*[:：]([^】]*)】"
+)
+
+
+def _enforcement_process_claims(text: str) -> list[str]:
+    """Detect report-cleanup agency + claim object + internal processing.
+
+    Natural uncertainty (证据不足 / 无法确认) is user information. A statement
+    describing deletion/rebinding of claims is not. It remains in Audit/logs.
+    """
+    claims = []
+    for unit in re.findall(r"[^。！？\n]+[。！？]?", text):
+        object_ = re.search(r"(?:本项|该项|这项|相关)(?:概率)?(?:推导|断言|表述|结论|数值)|该推导", unit)
+        processing = re.search(r"已(?:移除|删除|替换|降级)|未能与来源事件逐项对应|独立绑定的来源概率", unit)
+        if object_ and processing:
+            # Keep Markdown bullet/quote/emphasis markers outside the claim;
+            # structural cleanup can then remove only the emptied surface.
+            claims.append(unit[object_.start():])
     return claims
 
 
@@ -998,7 +1035,14 @@ def _enforce_portfolio_rating_ownership(state: Mapping[str, Any]) -> tuple[dict[
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             })
-        accepted = _fold_empty_sections(remove_internal_ratings(text))
+        # A renamed advice surface must not resurrect an execution subtree
+        # that the existing execution publisher would have withheld. Capture
+        # original identities above, prune the original execution structure,
+        # then relabel remaining research surfaces without deleting their facts.
+        has_plan = any(_execution_violation(line, headers) for line, headers in _execution_lines(text)
+                       if not _heading_level(line) and line.strip() not in {_TRADER_WITHHELD, _EXECUTION_WITHHELD})
+        original_structure = _prune_unapproved_execution(text) if has_plan else text
+        accepted = _fold_empty_sections(remove_internal_ratings(original_structure))
         if "." in field:
             outer, inner = field.split(".", 1)
             result[outer] = dict(result[outer]) | {inner: accepted}
@@ -1998,6 +2042,7 @@ def _collect_unapproved_execution_claims(
         "trader_investment_plan",
         "investment_debate_state.judge_decision",
         "risk_debate_state.judge_decision",
+        "final_trade_decision",
     )
     for field in fields:
         text = _published_field_text(state, field)
@@ -2099,12 +2144,19 @@ def _table_execution_violation(cells: list[str], headers: list[str] | None) -> s
              for index in range(len(cells))]
     subject = " ".join(cell for cell, role in zip(cells, roles, strict=True) if "subject" in role)
     target = " ".join(cell for cell, role in zip(cells, roles, strict=True) if "object" in role)
+    external_target_source = any(
+        re.search(r"券商|分析师|外部来源|\b(?:broker|analyst|external\s+source)\b", header, re.I)
+        and index < len(cells) and cells[index].strip().casefold() not in {"", "—", "-", "n/a"}
+        for index, header in enumerate(headers or [])
+    )
     conditions = {index for index, (cell, role) in enumerate(zip(cells, roles, strict=True))
                   if cell.strip() and ("condition" in role or _CONDITIONAL_EXECUTION.search(cell))}
     for index, cell in enumerate(cells):
         role = roles[index]
         actor = subject or ("company" if "company" in role else "")
         contextual = " ".join(part for part in (actor, cell, target) if part)
+        if external_target_source and (_SCENARIO_TARGET.search(cell) or re.search(r"目标价|\btarget\b", (headers or [""] * len(cells))[index], re.I)):
+            contextual = "analyst " + contextual
         # A mixed response/impact column can contain either. The action-cell
         # classifier decides; an added descriptive label cannot cancel a plan.
         response = "response" in role
@@ -2116,6 +2168,8 @@ def _table_execution_violation(cells: list[str], headers: list[str] | None) -> s
     # Parameter label/value relations can cross cells just like actions do.
     # Cell-local scanning alone cannot see `Entry | 8513` or `仓位 | 3%`.
     joined = " ".join(cells)
+    if external_target_source:
+        joined = "analyst " + joined
     if (_EXECUTION_PARAMETER.search(joined) or _POSITION_RECOMMENDATION.search(joined)
             or _STOP_TRIGGER.search(joined)):
         return _execution_clause_violation(joined)
@@ -2161,6 +2215,13 @@ def _execution_clause_violation(text: str) -> str | None:
     plain = text.replace("**", "").replace("`", "").strip()
     if not plain:
         return None
+    scenario_target = next((match for match in _SCENARIO_TARGET.finditer(plain)
+                            if not re.search(r"收入|营收|利润|产量|订单|GDP|revenue|earnings|output|orders", match[0], re.I)
+                            and not re.match(r"\s*(?:%|台|件|吨|人|万元|亿元|billion|million)", plain[match.end():], re.I)), None)
+    if scenario_target and not _non_authorizing_action(plain, scenario_target):
+        external = re.search(r"分析师|券商|\b(?:consensus|analyst|broker)\b", plain, re.I)
+        if not external and not attributed_rating_fact(plain):
+            return "UNVALIDATED_EXECUTABLE_PLAN"
     # Attribution owns only the reported rating, not additional position plans.
     rating_actions = {"买入", "卖出", "增持", "减持", "買い", "売り"}
     if (attributed_rating_fact(plain)
@@ -2225,7 +2286,8 @@ def _execution_clause_violation(text: str) -> str | None:
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
         # A sourced valuation target is an analytical fact, not a trade exit.
-        if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", plain, re.I):
+        if (re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", plain, re.I)
+                and not re.search(r"入场|建仓|止损|\b(?:entry|stop)\b", plain, re.I)):
             return None
         return "UNVALIDATED_EXECUTABLE_PLAN"
     return None
@@ -2469,6 +2531,7 @@ def _publicize_inline_text(text: str) -> str:
     text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
     # Internal enforcement labels are not user-facing financial terminology.
     text = re.sub(r"(?:关键数据|关键指标|证据|数据)门控\s*[:：]?\s*", "", text)
+    text = _remove_generation_process_prose(text)
     return _localize_presentation_labels(text)
 
 
@@ -2670,6 +2733,8 @@ def _artifact_execution_claims(text: str) -> list[str]:
     for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             continue
+        if _heading_level(line) and _is_execution_heading(line.lstrip("# ")):
+            claims.append(line.strip())
         if line.strip().startswith("|"):
             if _table_execution_violation(_table_cells(line), headers):
                 claims.append(line.strip())

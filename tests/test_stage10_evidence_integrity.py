@@ -98,7 +98,7 @@ def test_market_tool_fact_keeps_verified_identity_downstream():
     )
 
     assert "VERIFIED_TOOL_OUTPUT" in context
-    assert "不得降级" in guarded.text
+    assert "有可追溯来源" in guarded.text and "无法确认当前时效" in guarded.text
     assert "verified_market_fact_downgraded" in guarded.warnings
 
 
@@ -122,7 +122,7 @@ def test_market_tool_fact_cannot_be_relabelled_as_missing_upstream_support():
     )
 
     assert "verified_market_fact_downgraded" in guarded.warnings
-    assert "Market 工具验证" in guarded.text
+    assert "正式行情数据支持" in guarded.text
 
 
 def test_news_tool_fact_keeps_provenance_and_unsupported_claim_is_audited():
@@ -342,7 +342,7 @@ def test_guidance_consensus_vendor_forward_are_semantically_distinct():
     )
 
     assert "guidance_vendor_forward_mixed" in mixed.warnings
-    assert "不同语义" in mixed.text
+    assert "不同口径" in mixed.text and "不能互相替代" in mixed.text
 
 
 def test_financial_authority_cannot_be_collapsed_into_generic_tool_provenance():
@@ -353,7 +353,8 @@ def test_financial_authority_cannot_be_collapsed_into_generic_tool_provenance():
     )
 
     assert "collapsed_provenance_types" in result.warnings
-    assert "VERIFIED_FINANCIAL_AUTHORITY" in result.text
+    assert "行情、新闻与财务信息具有不同来源" in result.text
+    assert "Evidence Registry" not in result.text and "VERIFIED_" not in result.text
 
 
 def test_million_yen_unit_conversion_is_deterministic():

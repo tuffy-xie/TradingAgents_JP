@@ -89,7 +89,8 @@ def test_community_or_consensus_cannot_be_relabelled_as_verified_fact():
     result = enforce_agent_output(
         _state(), "VERIFIED FACT：Yahoo 掲示板情绪确认当前股价为5000。", "Sentiment Analyst"
     )
-    assert "不可表述为已验证官方事实" in result.text
+    assert "参考信息" in result.text and "不代表官方确认" in result.text
+    assert "【证据约束" not in result.text
     assert "source_type_confusion" in result.warnings
 
 
@@ -99,7 +100,7 @@ def test_stale_data_and_cross_period_financial_math_are_downgraded():
     assert "stale_data_as_current" in stale.warnings
 
     mixed = enforce_agent_output(_state(), "FY 2027 EPS 12.5 减去 Q1 EPS 3.0。", "Bear Researcher")
-    assert "不可混算" in mixed.text
+    assert "口径不同" in mixed.text and "不能直接混算" in mixed.text
     assert "period_mismatch" in mixed.warnings
 
 
@@ -120,7 +121,7 @@ def test_common_graph_boundary_covers_reports_debates_and_structured_decisions()
     assert "9999" not in result["market_report"]
     assert "1200" not in result["investment_plan"]
     assert "888" not in result["final_trade_decision"]
-    assert "不可混算" in result["investment_debate_state"]["current_response"]
+    assert "不能直接混算" in result["investment_debate_state"]["current_response"]
     assert "9999" not in result["risk_debate_state"]["current_aggressive_response"]
 
 

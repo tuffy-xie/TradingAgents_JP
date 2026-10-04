@@ -82,8 +82,8 @@ def test_replacement_retains_list_boundary_and_dedupes_only_generated_notices():
     text = '- 美股软着陆 → 中性偏好\n- 美国经济未陷入衰退。\n- 日本经济情况需要观察\n'
     checked = enforce_agent_output(regime_state(), text, 'News Analyst')
     assert len(checked.findings) == 2
-    assert checked.text.count('来源证据不足以确认该宏观情景或共识') == 1
-    assert checked.text.startswith('- 来源证据不足')
+    assert checked.text.count('该宏观情景或共识尚无法确认。') == 1
+    assert checked.text.startswith('- 该宏观情景或共识尚无法确认。')
     assert '\n- 日本经济情况需要观察\n' in checked.text
 
 
@@ -99,7 +99,7 @@ def test_distinct_regime_claims_keep_lineage_but_share_one_adjacent_replacement(
     checked = enforce_agent_output(regime_state(), '**美股软着陆 → 中性偏好**\n美国经济未陷入衰退。', 'News Analyst')
     assert len(checked.findings) == 2
     assert len({x.claim_sha256 for x in checked.findings}) == 2
-    assert checked.text.count('来源证据不足以确认该宏观情景或共识') == 1
+    assert checked.text.count('该宏观情景或共识尚无法确认。') == 1
     source = regime_state()
     source['news_report'] = '**美股软着陆 → 中性偏好**\n美国经济未陷入衰退。'
     accepted = f.build_canonical_final_state(source)

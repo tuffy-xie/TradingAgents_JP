@@ -576,34 +576,32 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(
                 clause,
                 "collapsed_provenance_types",
-                "【来源约束：各事实保留 Evidence Registry 中各自的来源类型；行情/新闻工具事实为 "
-                "VERIFIED_TOOL_OUTPUT，财务事实为 VERIFIED_FINANCIAL_AUTHORITY，不得合并改写。】",
+                "行情、新闻与财务信息具有不同来源，应分别理解。",
             )
         if _UNVERIFIED_MARKET.search(clause):
             if _has_verified_domain(state, "MARKET"):
                 return resolve_claim(
                     clause,
                     "verified_market_fact_downgraded",
-                    "【证据连续性：行情与技术指标已由本轮 Market 工具验证，不得降级为未验证引用。】",
+                    "本次行情与技术指标有正式行情数据支持。",
                 )
             if _has_market_tool_provenance(state):
                 return resolve_claim(
                     clause,
                     "verified_market_fact_downgraded",
-                    "【证据连续性：Market 工具输出有可追溯来源，不得降级为无工具验证；"
-                    "但当前时效未获确认，不得用作当前技术判断。】",
+                    "历史行情有可追溯来源，但无法确认当前时效，不能据此判断当前技术状态。",
                 )
         if _UNVERIFIED_NEWS.search(clause) and _has_verified_domain(state, "NEWS"):
             return resolve_claim(
                 clause,
                 "verified_news_fact_downgraded",
-                "【证据连续性：本轮 News 工具事实保留其来源与验证状态；未验证部分不得作为硬证据。】",
+                "新闻事实以注明的来源为准，未经确认的内容仅供参考。",
             )
         if _SHORT_ABSENCE_OVERCLAIM.search(clause):
             return resolve_claim(
                 clause,
                 "short_absence_overclaim",
-                "【语义约束：仅能陈述可观察的借券余额或官方可申报仓位；无申报记录不代表不存在空头。】",
+                "可观察借券余额或官方可申报仓位并不覆盖全部空头；无申报记录不代表不存在空头。",
             )
         if _SHORT_PRESSURE_OVERCLAIM.search(clause):
             return resolve_claim(
@@ -616,7 +614,7 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(
                 clause,
                 "historical_outcome_as_current_evidence",
-                "【历史隔离：既往交易结果仅用于风险与信心校准，不构成本轮方向性证据。】",
+                "既往交易结果不能证明当前行情方向。",
             )
         if current_financial_gate_violation(state, clause):
             return resolve_claim(
@@ -642,13 +640,13 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 # An unbound probability row is removed, not replaced with a
                 # prose paragraph in the middle of its valid sibling rows.
                 return resolve_claim(clause, "probability_event_mismatch", "")
-            replacement = "本项概率推导未能与来源事件逐项对应；已移除该推导，不影响其他独立绑定的来源概率。"
+            replacement = "该宏观情景尚无法确认。"
             if _unsupported_market_pricing(state, clause):
-                replacement = "来源证据不足以确认该市场定价判断，暂不纳入本次判断。"
+                replacement = "当前市场定价情况尚无法确认。"
             if _unsupported_macro_outcome(state, clause):
-                replacement = "事件概率不直接证明公司需求或当前金融状态；缺少独立证据的推导不纳入本次判断。"
+                replacement = "事件概率不直接证明公司需求或当前金融状况。"
             if _unsupported_regime_certainty(state, clause):
-                replacement = "来源证据不足以确认该宏观情景或共识，暂不纳入本次判断。"
+                replacement = "该宏观情景或共识尚无法确认。"
                 if heading:
                     # Retain a factual heading subject, not its unsupported
                     # editorial conclusion. No guessed replacement regime.
@@ -663,33 +661,33 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(
                 clause,
                 "unit_mismatch",
-                "【单位校验：该换算与来源原始单位不一致，已从判断中移除。】",
+                "该数值的单位尚无法确认。",
             )
         if _PERIOD_MIX.search(clause):
             return resolve_claim(
                 clause,
                 "period_mismatch",
-                "【证据约束：FY、季度与 TTM 不可混算；相关数值已降级为数据不可用】",
+                "年度、季度与滚动十二个月数据口径不同，不能直接混算。",
             )
 
         if _FACT_LABEL.search(clause) and _NON_FACT_SOURCE.search(clause):
             return resolve_claim(
                 clause,
                 "source_type_confusion",
-                "【证据约束：社区情绪与分析师预期不可表述为已验证官方事实】",
+                "社区情绪与分析师预期属于参考信息，不代表官方确认。",
             )
 
         if _GUIDANCE.search(clause) and _CONSENSUS.search(clause):
             return resolve_claim(
                 clause,
                 "guidance_consensus_mixed",
-                "【证据约束：公司指引与分析师一致预期属于不同口径，不能合并或互相替代】",
+                "公司指引与分析师一致预期属于不同口径，不能互相替代。",
             )
         if _GUIDANCE.search(clause) and _VENDOR_FORWARD.search(clause):
             return resolve_claim(
                 clause,
                 "guidance_vendor_forward_mixed",
-                "【证据约束：公司指引与供应商远期估计属于不同语义，不能互相替代】",
+                "公司指引与供应商远期估计属于不同口径，不能互相替代。",
             )
 
         tokens = _number_tokens(clause)

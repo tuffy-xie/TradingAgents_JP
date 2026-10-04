@@ -14,7 +14,7 @@ _VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell|bullis
 _CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell", "bullish": "Overweight", "bearish": "Underweight", "看涨": "Overweight", "看跌": "Underweight", "強気": "Overweight", "弱気": "Underweight"}
 _OUTLOOK_VALUES = {"bullish", "bearish", "看涨", "看跌", "強気", "弱気"}
 _LABEL = re.compile(
-    r"(?:评级|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
+    r"(?:评级|综合评分|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
     r"(?:最终|综合|投资|研究|交易)+(?:研究)?结论|投資判断|投資推奨|レーティング|推奨|final\s+transaction\s+proposal|"
     r"(?:final|investment|research)\s+conclusion)\s*[:：|\-—]", re.I
 )
@@ -34,8 +34,23 @@ _ADVICE_SURFACE = re.compile(
     r"^(?:[一二三四五六七八九十\d]+[、.)]\s*)?"
     r"(?:(?:核心|最终|最終|综合|綜合)?(?:结论|結論)(?:与|與|和|及)?)?"
     r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦)$|"
+    r"(?:(?:投资|投資|交易)(?:建议|建議|推荐|推薦)|"
+    r"(?:仓位|倉位|持仓|持倉|组合敞口)(?:管理|策略)|"
+    r"\b(?:investment|trading|portfolio)\s+(?:advice|recommendations?|management))$|"
     r"^(?:(?:final|investment|trading)\s+)?recommendations?$", re.I
 )
+# Recommendation ownership is not action authorization. A causal/evaluative
+# reason for rejecting a trade is an investment stance; a bare ban or statement
+# that execution is unavailable remains pure withholding.
+_STANCE_ACTION = r"(?:追涨|追漲|追高|买入|买進|卖出|加仓|减仓|建仓|持有|\b(?:buy|sell|add|hold)\b)"
+_REASONED_TRADE_STANCE = re.compile(
+    rf"(?:因此|所以|故而|意味着|意味著|强到|弱到|高到|低到|→|⇒|=|\b(?:therefore|hence|thus)\b)"
+    rf"\s*(?:不支持|不赞成|不贊成|反对|反對|否决|否決|\b(?:oppose|reject|does\s+not\s+support)\b)\s*{_STANCE_ACTION}|"
+    rf"(?:反对|反對|不赞成|不贊成|\b(?:oppose|reject)\b)\s*{_STANCE_ACTION}", re.I
+)
+_STATUS_QUO_STANCE = re.compile(r"以不变应万变|以不變應萬變|维持现状|維持現狀|\b(?:maintain|keep)\s+(?:the\s+)?status\s+quo\b", re.I)
+_STANCE_CONTEXT = re.compile(r"结论|結論|综合判断|綜合判斷|投资判断|投資判断|\b(?:conclusion|investment\s+stance)\b", re.I)
+_OWN_ADVICE_DISCOURSE = re.compile(r"(?:本|此|这项|這項)(?:投资)?建议(?:基于|基於|依据|依據)|\bour\s+recommendation\s+is\s+based\b", re.I)
 # A recommendation can be expressed as a short signal/status cell without a
 # rating label. Match the direction's relation to recommendation semantics,
 # not a direction word alone (e.g. 買い材料 is a research factor).
@@ -254,6 +269,7 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
     table_external = False
     table_rating = False
     table_headers: list[str] = []
+    stance_context: list[tuple[int, bool]] = []
     for line in text.splitlines(keepends=True):
         plain = re.sub(r"[*`_]", "", line).strip()
         heading = re.match(r"^(#{1,6})\s+(.+)", plain)
@@ -263,8 +279,17 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 heading_context.pop()
             external = bool(_EXTERNAL_HEADING.search(title))
             heading_context.append((level, external))
+            while stance_context and stance_context[-1][0] >= level:
+                stance_context.pop()
+            stance_context.append((level, bool(_STANCE_CONTEXT.search(title) or _ADVICE_SURFACE.search(title))))
             plain = title
-            if _ADVICE_SURFACE.fullmatch(title) and not any(ext for _, ext in heading_context):
+            if _ADVICE_SURFACE.search(title) and not any(ext for _, ext in heading_context):
+                claims.append(RatingClaim(offset, offset + len(line.rstrip("\n")),
+                                          line.rstrip("\n"), None, "RECOMMENDATION_SURFACE"))
+        elif re.fullmatch(r"\s*\*\*[^\n]+\*\*\s*", line):
+            # Bold numbered lead-ins are report surfaces too, not only # headings.
+            title = re.sub(r"^[一二三四五六七八九十\d]+[、.)]\s*", "", plain)
+            if _ADVICE_SURFACE.search(title) and not any(ext for _, ext in heading_context):
                 claims.append(RatingClaim(offset, offset + len(line.rstrip("\n")),
                                           line.rstrip("\n"), None, "RECOMMENDATION_SURFACE"))
         external_context = any(external for _, external in heading_context)
@@ -300,7 +325,21 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 for stance in _HOLD_STANCE.finditer(cleaned)
             )
             selection = _selection_recommendation(cleaned)
-            if not match and not hold_stance and not selection:
+            # Qualitative research conclusions may imply an investment stance
+            # without naming Buy/Hold/Sell. Do not turn ordinary business facts
+            # or isolated withholding statements into recommendations.
+            status_quo = bool(_STATUS_QUO_STANCE.search(cleaned) and (
+                any(active for _, active in stance_context)
+                or re.search(r"最优|最優|最佳|策略|\b(?:optimal|best|strategy)\b", cleaned, re.I)
+            ) and not _ISSUER_TARGET.search(cleaned))
+            reasoned_stance = any(
+                not _ADVICE_HISTORY.search(cleaned[:predicate.start()])
+                and not (_ISSUER_TARGET.search(cleaned[:predicate.start()])
+                         and re.match(r"\s*(?:其|非核心|核心|部分)?(?:资产|資產|业务|業務)", cleaned[predicate.end():]))
+                for predicate in _REASONED_TRADE_STANCE.finditer(cleaned)
+            )
+            stance = bool(reasoned_stance or status_quo or _OWN_ADVICE_DISCOURSE.search(cleaned))
+            if not match and not hold_stance and not selection and not stance:
                 continue
             # Ownership includes transitions and evaluative holding advice,
             # not just labelled values and signal/status cells.
@@ -316,7 +355,7 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 continue
             our = bool(_OUR_RECOMMENDATION.search(cleaned) or (selection and _SELECTION_OWNER.search(cleaned)))
             bare = bool(re.fullmatch(r"(?:buy|hold|sell|overweight|underweight|买入|持有|卖出|增持|减持)\s*(?:[（(][^）)]*[）)])?[。.!]?", cleaned, re.I))
-            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance or selection):
+            if not (labelled or asserted or our or pending_label or bare or table_rating or recommendation or transition or hold_stance or selection or stance):
                 continue
             external = bool(_EXTERNAL.search(cleaned)) or _named_external_report(cleaned) or (
                 (external_context or table_external or pending_external)
@@ -339,12 +378,13 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                 match = recommendation
             elif asserted:
                 match = asserted
-            rating = ("Hold" if hold_stance and not transition and not recommendation else
+            rating = (None if stance and not (transition or recommendation or asserted or hold_stance) else
+                      "Hold" if hold_stance and not transition and not recommendation else
                       None if selection and not (transition or recommendation or asserted) else _canonical_rating(match[0]))
             claims.append(RatingClaim(
                 offset + unit.start(), offset + unit.end(), unit[0], rating,
                 "RATING_TRANSITION" if transition else (
-                    "INVESTMENT_RECOMMENDATION" if recommendation or hold_stance or selection else "INVESTMENT_RATING"
+                    "INVESTMENT_RECOMMENDATION" if recommendation or hold_stance or selection or stance else "INVESTMENT_RATING"
                 ), from_rating,
             ))
         if plain:
@@ -362,14 +402,24 @@ def remove_internal_ratings(text: str) -> str:
             # left only business analysis. Preserve that analysis and heading
             # structure, but make its research role explicit.
             marker = re.match(r"^\s*#{1,6}\s+(?:[一二三四五六七八九十\d]+[、.)]\s*)?", claim.text)
-            text = text[:claim.start] + (marker[0] if marker else "") + "研究分析" + text[claim.end:]
+            bold = re.fullmatch(r"\s*\*\*([一二三四五六七八九十\d]+[、.)]\s*)?.+\*\*\s*", claim.text)
+            replacement = (marker[0] if marker else "") + "研究分析"
+            if bold:
+                replacement = "**" + (bold[1] or "") + "研究分析**"
+            text = text[:claim.start] + replacement + text[claim.end:]
             continue
         end = claim.end
         # Leaving an empty line where a table row stood terminates the table
         # and can make structural cleanup discard otherwise valid siblings.
         if claim.text.lstrip().startswith("|") and text[end:end + 1] == "\n":
             end += 1
-        text = text[:claim.start] + text[end:]
+        # Preserve the enclosing emphasis when pruning its opening sentence,
+        # rather than globally stripping legitimate asterisks/US footnotes.
+        opener = re.match(r"^([*_]{1,2})(?!\s)", claim.text)
+        tail = text[end:].split("\n", 1)[0]
+        keep_opener = (opener[1] if opener and tail.rstrip().endswith(opener[1])
+                       and tail.strip() != opener[1] and not claim.text.endswith(opener[1]) else "")
+        text = text[:claim.start] + keep_opener + text[end:]
     return text
 
 

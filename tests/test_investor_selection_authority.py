@@ -126,7 +126,8 @@ def test_unsupported_heading_qualifier_removed_and_replacement_preserves_line_bo
     lines = checked.text.splitlines()
     index = lines.index("- 日本经济情况需要观察")
     assert lines[index - 1].endswith("。")
-    assert "不影响其他独立绑定的来源概率" in lines[index - 1]
+    assert lines[index - 1] == "- 该宏观情景尚无法确认。"
+    assert "已移除" not in checked.text
     assert enforce_agent_output(state, checked.text, "News Analyst").text == checked.text
 
 

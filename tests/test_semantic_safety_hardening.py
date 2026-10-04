@@ -27,8 +27,10 @@ def test_cross_cell_plan_has_audit_and_final_defense(table):
     assert findings
     assert all(x["claim_sha256"] == hashlib.sha256(x["original_claim"].encode()).hexdigest() for x in findings)
     # The final boundary must not trust upstream pruning or finding collection.
-    with patch.object(output, "_withhold_unvalidated_execution", side_effect=lambda s: s), \
-         patch.object(output, "_collect_unapproved_execution_claims", return_value=[]):
+    compose = output.compose_user_report_markdown
+    # Inject after every field-level cleanup, not just one pruning function.
+    with patch.object(output, "compose_user_report_markdown",
+                      side_effect=lambda s: compose(s) + "\n\n## 研究附录\n\n" + table):
         blocked = output.build_canonical_final_state(state)
     assert blocked["final_output_contract"]["status"] == "BLOCKED"
     assert any("FINAL_ARTIFACT_UNAUTHORIZED_EXECUTION" in x for x in blocked["final_output_contract"]["artifact_issues"])
