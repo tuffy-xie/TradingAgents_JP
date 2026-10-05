@@ -58,7 +58,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "nonportfolio-recommendation-framing-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "multilingual-plan-realized-evidence-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -100,6 +100,7 @@ _EXECUTION_HEADING = re.compile(
     r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
     r"可操作|执行|行动建议|交易者|交易(?:建议|策略|计划|参数|执行)|"
     r"操作(?:建议|策略|计划)|取引(?:レコメンデーション|戦略|計画)|"
+    r"アクションプラン|サイジング|目標価格|段階的利確|損切り|"
     r"入场|止损|止盈|仓位)",
     re.I,
 )
@@ -131,6 +132,7 @@ _EXECUTION_INSTRUCTIONS = re.compile(
 _EXECUTION_ACTION = re.compile(
     r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
     r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
+    r"エントリー|新規買い|買い増し|買付|利確|利益確定|損切り|"
     r"了结|了結|退出|布局|配置|对冲|對沖|高(?:抛|賣|卖)低(?:吸|買|买)|逢高减码|逢高減碼|"
     r"hedg(?:e|ing)|buy\s+low\s+and\s+sell\s+high|"
     r"调整仓位|調整倉位|调整敞口|調整敞口|"
@@ -144,11 +146,13 @@ _EXECUTION_DIRECTIVE_CONTEXT = re.compile(
     r"(?:建议|建議|应|應|应该|應該|宜|可(?:以)?|考虑|考慮|等待[^。；;\n]{0,20}后|"
     r"确认[^。；;\n]{0,20}后|突破[^。；;\n]{0,20}后|跌破[^。；;\n]{0,20}后|"
     r"逢低|逢高|分批|分层|分層|支持|积极|積極|现有持仓|現有持倉|未投资者|未投資者|"
-    r"目标水平|目標水平|策略|框架|操作|计划|計畫|plan|recommend|should|consider|if\b)",
+    r"目标水平|目標水平|策略|框架|操作|计划|計畫|優位|許容|検討|推奨|すべき|"
+    r"plan|recommend|should|consider|if\b)",
     re.I,
 )
 _EXECUTION_OPPORTUNITY = re.compile(
     r"(?:买入|買入|卖出|賣出|建仓|建倉|加仓|加倉|配置|对冲|對沖)\s*(?:良机|机会|機會)|"
+    r"(?:買い|エントリー|買付)(?:の)?(?:機会|好機)|"
     r"\b(?:opportunity|opportunities)\s+to\s+(?:buy|sell|hedge|enter|add)\b",
     re.I,
 )
@@ -266,6 +270,13 @@ _PRESENTATION_HEADING_TRANSLATIONS = {
     "position sizing": "仓位规模",
     "maximum position": "仓位上限",
 }
+# Names are the tool schema's parameter identifiers, not new market facts.
+# Displaying the standard indicator label cannot change a value or provenance.
+_INDICATOR_DISPLAY_NAMES = {
+    "close_10_ema": "10日EMA", "close_50_sma": "50日SMA",
+    "close_200_sma": "200日SMA", "boll_ub": "布林上轨",
+    "boll_lb": "布林下轨", "macds": "MACD信号线", "macdh": "MACD柱状图",
+}
 _POSITION_RECOMMENDATION = re.compile(
     r"(?:仓位|倉位|净敞口|净暴露|组合总值|position(?: size| sizing)?|net exposure|allocation)"
     r"[^。；;\n]*(?:\d|%|≤|≥|上限|不超过)|"
@@ -280,7 +291,7 @@ _POSITION_DIRECTIVE = re.compile(
     re.I,
 )
 _EXECUTION_PARAMETER = re.compile(
-    r"(?:入场|建仓|目标价|第一目标|第二目标|\bentry\b|\bstop\b|\btarget\b)"
+    r"(?:入场|建仓|目标价|第一目标|第二目标|目標価格|損切り(?:価格|水準)|\bentry\b|\bstop\b|\btarget\b)"
     r"[^。；;\n]*\d",
     re.I,
 )
@@ -2056,7 +2067,7 @@ def _collect_unapproved_execution_claims(
                 claim = clause.strip()
                 warning = (
                     "UNAPPROVED_EXECUTION_SECTION"
-                    if _heading_level(claim) and _is_execution_heading(claim.lstrip("# "))
+                    if _is_execution_surface(claim)
                     else _execution_violation(claim, headers)
                 )
                 if not claim or not warning:
@@ -2289,7 +2300,7 @@ def _execution_clause_violation(text: str) -> str | None:
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
         # A sourced valuation target is an analytical fact, not a trade exit.
-        if (re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", plain, re.I)
+        if (re.search(r"(?:分析师|券商|アナリスト|証券|consensus|analyst|broker).*(?:目标价|目標価格|target)", plain, re.I)
                 and not re.search(r"入场|建仓|止损|\b(?:entry|stop)\b", plain, re.I)):
             return None
         return "UNVALIDATED_EXECUTABLE_PLAN"
@@ -2304,6 +2315,11 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
     """
     before = re.split(r"[，,。；;!?！？]|→|⇒|=>|->", text[:action.start()])[-1]
     after = text[action.end():]
+    # Japanese predicates put polarity after the action/object. Apply the
+    # same action-local scope: a later contrast never inherits this ban.
+    local_after = re.split(r"[。；;!?！？]|ただし|しかし|一方", after)[0]
+    if re.match(r"(?:は|を|に|が)?[^、，,。]{0,20}(?:しない|急がない|避ける|禁止|見送る|不可|できない)", local_after):
+        return True
     # An opportunity is an authorization only when asserted, not withheld or
     # still awaiting confirmation. This scope belongs to this action/object.
     if re.search(r"(?:不存在|没有|尚无|未有|\bno\b)\s*$", before, re.I):
@@ -2372,10 +2388,10 @@ def _position_preservation_instruction(text: str) -> bool:
 
 
 def _prune_unapproved_execution(text: str) -> str:
-    text = _filter_markdown_sections(
-        text,
-        lambda heading: not _is_execution_heading(heading),
-    )
+    # Real headings, emphasized section labels and colon lead-ins express the
+    # same plan role. Keep their child scope until a sibling surface, not just
+    # a # heading, so plan fragments cannot be orphaned by removing a label.
+    text = _prune_execution_surfaces(text)
     lines = []
     for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
@@ -2471,7 +2487,7 @@ def _is_execution_heading(heading: str) -> bool:
     folded = heading.strip().casefold()
     if folded in _WITHHELD_EXECUTION_HEADINGS:
         return False
-    if re.search(r"(?:分析师|券商|consensus|analyst|broker).*(?:目标价|target)", folded):
+    if re.search(r"(?:分析师|券商|アナリスト|証券|consensus|analyst|broker).*(?:目标价|目標価格|target)", folded):
         return False
     # "Execution" alone is ambiguous: an issuer executes orders, capex and
     # buybacks too. A business heading cannot waive a real trade instruction
@@ -2486,6 +2502,67 @@ def _is_execution_heading(heading: str) -> bool:
     # Dropping only the title would orphan conditional plan fragments and can
     # make a hypothetical price trigger read like a current market assertion.
     return _EXECUTION_HEADING.search(folded) is not None or _execution_clause_violation(folded) is not None
+
+
+def _execution_surface_title(line: str) -> str | None:
+    if _heading_level(line):
+        return line.lstrip('# ').strip()
+    plain = re.sub(r'^\s*\d+[.)、]\s*', '', line).strip()
+    bold = re.fullmatch(r'\*\*([^\n]+)\*\*', plain)
+    if bold and not re.search(r'[。！？；;]', bold[1]):
+        return bold[1]
+    if plain.endswith((':', '：')):
+        return plain.rstrip(':：')
+    return None
+
+
+def _is_execution_surface(line: str) -> bool:
+    title = _execution_surface_title(line)
+    if title and _EXECUTION_PROHIBITION.search(title) and not _execution_clause_violation(title):
+        return False
+    if title and not _heading_level(line):
+        # A soft label such as "actual execution progress:" does not name
+        # investor trading. Require a trade role beyond the ambiguous verb;
+        # its body still receives independent action classification.
+        role = re.sub(r'执行|execution', '', title, flags=re.I)
+        if not _is_execution_heading(role):
+            return False
+    return bool(title and _is_execution_heading(title))
+
+
+def _prune_execution_surfaces(text: str) -> str:
+    kept = []
+    base = 0
+    excluded = None
+    excluded_kind = None
+    for line in text.splitlines(keepends=True):
+        heading = _heading_level(line)
+        title = _execution_surface_title(line)
+        if heading:
+            base = heading
+            if excluded_kind != 'heading':
+                excluded = None
+        rank = heading
+        kind = 'heading'
+        if title is not None and not heading:
+            numbered = re.match(r'^\s*(?:\*\*)?\d+[.)、]', line)
+            kind = 'numbered' if numbered else 'lead_in'
+            rank = base + (2 if numbered and excluded_kind == 'lead_in' else 1)
+            if numbered and excluded_kind == 'lead_in' and not _is_execution_surface(line):
+                # Monitoring/business siblings do not inherit investor-plan
+                # ownership. Their bodies still undergo claim-level checks.
+                excluded = None
+                excluded_kind = None
+        if rank is not None:
+            if excluded is not None and rank <= excluded:
+                excluded = None
+                excluded_kind = None
+            if excluded is None and _is_execution_surface(line):
+                excluded = rank
+                excluded_kind = kind
+        if excluded is None:
+            kept.append(line)
+    return ''.join(kept)
 
 
 def _strip_execution_plan(text: str, *, include_target: bool) -> str:
@@ -2532,6 +2609,8 @@ def _publicize_inline_text(text: str) -> str:
         "", text, flags=re.I,
     )
     text = _INTERNAL_TOOL_IDENTIFIER.sub("上游数据源", text)
+    for identifier, display in _INDICATOR_DISPLAY_NAMES.items():
+        text = re.sub(rf"(?<![A-Za-z0-9_]){identifier}(?![A-Za-z0-9_])", display, text)
     # Internal enforcement labels are not user-facing financial terminology.
     text = re.sub(r"(?:关键数据|关键指标|证据|数据)门控\s*[:：]?\s*", "", text)
     text = _remove_generation_process_prose(text)
@@ -2736,7 +2815,7 @@ def _artifact_execution_claims(text: str) -> list[str]:
     for line, headers in _execution_lines(text):
         if line.strip() in {_TRADER_WITHHELD, _EXECUTION_WITHHELD}:
             continue
-        if _heading_level(line) and _is_execution_heading(line.lstrip("# ")):
+        if _is_execution_surface(line):
             claims.append(line.strip())
         if line.strip().startswith("|"):
             if _table_execution_violation(_table_cells(line), headers):
@@ -2788,6 +2867,9 @@ def validate_final_report_text(
         issues.append("INTERNAL_ENGINEERING_METADATA_VISIBLE")
     if _INTERNAL_TOOL_IDENTIFIER.search(text):
         issues.append("INTERNAL_TOOL_IDENTIFIER_VISIBLE")
+    if any(re.search(rf"(?<![A-Za-z0-9_]){identifier}(?![A-Za-z0-9_])", text)
+           for identifier in _INDICATOR_DISPLAY_NAMES):
+        issues.append("INTERNAL_INDICATOR_IDENTIFIER_VISIBLE")
     if re.search(r"(?:关键数据|关键指标|证据|数据)门控", text):
         issues.append("INTERNAL_GATE_LABEL_VISIBLE")
     if re.search(r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)", text, re.I):

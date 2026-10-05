@@ -42,11 +42,11 @@ _ADVICE_SURFACE = re.compile(
 # A report title's role survives suffixes (summary/risk notes/report/issuer).
 # Corporate investment decisions and externally owned advice are not this role.
 _INVESTMENT_SURFACE_ROLE = re.compile(
-    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦|决策|決策)|"
+    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦|决策|決策|判断)|"
     r"\b(?:investment|trading)\s+(?:advice|recommendations?|decisions?)\b", re.I
 )
 _CORPORATE_DECISION = re.compile(
-    r"(?:公司|企业|企業|董事会|管理层|资本开支|产能|研发|并购).{0,12}(?:投资|投資)(?:决策|決策)|"
+    r"(?:公司|企业|企業|会社|董事会|取締役会|管理层|资本开支|产能|研发|并购).{0,12}(?:投资|投資)(?:决策|決策|判断)|"
     r"\b(?:company|corporate|board|management|capex)\b.{0,24}\binvestment\s+decisions?\b", re.I
 )
 _DECISION_FRAME = re.compile(
@@ -374,7 +374,10 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             )
         # A row is one relational proposition, including cells with sentence
         # punctuation. Keep its identity whole through detection and pruning.
-        unit_pattern = r"[^\n]+" if is_table else r"[^\n。！？；;]+[。！？；;]?"
+        # Parenthetical values belong to the same proposition. Splitting a
+        # labelled rating at `(buy; strong buy)` leaves an unowned value behind.
+        unit_pattern = (r"[^\n]+" if is_table else
+                        r"(?:\([^()\n]*\)|（[^（）\n]*）|[^()（）\n。！？；;]|[()（）])+[。！？；;]?")
         for unit in re.finditer(unit_pattern, line):
             # A title already has one stable surface identity; do not create
             # overlapping sentence claims for its decision-role vocabulary.
@@ -475,7 +478,7 @@ def remove_internal_ratings(text: str) -> str:
             # The surface promises unowned trading advice even if pruning has
             # left only business analysis. Preserve that analysis and heading
             # structure, but make its research role explicit.
-            marker = re.match(r"^\s*#{1,6}\s+(?:[一二三四五六七八九十\d]+[、.)]\s*)?", claim.text)
+            marker = re.match(r"^\s*#{1,6}\s+(?:[一二三四五六七八九十\d]+[、.)](?![A-Za-z])\s*)?", claim.text)
             bold = re.fullmatch(r"\s*\*\*([一二三四五六七八九十\d]+[、.)]\s*)?.+\*\*\s*", claim.text)
             replacement = (marker[0] if marker else "") + "研究分析"
             if bold:

@@ -94,13 +94,30 @@ _FINANCIAL_RESULT_PREDICATE = re.compile(
     r"grew|growth|declin(?:ed|ing)|strong|weak|rose|fell)\b", re.I
 )
 _FINANCIAL_PROJECTION = re.compile(
-    r"预期|預期|预测|預測|预计|預計|有望|可能|未来|未來|如果|若|見込|予想|将来|"
-    r"\b(?:expected|forecast|estimate|could|may|might|future|if)\b", re.I
+    r"预期|預期|预测|預測|预计|預計|有望|可能|未来|未來|潜力|潛力|如果|若|見込|予想|将来|"
+    r"\b(?:expected|forecast|estimate|potential|could|may|might|future|if)\b", re.I
 )
 _FINANCIAL_ASSERTION_WITHHELD = re.compile(
     r"(?:不能|无法|無法|尚未|未能)[^。！？；;]{0,12}(?:确认|確認|证明|證明|验证|驗證|声称|断言)|"
     r"(?:仍|尚)?(?:待|未获|未獲)(?:确认|確認|验证|驗證)|"
     r"\b(?:cannot|can't|unable\s+to)\s+(?:verify|confirm|conclude|assert)\b", re.I
+)
+# Undated claims of *realized change* default to the current issuer result,
+# unlike static business quality or an expressly dated historical observation.
+# A qualitative heading can assert the result after its numeric support was
+# removed. Its truth/realization predicate needs the same existing Actual gate.
+_REALIZED_FINANCIAL_CHANGE = re.compile(
+    r"(?:业绩|業績|利润率|利潤率|利益率|盈利|利润|earnings|profit|margin)"
+    r"[^，,。！？；;|\n]{0,24}?(?:好转|好轉|加速|扩张|擴張|回升|增長|增长|改善|"
+    r"増加|回復|拡大|悪化|転換|转变|轉變|证据[^。！？；;|]{0,8}压倒|growth|improved|accelerated|expanded|recovered|grew)", re.I
+)
+_REALIZED_FINANCIAL_ASSERTION = re.compile(
+    r"真实|真實|实际|實際|已经|已經|已|实现|實現|属实|兑现|兌現|压倒|壓倒|"
+    r"が確認|実現|事実|明白|明确|明確|前提[^。！？；;]{0,12}崩れ|\b(?:has|have|realized|actual|confirmed)\b", re.I
+)
+_FINANCIAL_CHANGE_REFERENCE = re.compile(
+    r"(?:这(?:一|种)|這(?:一|種)|该|該|此)(?:业绩|業績|盈利)?(?:改善|增长|增長|加速|回升)|"
+    r"\b(?:this|that)\s+(?:improvement|growth|recovery|acceleration)\b|こうした(?:改善|成長)|(?:これ|それ)は", re.I
 )
 # Economic regimes are distinct source events. In particular, the complement
 # of a recession market is *not* a soft-landing market, and another country's
@@ -173,6 +190,14 @@ _POLICY_ODDS_CHANGE = re.compile(
     r"(?:加息|降息|利率)[^。！？；;|]{0,16}(?:概率|機率|確率)[^。！？；;|]{0,16}(?:下降|上升|降低|增加)|"
     r"(?:收紧|收緊|宽松|寬鬆)[^。！？；;|]{0,16}(?:预期|預期)[^。！？；;|]{0,12}(?:降温|降溫|升温|升溫)|"
     r"\brate\s+(?:hike|cut)\s+(?:probability|odds)\b[^.;!?|]{0,20}\b(?:declined|increased|decreased)\b", re.I
+)
+_PROBABILITY_DERIVED_ASSET_STATE = re.compile(
+    r"股价(?:正向|负向|利好|利空)|股價(?:正向|負向)|"
+    r"(?:低|降低|减少|減少)[^。！？；;|]{0,6}系统性风险|"
+    r"系统性风险[^。！？；;|]{0,8}(?:低|降低|减少)|"
+    r"(?:市场|市場|预期|預期)[^。！？；;|]{0,14}(?:转向|轉向|偏向)[^。！？；;|]{0,8}(?:鹰派|鷹派|鸽派|鴿派)|"
+    r"\b(?:share.price|stock.price)\s+(?:positive|negative)|"
+    r"\b(?:low|lower)\s+systemic\s+risk\b", re.I
 )
 
 
@@ -263,7 +288,8 @@ def _unsupported_macro_outcome(state: Mapping[str, Any], clause: str) -> bool:
     """Probabilities cannot establish demand, carry risk or financial regimes."""
     patterns = [_MONETARY_OUTCOME]
     if _MACRO_PREMISE.search(clause):
-        patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE, _ECONOMIC_STATE))
+        patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE, _ECONOMIC_STATE,
+                         _PROBABILITY_DERIVED_ASSET_STATE))
     for pattern in patterns:
         for outcome in pattern.finditer(clause):
             if _outcome_is_hypothetical(clause, outcome.start(), outcome.end()):
@@ -294,7 +320,7 @@ def _probability_row_outcomes(state: Mapping[str, Any], clause: str) -> list[int
             if i != event_column and not _REGIME_MODAL.search(cell)
             and (any(pattern.search(cell) for pattern in _ECONOMIC_REGIMES.values())
                  or _ECONOMIC_STATE.search(cell) or _DEMAND_OUTCOME.search(cell)
-                 or _MONETARY_OUTCOME.search(cell))
+                 or _MONETARY_OUTCOME.search(cell) or _PROBABILITY_DERIVED_ASSET_STATE.search(cell))
             and not _independent_macro_statement(state, clause)]
 
 
@@ -447,6 +473,16 @@ def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> b
     """
     if _actual_gate_ok(state):
         return False
+    for change in _REALIZED_FINANCIAL_CHANGE.finditer(clause):
+        left = max(clause.rfind(",", 0, change.start()), clause.rfind("，", 0, change.start())) + 1
+        boundary = re.search(r"[，,]", clause[change.end():])
+        right = change.end() + boundary.start() if boundary else len(clause)
+        proposition = clause[left:right]
+        historical = re.search(r"(?:20\d{2}年|\b20\d{2}\s+(?:Q[1-4]|quarter)|历史|歷史|過去|此前|前年|historical)", proposition, re.I)
+        if (not historical and not _FINANCIAL_PROJECTION.search(proposition)
+                and not _FINANCIAL_ASSERTION_WITHHELD.search(proposition)
+                and _REALIZED_FINANCIAL_ASSERTION.search(proposition)):
+            return True
     periods = list(_CURRENT_FINANCIAL_PERIOD.finditer(clause))
     for index, period in enumerate(periods):
         # A sibling withholding statement does not waive another assertion.
@@ -547,6 +583,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     findings: list[EvidenceFinding] = []
     macro_headings: list[tuple[int, str | None]] = []
     macro_jurisdiction: str | None = None
+    financial_headings: list[tuple[int, bool]] = []
+    base_heading = 0
 
     def resolve_claim(claim: str, warning: str, replacement: str) -> str:
         warnings.append(warning)
@@ -616,7 +654,11 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "historical_outcome_as_current_evidence",
                 "既往交易结果不能证明当前行情方向。",
             )
-        if current_financial_gate_violation(state, clause):
+        dependent_actual = (any(blocked for _, blocked in financial_headings)
+                            and _FINANCIAL_CHANGE_REFERENCE.search(clause)
+                            and not _FINANCIAL_PROJECTION.search(clause)
+                            and not _FINANCIAL_ASSERTION_WITHHELD.search(clause))
+        if current_financial_gate_violation(state, clause) or dependent_actual:
             return resolve_claim(
                 clause,
                 "critical_gate_bypassed",
@@ -757,12 +799,23 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         heading = re.match(r"^\s*(#{1,6})\s+(.+)", line)
         if heading:
             level = len(heading[1])
+            base_heading = level
             while macro_headings and macro_headings[-1][0] >= level:
                 macro_headings.pop()
             jurisdiction = next((key for key, pattern in _EVENT_JURISDICTIONS.items()
                                  if pattern.search(heading[2])), None)
             macro_headings.append((level, jurisdiction))
             macro_jurisdiction = next((country for _, country in reversed(macro_headings) if country), None)
+        # Emphasized financial section titles carry the same evidence role as
+        # # headings. A linked "this improvement" cannot outlive its blocked
+        # result premise; independent business facts and forecasts still can.
+        bold_surface = re.match(r'\s*(?:\d+[.)、]\s*)?\*\*([^\n*]+)\*\*(?:\s*[:：]|\s*$)', line)
+        if heading or bold_surface:
+            rank = len(heading[1]) if heading else base_heading + 1
+            while financial_headings and financial_headings[-1][0] >= rank:
+                financial_headings.pop()
+            financial_title = heading[2] if heading else bold_surface[1]
+            financial_headings.append((rank, current_financial_gate_violation(state, financial_title)))
         lines.append(_clean_line(line, clean_clause))
     cleaned = "".join(lines)
     cleaned = _sanitize_legacy_enforcement_artifacts(cleaned)
