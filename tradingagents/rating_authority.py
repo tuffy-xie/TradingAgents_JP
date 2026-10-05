@@ -8,7 +8,9 @@ attribution is evaluated per proposition (or table row), not per whole report.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from tradingagents.publication_semantics import semantic_script
 
 _VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell|bullish|bearish)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り|看涨|看跌|強気|弱気", re.I)
 _CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell", "bullish": "Overweight", "bearish": "Underweight", "看涨": "Overweight", "看跌": "Underweight", "強気": "Overweight", "弱気": "Underweight"}
@@ -19,8 +21,8 @@ _LABEL = re.compile(
     r"(?:final|investment|research)\s+conclusion)\s*[:：|\-—]", re.I
 )
 _RATING_ASSERTION_BEFORE = re.compile(
-    r"(?:给出|给予|评为|定为|推荐为|建议(?:是|为))\s*$|"
-    r"\b(?:recommend(?:s|ed)?|assign(?:s|ed)?|rate(?:s|d)?(?:\s+as)?)\s*$", re.I
+    r"(?:给出|给予|评为|定为|推荐为|建议(?:是|为)|选择)\s*$|"
+    r"\b(?:recommend(?:s|ed)?|assign(?:s|ed)?|choose|chooses|chose|rate(?:s|d)?(?:\s+as)?)\s*$", re.I
 )
 _RATING_ASSERTION_AFTER = re.compile(r"^\s*(?:评级|評級|评价|rating\b)", re.I)
 _LABEL_HEADING = re.compile(
@@ -37,7 +39,9 @@ _ADVICE_SURFACE = re.compile(
     r"(?:(?:投资|投資|交易)(?:建议|建議|推荐|推薦)|"
     r"(?:仓位|倉位|持仓|持倉|组合敞口)(?:管理|策略)|"
     r"\b(?:investment|trading|portfolio)\s+(?:advice|recommendations?|management))$|"
-    r"^(?:(?:final|investment|trading)\s+)?recommendations?$", re.I
+    r"^(?:(?:final|investment|trading)\s+)?recommendations?$|"
+    r"^(?:评级|投资评级)(?:与|和|及)(?:策略|建议)$|"
+    r"^(?:投资|投資|交易)[^，,。！？；;]{0,12}(?:与|和|及)(?:策略)?建议$", re.I
 )
 # A report title's role survives suffixes (summary/risk notes/report/issuer).
 # Corporate investment decisions and externally owned advice are not this role.
@@ -61,6 +65,7 @@ _OTHER_DECISION_OWNER = re.compile(
 
 
 def _advice_surface(title: str) -> bool:
+    title = re.sub(r"^[一二三四五六七八九十\d]+[、.)]\s*", "", title)
     role = _INVESTMENT_SURFACE_ROLE.search(title)
     if role and (
         re.search(r"(?:不(?:提供|构成|发布)|无|没有|\b(?:no|without|not\s+providing))\s*$",
@@ -101,11 +106,16 @@ def _research_framing(text: str) -> str | None:
 # Recommendation ownership is not action authorization. A causal/evaluative
 # reason for rejecting a trade is an investment stance; a bare ban or statement
 # that execution is unavailable remains pure withholding.
-_STANCE_ACTION = r"(?:追涨|追漲|追高|买入|买進|卖出|加仓|减仓|建仓|持有|\b(?:buy|sell|add|hold)\b)"
+_STANCE_ACTION = r"(?:追涨|追漲|追高|买入|买進|卖出|增持|减持|加仓|减仓|加码|清仓|建仓|持有|\b(?:buy|sell|add|hold)\b)"
 _REASONED_TRADE_STANCE = re.compile(
     rf"(?:因此|所以|故而|意味着|意味著|强到|弱到|高到|低到|→|⇒|=|\b(?:therefore|hence|thus)\b)"
     rf"\s*(?:不支持|不赞成|不贊成|反对|反對|否决|否決|\b(?:oppose|reject|does\s+not\s+support)\b)\s*{_STANCE_ACTION}|"
-    rf"(?:反对|反對|不赞成|不贊成|\b(?:oppose|reject)\b)\s*{_STANCE_ACTION}", re.I
+    rf"(?:反对|反對|不赞成|不贊成|\b(?:oppose|reject)\b)\s*{_STANCE_ACTION}|"
+    rf"(?:因此|所以|使我们)[^。！？；;|]{{0,24}}不应[^。！？；;|]{{0,24}}{_STANCE_ACTION}", re.I
+)
+_ACTION_SELECTION_STANCE = re.compile(
+    rf"(?:通过|透过)\s*{_STANCE_ACTION}[^。！？；;|]{{0,16}}(?:降低|改善|优化)(?:下行|组合|投资)?(?:风险|回报)|"
+    rf"{_STANCE_ACTION}\s*(?:是|为)[^。！？；;|]{{0,12}}(?:合理|纪律|最佳|最优)", re.I
 )
 _STATUS_QUO_STANCE = re.compile(r"以不变应万变|以不變應萬變|维持现状|維持現狀|\b(?:maintain|keep)\s+(?:the\s+)?status\s+quo\b", re.I)
 _STANCE_CONTEXT = re.compile(r"结论|結論|综合判断|綜合判斷|投资判断|投資判断|\b(?:conclusion|investment\s+stance)\b", re.I)
@@ -132,13 +142,13 @@ _OUR_RECOMMENDATION = re.compile(
     r"\b(?:we\s+recommend|our\s+(?:(?:buy|sell)\s+)?(?:rating|recommendation|signal)|i\s+recommend)\b", re.I
 )
 _EXTERNAL = re.compile(
-    r"券商|投行|証券会社|證券会社|証券|證券|アナリスト|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调|建议|推荐|认为)|"
+    r"券商|投行|証券会社|證券会社|証券|證券|证券|アナリスト|分析师共识|分析师评级|分析师.{0,20}(?:给予|给出|维持|调升|调降|下调|上调|建议|推荐|认为)|"
     r"(?:位|名)分析师|评级分布|共识评级|\b(?:broker(?:age)?|consensus|"
     r"third[ -]party|according\s+to)\b|\banalysts?\b.{0,35}"
     r"\b(?:rate|rates|rated|maintain|maintains|recommend|recommendation|ratings?)\b", re.I
 )
 _EXTERNAL_HEADING = re.compile(
-    r"券商|投行|証券会社|證券会社|アナリスト評価|分析师(?:共识|评级动态|评级分布)|共识|评级分布|(?:外部|第三方)(?:来源|评级|建议|信号)|"
+    r"券商|投行|証券会社|證券会社|证券|アナリスト評価|分析师(?:共识|评级动态|评级分布)|共识|评级分布|(?:外部|第三方)(?:来源|评级|建议|信号)|"
     r"\b(?:broker(?:age)?|consensus|third[ -]party|external\s+(?:source|ratings?|recommendations?|signals?))\b", re.I
 )
 _OWN_LABEL = re.compile(r"(?:综合|最终|本系统|本报告)(?:投资)?(?:评级|建议)|\b(?:our|overall|final)\s+(?:rating|recommendation)\b", re.I)
@@ -159,6 +169,7 @@ _TRANSITION_CONSEQUENCE = re.compile(
 _HOLD_STANCE = re.compile(
     r"(?:值得|建议|推荐)[\s\"“”]*(?:(?:现有持仓)?投资者\s*)?(?:继续|保持|维持)?\s*持有|"
     r"持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
+    r"(?:耐心|继续|建议)\s*持有(?:现有|核心)?(?:部位|头寸|仓位)|"
     r"\b(?:worth\s+holding|recommend\s+(?:investors?\s+)?(?:continu(?:e|ing)\s+)?holding|"
     r"maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
 )
@@ -166,6 +177,7 @@ _HOLD_STANCE = re.compile(
 # the value of a label. Ownership still applies, including future conditions.
 # Direction-only technical outlooks are deliberately excluded by the caller.
 _RATING_STANCE_PREDICATE = re.compile(
+    r"^\s*(?:是|为)[^。！？；;|]{0,24}(?:平衡|权衡)|"
     r"^\s*(?:是|为|為)[^。！？；;|]{0,32}(?:合理|最优|最優|最佳|适当|適當)"
     r"[^。！？；;|]{0,24}(?:立场|立場|策略|选择|選擇|建议|建議)|"
     r"^\s*\bis\s+(?:the\s+)?(?:only\s+)?(?:appropriate|optimal|best|reasonable)"
@@ -175,7 +187,7 @@ _RATING_STANCE_PREDICATE = re.compile(
 )
 _NAMED_SOURCE_REPORT = re.compile(
     r"(?:^|[：:]\s*)(?P<source>[A-Z][\w&.'-]*(?:\s+[A-Z][\w&.'-]*){0,4})\s+"
-    r"(?:upgraded|downgraded|maintains?|recommends?|raised|lowered|says?|reports?|argues?|notes?)\b"
+    r"(?:upgraded|downgraded|maintains?|recommends?|chooses?|chose|raised|lowered|says?|reports?|argues?|notes?)\b"
 )
 _SYSTEM_SOURCE = re.compile(
     r"\b(?:we|our|i|research|manager|analyst|trader|portfolio|system|report)\b", re.I
@@ -321,6 +333,8 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
     External attribution belongs to its clause/row; it cannot exempt a sibling
     internal recommendation in the same paragraph.
     """
+    original_text = text
+    text = semantic_script(text)
     claims: list[RatingClaim] = []
     heading_context: list[tuple[int, bool]] = []
     pending_label = False
@@ -406,7 +420,14 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
                          and re.match(r"\s*(?:其|非核心|核心|部分)?(?:资产|資產|业务|業務)", cleaned[predicate.end():]))
                 for predicate in _REASONED_TRADE_STANCE.finditer(cleaned)
             )
-            stance = bool(reasoned_stance or status_quo or _OWN_ADVICE_DISCOURSE.search(cleaned))
+            action_selection = any(
+                not _ADVICE_NEGATION.search(cleaned[:predicate.start()].rstrip())
+                and not _ADVICE_HISTORY.search(cleaned[:predicate.start()])
+                and not (_ISSUER_TARGET.search(cleaned[:predicate.start()])
+                         and re.search(r"(?:资产|資產|业务|業務)", predicate[0]))
+                for predicate in _ACTION_SELECTION_STANCE.finditer(cleaned)
+            )
+            stance = bool(reasoned_stance or action_selection or status_quo or _OWN_ADVICE_DISCOURSE.search(cleaned))
             framing = _research_framing(unit[0])
             if not match and not hold_stance and not selection and not stance and framing is None:
                 continue
@@ -414,7 +435,8 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             # not just labelled values and signal/status cells.
             labelled = _LABEL.search(cleaned)
             asserted = next((value for value in _VALUES.finditer(cleaned)
-                             if (value[0].lower() not in _OUTLOOK_VALUES and _RATING_ASSERTION_BEFORE.search(cleaned[:value.start()]))
+                             if (value[0].lower() not in _OUTLOOK_VALUES and _RATING_ASSERTION_BEFORE.search(cleaned[:value.start()])
+                                 and not re.search(r"(?:不|未|没有)\s*选择\s*$|\b(?:not|never)\s+choos(?:e|es)\s*$", cleaned[:value.start()], re.I))
                              or _RATING_ASSERTION_AFTER.search(cleaned[value.end():])
                              or (value[0].lower() not in _OUTLOOK_VALUES
                                  and _RATING_STANCE_PREDICATE.search(cleaned[value.end():]))), None)
@@ -465,7 +487,7 @@ def internal_rating_claims(text: str) -> list[RatingClaim]:
             pending_label = bool(_LABEL_HEADING.fullmatch(plain.rstrip(":：")))
             pending_external = bool(_EXTERNAL_HEADING.search(plain)) if pending_label else False
         offset += len(line)
-    return claims
+    return [replace(claim, text=original_text[claim.start:claim.end]) for claim in claims]
 
 
 def remove_internal_ratings(text: str) -> str:

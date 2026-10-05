@@ -16,6 +16,7 @@ from decimal import Decimal
 from typing import Any
 
 from tradingagents.agents.market_authority import canonical_market_authority
+from tradingagents.publication_semantics import semantic_script
 
 # A numeric token may be followed immediately by a display suffix such as
 # ``x`` or ``pt``.  It may not, however, begin in the middle of an identifier
@@ -84,6 +85,11 @@ _JSF_SCOPE_DISCLAIMER = re.compile(
     r"\b(?:is\s+not|are\s+not|not\s+(?:total|equivalent)|does\s+not\s+(?:represent|prove))\b|"
     r"ではない|を意味しない", re.I
 )
+_LENDING_FLOW_INTERPRETATION = re.compile(
+    r"(?:JSF|融资|融資|贷株|貸株|信用交易|筹码|籌碼)[^。！？；;|]{0,24}"
+    r"(?:揭示|证明|确认|反映|意味着)[^。！？；;|]{0,24}"
+    r"(?:(?:资|資)金(?:流向|撤退)|(?:资|資)?金流|机构(?:立场|撤退)|结构性卖压)", re.I
+)
 JSF_SCOPE_WARNINGS = frozenset({
     "jsf_measure_scope_mismatch", "short_absence_overclaim", "short_pressure_overclaim",
 })
@@ -108,12 +114,26 @@ def jsf_measure_scope_violation(state: Mapping[str, Any], text: str) -> bool:
 
 
 def _jsf_measure_unit_violation(state: Mapping[str, Any], text: str) -> bool:
+    entries = _jsf_lending_evidence(state)
+    # A source-native balance is also not a cash-flow/participant metric when
+    # prose omits the number. Removing its numeric sentence must not leave an
+    # asserted flow interpretation in the section title or a sibling sentence.
+    if entries and _LENDING_FLOW_INTERPRETATION.search(semantic_script(text)):
+        if _JSF_SCOPE_DISCLAIMER.search(text):
+            return False
+        return not any(
+            isinstance(entry, Mapping) and str(entry.get("source", "")).upper() != "JSF"
+            and entry.get("verification_status") in {"VERIFIED_TOOL_OUTPUT", "VERIFIED_SOURCE"}
+            and entry.get("allowed_for_current_decision") is not False
+            and entry.get("claim_type") != "INFERENCE"
+            and _evidence_statement_key(text) == _evidence_statement_key(str(entry.get("value", "")))
+            for entry in state.get("evidence_registry") or []
+        )
     measure = _SHORT_POSITION_MEASURE.search(text)
     if not measure:
         return False
     if _JSF_SCOPE_DISCLAIMER.search(text):
         return False
-    entries = _jsf_lending_evidence(state)
     if not entries:
         return False
     explicit_jsf = bool(re.search(r"\bJSF\b|日证金|日證金|日証金", text, re.I))
@@ -266,6 +286,16 @@ _MONETARY_OUTCOME = re.compile(
     r"\b(?:financial|financing|monetary)\s+conditions\b[^.;!?|]{0,28}\b(?:loose|easy|tight|eased|improved)\b|"
     r"\bcarry\s+trade\b[^.;!?|]{0,28}\brisk\b[^.;!?|]{0,24}\b(?:decreased|declined|reduced)\b", re.I
 )
+_GEOPOLITICAL_OUTCOME = re.compile(
+    r"(?:地缘|地緣|台海|地政学)[^。！？；;|]{0,18}(?:风险|風險|紧张|緊張)"
+    r"[^。！？；;|]{0,16}(?:缓和|緩和|缓解|緩解|降低|下降|减轻|減輕|加剧|加劇)|"
+    r"\bgeopolitical\s+(?:risk|tensions?)\b[^.;!?|]{0,24}\b(?:eased|declined|reduced|increased)\b", re.I
+)
+_POLICY_ALIGNMENT = re.compile(
+    r"(?:与|與)[^。！？；;|]{0,24}(?:点阵图|點陣圖|官方(?:政策|利率)路径)"
+    r"[^。！？；;|]{0,12}(?:一致|吻合)|"
+    r"\b(?:consistent|aligned)\s+with\b[^.;!?|]{0,28}\b(?:dot\s+plot|official\s+policy\s+path)\b", re.I
+)
 _POLICY_ODDS_CHANGE = re.compile(
     r"(?:加息|降息|利率)[^。！？；;|]{0,16}(?:概率|機率|確率)[^。！？；;|]{0,16}(?:下降|上升|降低|增加)|"
     r"(?:收紧|收緊|宽松|寬鬆)[^。！？；;|]{0,16}(?:预期|預期)[^。！？；;|]{0,12}(?:降温|降溫|升温|升溫)|"
@@ -366,7 +396,7 @@ def _bound_policy_odds_change(state: Mapping[str, Any], clause: str) -> bool:
 
 def _unsupported_macro_outcome(state: Mapping[str, Any], clause: str) -> bool:
     """Probabilities cannot establish demand, carry risk or financial regimes."""
-    patterns = [_MONETARY_OUTCOME]
+    patterns = [_MONETARY_OUTCOME, _GEOPOLITICAL_OUTCOME, _POLICY_ALIGNMENT]
     if _MACRO_PREMISE.search(clause):
         patterns.extend((_DEMAND_OUTCOME, _POLICY_ODDS_CHANGE, _ECONOMIC_STATE,
                          _PROBABILITY_DERIVED_ASSET_STATE))
@@ -769,6 +799,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 replacement = "当前市场定价情况尚无法确认。"
             if _unsupported_macro_outcome(state, clause):
                 replacement = "事件概率不直接证明公司需求或当前金融状况。"
+                if _GEOPOLITICAL_OUTCOME.search(clause):
+                    replacement = "该地区的实际风险变化尚无法确认。"
+                elif _POLICY_ALIGNMENT.search(clause):
+                    replacement = "预测市场报价与官方政策预期是否一致，尚无法确认。"
             if _unsupported_regime_certainty(state, clause):
                 replacement = "该宏观情景或共识尚无法确认。"
                 if heading:

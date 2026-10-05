@@ -36,6 +36,7 @@ from tradingagents.dataflows.japan.context import (
     render_japan_report_sections,
     render_japan_sentiment_report,
 )
+from tradingagents.publication_semantics import semantic_script
 from tradingagents.rating_authority import (
     artifact_rating_violations,
     attributed_rating_fact,
@@ -62,7 +63,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "position-constraint-jsf-scope-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "script-role-event-outcome-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -102,7 +103,7 @@ _PORTFOLIO_EXECUTION_OBJECT = re.compile(
 )
 _EXECUTION_HEADING = re.compile(
     r"(?:execution|trading?\s+plan|trade\s+parameters?|actionable|"
-    r"可操作|执行|行动建议|交易者|交易(?:建议|策略|计划|参数|执行)|"
+    r"可操作|执行|行动(?:建议|纲领|计划)|交易者|交易(?:建议|策略|计划|参数|执行)|"
     r"操作(?:建议|策略|计划)|取引(?:レコメンデーション|戦略|計画)|"
     r"アクションプラン|サイジング|目標価格|段階的利確|損切り|"
     r"入场|止损|止盈|仓位)",
@@ -239,9 +240,9 @@ _ACTIONABLE_HORIZON_FIELD = re.compile(
     r"(?:个?交易日|天|日(?!元|均线)|周|週|月|days?|weeks?|months?)",
     re.I,
 )
-_POSITION_ENTITY = re.compile(r"仓位|倉位|持仓|持倉|敞口|\b(?:positions?|exposure|holdings?|holders?)\b", re.I)
+_POSITION_ENTITY = re.compile(r"仓位|倉位|持仓|持倉|敞口|部位|头寸|頭寸|\b(?:positions?|exposure|holdings?|holders?)\b", re.I)
 _POSITION_PRESERVATION = re.compile(
-    r"维持|維持|保持|保留|继续持有|繼續持有|"
+    r"维持|維持|保持|保留|持有|"
     r"\b(?:maintain(?:ed|ing)?|retain(?:ed|ing)?|keep|kept|hold)\b", re.I,
 )
 _EXECUTION_TRIGGER_SETUP = re.compile(
@@ -2237,7 +2238,7 @@ def _execution_semantic_units(text: str) -> list[str]:
 
 
 def _execution_clause_violation(text: str) -> str | None:
-    plain = text.replace("**", "").replace("`", "").strip()
+    plain = semantic_script(text.replace("**", "").replace("`", "").strip())
     if not plain:
         return None
     if _japanese_position_constraint(plain):
@@ -2271,7 +2272,7 @@ def _execution_clause_violation(text: str) -> str | None:
     ):
         # Polarity/subject belong to the action, not to a conditional elsewhere.
         return None
-    if _POSITION_DIRECTIVE.search(plain):
+    if (directive := _POSITION_DIRECTIVE.search(plain)) and not _non_authorizing_action(plain, directive):
         return "POSITION_SIZE_RECOMMENDATION"
     if _position_preservation_instruction(plain):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
@@ -2311,6 +2312,11 @@ def _execution_clause_violation(text: str) -> str | None:
         or _EXECUTION_OPPORTUNITY.search(plain)
     ):
         return "UNAPPROVED_EXECUTION_INSTRUCTION"
+    # Action used as the means of changing the investor's risk/exposure,
+    # not a descriptive company action or a ban already resolved above.
+    if (action and re.search(r"(?:通过|透过)\s*$", plain[:action.start()])
+            and re.search(r"(?:降低|改善|优化).{0,12}(?:风险|回报|敞口)", plain[action.end():])):
+        return "UNAPPROVED_EXECUTION_INSTRUCTION"
     if _EXECUTION_PARAMETER.search(plain):
         # A sourced valuation target is an analytical fact, not a trade exit.
         if (re.search(r"(?:分析师|券商|アナリスト|証券|consensus|analyst|broker).*(?:目标价|目標価格|target)", plain, re.I)
@@ -2347,6 +2353,8 @@ def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
     """
     before = re.split(r"[，,。；;!?！？]|→|⇒|=>|->", text[:action.start()])[-1]
     after = text[action.end():]
+    if re.search(r"(?:不|未|暂不)(?:通过|透过)?\s*$", before):
+        return True
     # Japanese predicates put polarity after the action/object. Apply the
     # same action-local scope: a later contrast never inherits this ban.
     local_after = re.split(r"[。；;!?！？]|ただし|しかし|一方", after)[0]
@@ -2516,7 +2524,7 @@ def _remove_execution_sections(text: str) -> str:
 
 def _is_execution_heading(heading: str) -> bool:
     """Classify execution sections without treating valuation facts as plans."""
-    folded = heading.strip().casefold()
+    folded = semantic_script(heading.strip()).casefold()
     if folded in _WITHHELD_EXECUTION_HEADINGS:
         return False
     if re.search(r"(?:分析师|券商|アナリスト|証券|consensus|analyst|broker).*(?:目标价|目標価格|target)", folded):
@@ -2540,6 +2548,9 @@ def _execution_surface_title(line: str) -> str | None:
     if _heading_level(line):
         return line.lstrip('# ').strip()
     plain = re.sub(r'^\s*\d+[.)、]\s*', '', line).strip()
+    inline = re.match(r'^\*\*([^\n]+?)\*\*\s*[:：]', plain)
+    if inline:
+        return inline[1]
     bold = re.fullmatch(r'\*\*([^\n]+)\*\*', plain)
     if bold and not re.search(r'[。！？；;]', bold[1]):
         return bold[1]
