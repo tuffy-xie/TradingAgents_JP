@@ -72,6 +72,86 @@ _SHORT_PRESSURE_OVERCLAIM = re.compile(
     r"(?:卖压|賣壓)(?:明显|明顯|大幅)?(?:减轻|減輕))",
     re.I,
 )
+# A lending observation cannot acquire a different population/metric merely
+# because its numeric value is supported. Match a measurement proposition,
+# not every use of the word "short" (including scope disclaimers).
+_SHORT_POSITION_MEASURE = re.compile(
+    r"空[头頭](?:余额|餘額|余量|总量|總量|持仓量|持倉量|仓位|倉位)|"
+    r"空売り(?:残高|総量)|\bshort\s+(?:interest|balance|positions?\s+(?:balance|total))\b", re.I
+)
+_JSF_SCOPE_DISCLAIMER = re.compile(
+    r"(?:不|并不|並不|不能|无法|無法)(?:代表|等于|等於|证明|證明|说明|說明)|"
+    r"\b(?:is\s+not|are\s+not|not\s+(?:total|equivalent)|does\s+not\s+(?:represent|prove))\b|"
+    r"ではない|を意味しない", re.I
+)
+JSF_SCOPE_WARNINGS = frozenset({
+    "jsf_measure_scope_mismatch", "short_absence_overclaim", "short_pressure_overclaim",
+})
+
+
+def _jsf_lending_evidence(state: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    return [entry for entry in state.get("evidence_registry") or []
+            if isinstance(entry, Mapping) and str(entry.get("source", "")).upper() == "JSF"
+            and (entry.get("metric") == "securities_finance_balance"
+                 or entry.get("semantic_basis") == "OBSERVABLE_LENDING_BALANCE")]
+
+
+def jsf_measure_scope_violation(state: Mapping[str, Any], text: str) -> bool:
+    """Bind an asserted short measurement to its source-native lending value.
+
+    Conditional reuse still changes the metric, unlike a source-scope warning.
+    Independent typed, attributed short-interest evidence remains a different
+    fact; a JSF label can never borrow that fact's semantics.
+    """
+    units = re.split(r"(?<=[。；;!?！？])|但是|但|しかし|ただし|\bbut\b", text, flags=re.I)
+    return any(_jsf_measure_unit_violation(state, unit) for unit in units)
+
+
+def _jsf_measure_unit_violation(state: Mapping[str, Any], text: str) -> bool:
+    measure = _SHORT_POSITION_MEASURE.search(text)
+    if not measure:
+        return False
+    if _JSF_SCOPE_DISCLAIMER.search(text):
+        return False
+    entries = _jsf_lending_evidence(state)
+    if not entries:
+        return False
+    explicit_jsf = bool(re.search(r"\bJSF\b|日证金|日證金|日証金", text, re.I))
+    quantities = set()
+    for entry in entries:
+        value = entry.get("value") or {}
+        metadata = value.get("metadata", value) if isinstance(value, Mapping) else {}
+        quantities.update(_normalise_number(str(metadata[key])) for key in (
+            "stock_loan_balance", "finance_balance", "net_balance")
+            if metadata.get(key) is not None)
+    # In tables the quantity may sit in a sibling cell. Numeric identity is
+    # read from structured evidence, never re-inferred from display payloads.
+    claimed = set(_number_tokens(text if text.lstrip().startswith("|") else text[measure.start():]))
+    bound = claimed & quantities
+    if not bound and not explicit_jsf:
+        return False
+    for entry in state.get("evidence_registry") or []:
+        if (not explicit_jsf and isinstance(entry, Mapping)
+                and entry.get("metric") == "short_interest"
+                and entry.get("current_eligible") is True
+                and str(entry.get("verification_status", "")).startswith("VERIFIED")
+                and str(entry.get("source", "")).upper() != "JSF"
+                and entry.get("source")
+                and str(entry["source"]).casefold() in text.casefold()
+                and bound & _numbers_in(entry.get("value"))):
+            return False
+    return True
+
+
+def jsf_scope_audit_metadata(state: Mapping[str, Any], warning: str) -> dict[str, Any]:
+    if warning != "jsf_measure_scope_mismatch":
+        return {}
+    return {"semantic_type": "JSF_MEASURE_SCOPE", "required_authority": "SHORT",
+            "authority_owner": "JSF source-native securities-finance balance",
+            "evidence_ids": [entry["evidence_id"] for entry in _jsf_lending_evidence(state)
+                             if entry.get("evidence_id")]}
+
+
 _HISTORY_AS_SIGNAL = re.compile(
     r"(?:last\s+(?:trade|time)|previous\s+(?:trade|outcome)|上次|此前交易)[^\n。！？;]*(?:loss|亏损|bearish|看空|hold|观望|sell|卖出)",
     re.I,
@@ -602,6 +682,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         return replacement
 
     def clean_clause(clause: str, *, heading: bool = False) -> str:
+        if jsf_measure_scope_violation(state, clause):
+            return resolve_claim(clause, "jsf_measure_scope_mismatch", "")
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
             return resolve_claim(
                 clause,
@@ -887,6 +969,7 @@ def enforce_agent_result(state: Mapping[str, Any], result: dict[str, Any], agent
                         "enforcement_action": finding.action,
                         "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                         "execution_blocking": True,
+                        **jsf_scope_audit_metadata(state, finding.warning),
                     }
                 )
         return checked.text
@@ -937,6 +1020,7 @@ def audit_agent_result(
                     "enforcement_action": finding.action,
                     "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                     "execution_blocking": True,
+                    **jsf_scope_audit_metadata(state, finding.warning),
                 }
             )
 
@@ -1222,6 +1306,7 @@ def _audit_category(warning: str) -> str:
         "guidance_as_analyst_consensus",
         "short_absence_overclaim",
         "short_pressure_overclaim",
+        "jsf_measure_scope_mismatch",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "probability_event_mismatch",

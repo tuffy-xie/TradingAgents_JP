@@ -14,7 +14,11 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-from tradingagents.agents.evidence_enforcement import enforce_agent_output
+from tradingagents.agents.evidence_enforcement import (
+    JSF_SCOPE_WARNINGS,
+    enforce_agent_output,
+    jsf_scope_audit_metadata,
+)
 from tradingagents.agents.execution_validation import (
     EXECUTION_PLAN_FIELDS,
     parse_execution_action,
@@ -58,7 +62,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "multilingual-plan-realized-evidence-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "position-constraint-jsf-scope-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -290,6 +294,11 @@ _POSITION_DIRECTIVE = re.compile(
     r"[^。；;\n]{0,32}(?:仓位|倉位|敞口|净暴露|position|allocation))",
     re.I,
 )
+# Position size constraints regulate an execution plan even with a negative
+# verb (avoid *full* size). Withholding the entire trade is not that plan.
+_JP_POSITION_OBJECT = re.compile(r"ポジション|建玉")
+_JP_POSITION_SIZE = re.compile(r"フル|全額|満額|最大|半分|部分|段階|\d+(?:\.\d+)?\s*%")
+_JP_POSITION_CONSTRAINT = re.compile(r"避ける|抑える|制限|縮小|拡大|増やす|減らす|調整")
 _EXECUTION_PARAMETER = re.compile(
     r"(?:入场|建仓|目标价|第一目标|第二目标|目標価格|損切り(?:価格|水準)|\bentry\b|\bstop\b|\btarget\b)"
     r"[^。；;\n]*\d",
@@ -753,6 +762,7 @@ def _accept_text(
                 "original_claim": finding.original_claim,
                 "replacement_claim": finding.replacement_claim,
                 "enforcement_action": finding.action,
+                **jsf_scope_audit_metadata(state, finding.warning),
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             }
@@ -1107,6 +1117,7 @@ def _category_for_warning(warning: str) -> str:
         "guidance_as_analyst_consensus",
         "short_absence_overclaim",
         "short_pressure_overclaim",
+        "jsf_measure_scope_mismatch",
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "probability_event_mismatch",
@@ -2229,6 +2240,8 @@ def _execution_clause_violation(text: str) -> str | None:
     plain = text.replace("**", "").replace("`", "").strip()
     if not plain:
         return None
+    if _japanese_position_constraint(plain):
+        return "POSITION_SIZE_RECOMMENDATION"
     scenario_target = next((match for match in _SCENARIO_TARGET.finditer(plain)
                             if not re.search(r"收入|营收|利润|产量|订单|GDP|revenue|earnings|output|orders", match[0], re.I)
                             and not re.match(r"\s*(?:%|台|件|吨|人|万元|亿元|billion|million)", plain[match.end():], re.I)), None)
@@ -2305,6 +2318,25 @@ def _execution_clause_violation(text: str) -> str | None:
             return None
         return "UNVALIDATED_EXECUTABLE_PLAN"
     return None
+
+
+def _japanese_position_constraint(text: str) -> bool:
+    position = _JP_POSITION_OBJECT.search(text)
+    if not position:
+        return False
+    # A company's competitive/industry position is a business object, not a
+    # trading position. A later portfolio instruction remains independently
+    # classified by the existing clause/contrast segmentation.
+    if re.search(r"(?:会社|企業|当社).*(?:市場|競争|業界|事業).*ポジション", text):
+        return False
+    for predicate in _JP_POSITION_CONSTRAINT.finditer(text):
+        if abs(predicate.start() - position.start()) > 48:
+            continue
+        if _non_authorizing_action(text, predicate):
+            continue
+        if predicate.group() != "避ける" or _JP_POSITION_SIZE.search(text):
+            return True
+    return False
 
 
 def _non_authorizing_action(text: str, action: re.Match[str]) -> bool:
@@ -2750,7 +2782,8 @@ def _validate_final_artifact(
     # not exempt merely because it contains no precise number.
     issues.extend(
         "CROSS_DOMAIN_AUTHORITY:"
-        + ("FINANCIAL:" if finding.warning == "critical_gate_bypassed" else "NEWS_PROBABILITY:")
+        + ("FINANCIAL:" if finding.warning == "critical_gate_bypassed" else
+           "JSF:" if finding.warning in JSF_SCOPE_WARNINGS else "NEWS_PROBABILITY:")
         + finding.claim_sha256
         for finding in _artifact_evidence_gate_findings(state, accepted_report)
     )
@@ -2762,7 +2795,7 @@ def _validate_final_artifact(
 def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
     """Reuse evidence gates, but inspect the final published bytes."""
     return [finding for finding in enforce_agent_output(state, text, "Canonical Final State").findings
-            if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch"}]
+            if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch", *JSF_SCOPE_WARNINGS}]
 
 
 def _artifact_without_validated_execution(state: Mapping[str, Any], text: str) -> str:
@@ -2979,6 +3012,19 @@ def _finalize_audit(
             entry["execution_blocking"] = surviving
             if surviving:
                 issues.append("UNRESOLVED_PROCESS_NARRATION")
+        elif entry.get("warning") == "jsf_measure_scope_mismatch":
+            # Removing one phrasing cannot close the metric-scope violation if
+            # the same lending-to-short-interest substitution survives under
+            # another wording anywhere in the exact artifact.
+            surviving = any(finding.warning == "jsf_measure_scope_mismatch"
+                            for finding in _artifact_evidence_gate_findings(state, accepted_report))
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = ("JSF_MEASURE_SCOPE_CLASS_PRESENT_IN_EXACT_ARTIFACT"
+                                         if surviving else "JSF_MEASURE_SCOPE_CLASS_ABSENT_FROM_EXACT_ARTIFACT")
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append("UNRESOLVED_JSF_MEASURE_SCOPE:" + str(entry.get("claim_sha256")))
         elif entry.get("category") == "MARKET_AUTHORITY_CLAIM":
             survivors = _artifact_market_claims(state, accepted_report)
             surviving = any(
@@ -3196,6 +3242,8 @@ def _execution_claim_survives(original: str, artifact: str) -> bool:
     actions = {m.group().casefold() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
                for m in pattern.finditer(original)}
     for claim in _artifact_execution_claims(artifact):
+        if _japanese_position_constraint(original) and _japanese_position_constraint(claim):
+            return True
         remaining = {m.group().casefold() for pattern in (_EXECUTION_ACTION, _ENGLISH_TRADE_ACTION)
                      for m in pattern.finditer(claim)}
         if actions & remaining:
