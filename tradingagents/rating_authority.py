@@ -58,6 +58,12 @@ _DECISION_FRAME = re.compile(
     r"\b(?:our|this|final)\s+(?:investment\s+|trading\s+)?decision\b", re.I
 )
 _DIRECTIONAL_FRAME = re.compile(r"(?:看空|看跌|看多|看涨)(?:的)?立场|\b(?:bullish|bearish)\s+stance\b", re.I)
+_RATING_ADJUSTMENT_FRAME = re.compile(
+    r"(?:决定|确定|指导|用于)\s*(?:未来|未來|后续|系统|最终)?"
+    r"(?P<role>评级(?:调整|变化|转换)(?:方向|决策)?)|"
+    r"\b(?:determine|guide|decide)\s+(?:future\s+|subsequent\s+)?"
+    r"(?P<english_role>rating\s+(?:adjustments?|changes?|transitions?))\b", re.I,
+)
 _OTHER_DECISION_OWNER = re.compile(
     r"(?:投资者|投資家|公司|企业|企業|董事会|管理层|客户|看涨方|看空方|多方|空方)|"
     r"\b(?:investors?|company|board|management|clients?|bull\s+case|bear\s+case)\b", re.I
@@ -99,8 +105,16 @@ def _research_framing(text: str) -> str | None:
         else:
             replacement = "研究判断"
         replacements.append((match.start(), match.end(), replacement))
+    for match in _RATING_ADJUSTMENT_FRAME.finditer(text):
+        prefix = re.split(r"[，,：:；;。|]", text[:match.start()])[-1]
+        if (_OTHER_DECISION_OWNER.search(prefix) or _ADVICE_HISTORY.search(prefix)
+                or re.search(r"(?:不|未|无权|不能)\s*$|\b(?:not|never)\s*$", prefix, re.I)):
+            continue
+        role = "role" if match["role"] else "english_role"
+        replacement = "研究与风险判断" if role == "role" else "research and risk assessments"
+        replacements.append((match.start(role), match.end(role), replacement))
     result = text
-    for start, end, replacement in reversed(replacements):
+    for start, end, replacement in sorted(replacements, reverse=True):
         result = result[:start] + replacement + result[end:]
     return result if replacements else None
 # Recommendation ownership is not action authorization. A causal/evaluative

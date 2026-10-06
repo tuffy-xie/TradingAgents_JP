@@ -334,6 +334,81 @@ def _independent_macro_statement(state: Mapping[str, Any], assertion: str) -> bo
     )
 
 
+# Index identity is separate from an issuer conclusion. These aliases identify
+# the existing Japan Macro inputs, not phrases to blacklist. Numeric observations
+# remain owned by their normal evidence check; a magnitude or causal statement
+# needs its own proposition witness, not an unrelated/removed index percentage.
+_CROSS_MARKET_SUBJECTS = {
+    "sox": re.compile(r"(?<![A-Za-z])SOX(?![A-Za-z])|费城半导体(?:指数)?|費城半導體(?:指數)?", re.I),
+    "nasdaq": re.compile(r"(?<![A-Za-z])Nasdaq(?:\s+(?:100|Composite))?(?![A-Za-z])|纳斯达克(?:指数)?|納斯達克(?:指數)?", re.I),
+    "nikkei_225": re.compile(r"(?<![A-Za-z])Nikkei(?:\s*225)?(?![A-Za-z])|日经(?:225|指数)?|日經(?:225|指數)?", re.I),
+    "topix": re.compile(r"(?<![A-Za-z])TOPIX(?![A-Za-z])|东证指数|東證指數", re.I),
+    "sp500": re.compile(r"S&P\s*(?:500)?|标普(?:500|指数)?|標普(?:500|指數)?", re.I),
+    "vix": re.compile(r"\bVIX\b", re.I),
+    "dxy": re.compile(r"\bDXY\b|美元指数|美元指數", re.I),
+}
+_INDEX_MAGNITUDE = re.compile(
+    r"暴涨|暴漲|飙升|飆升|强势|強勢|暴跌|\b(?:surg(?:e|es|ed|ing)|soar(?:s|ed|ing)?|plung(?:e|es|ed|ing))\b", re.I,
+)
+_INDEX_ISSUER_OUTCOME = re.compile(
+    r"直接(?:利好|利空|受益|受损)|证明[^。！？；;|]{0,16}(?:公司|企业|需求|盈利|估值)|"
+    r"\b(?:directly\s+(?:benefits?|harms?)|proves?\s+(?:issuer|company|demand))\b", re.I,
+)
+_INDEX_ISSUER_CORRELATION = re.compile(
+    r"(?:股价|股價|\b(?:stock(?:\s+price)?|shares?)\b)[^。！？；;|]{0,75}"
+    r"(?:相关性|相關性|相关系数|相關係數|\bcorrelat(?:ed|ion)\b)", re.I,
+)
+_INDEX_ASSERTION_WITHHELD = re.compile(
+    r"并未|并不|没有|未曾|无法确认|尚未确认|不能确认|\b(?:not|never|cannot\s+confirm)\b", re.I,
+)
+
+
+def cross_market_subjects(text: str) -> frozenset[str]:
+    """Stable input identities shared by findings and exact-artifact lineage."""
+    return frozenset(key for key, pattern in _CROSS_MARKET_SUBJECTS.items() if pattern.search(text))
+
+
+def cross_market_outcome_violation(state: Mapping[str, Any], clause: str) -> bool:
+    """A source index observation does not establish magnitude or issuer benefit.
+
+    Inspect a row as a relation, but apply modality/negation in the predicate's
+    cell. No number, old Audit finding or prior pruning is required for this
+    independent check. Ordinary factors and index monitoring have no predicate
+    here; verified same-proposition facts and explicit hypotheses remain valid.
+    """
+    if not cross_market_subjects(clause):
+        return False
+    for pattern in (_INDEX_MAGNITUDE, _INDEX_ISSUER_OUTCOME, _INDEX_ISSUER_CORRELATION):
+        for outcome in pattern.finditer(clause):
+            if _outcome_is_hypothetical(clause, outcome.start(), outcome.end()):
+                continue
+            antecedent = re.sub(r"^[\s>*`|]+", "", clause)
+            if (re.match(r"(?:(?:当|當)(?!时|時|日|前|今)|\bwhen\b)", antecedent, re.I)
+                    and not re.search(r"但(?:是)?|然而|\bbut\b", clause[:outcome.start()], re.I)
+                    and re.search(r"则|則|需|将|將|会|會|\b(?:then|would|should)\b", antecedent, re.I)):
+                continue
+            prefix = re.split(r"[，,|。！？；;]", clause[:outcome.start()])[-1]
+            if _INDEX_ASSERTION_WITHHELD.search(prefix):
+                continue
+            # A magnitude belongs to an index in the same cell, not an
+            # unrelated company's product/earnings description elsewhere.
+            if pattern is _INDEX_MAGNITUDE:
+                local_prefix = re.split(r"[，,、|。！？；;]", clause[:outcome.start()])[-1]
+                subjects = [m for subject in _CROSS_MARKET_SUBJECTS.values()
+                            for m in subject.finditer(local_prefix)]
+                if not subjects or min(len(local_prefix) - m.end() for m in subjects) > 24:
+                    continue
+            elif pattern is _INDEX_ISSUER_OUTCOME and not clause.lstrip().startswith("|"):
+                # Mentioning an index in a monitoring clause cannot annex a
+                # sibling corporate result. A prose inference needs the index
+                # in its own premise or an explicit causal reference to it.
+                if not cross_market_subjects(prefix) and not re.search(r"因此|所以|由此|\b(?:therefore|thus)\b", prefix, re.I):
+                    continue
+            if not _independent_macro_statement(state, clause):
+                return True
+    return False
+
+
 def _outcome_is_hypothetical(clause: str, start: int, end: int) -> bool:
     # Modal scope belongs to the outcome's cell/clause. A sibling possibility
     # must not waive an asserted state after "but" or another table cell.
@@ -714,6 +789,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     def clean_clause(clause: str, *, heading: bool = False) -> str:
         if jsf_measure_scope_violation(state, clause):
             return resolve_claim(clause, "jsf_measure_scope_mismatch", "")
+        if cross_market_outcome_violation(state, clause):
+            # Omit an unbound compound claim/row rather than attach an
+            # unavailable message to a supported sibling value or table cell.
+            return resolve_claim(clause, "cross_market_outcome_mismatch", "")
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
             return resolve_claim(
                 clause,
@@ -1344,6 +1423,7 @@ def _audit_category(warning: str) -> str:
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "probability_event_mismatch",
+        "cross_market_outcome_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:

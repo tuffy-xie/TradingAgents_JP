@@ -16,6 +16,7 @@ from typing import Any
 
 from tradingagents.agents.evidence_enforcement import (
     JSF_SCOPE_WARNINGS,
+    cross_market_subjects,
     enforce_agent_output,
     jsf_scope_audit_metadata,
 )
@@ -63,7 +64,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "script-role-event-outcome-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "index-outcome-rating-agency-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -1122,6 +1123,7 @@ def _category_for_warning(warning: str) -> str:
         "historical_outcome_as_current_evidence",
         "critical_gate_bypassed",
         "probability_event_mismatch",
+        "cross_market_outcome_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:
@@ -2794,7 +2796,8 @@ def _validate_final_artifact(
     issues.extend(
         "CROSS_DOMAIN_AUTHORITY:"
         + ("FINANCIAL:" if finding.warning == "critical_gate_bypassed" else
-           "JSF:" if finding.warning in JSF_SCOPE_WARNINGS else "NEWS_PROBABILITY:")
+           "JSF:" if finding.warning in JSF_SCOPE_WARNINGS else
+           "MARKET_FACTOR:" if finding.warning == "cross_market_outcome_mismatch" else "NEWS_PROBABILITY:")
         + finding.claim_sha256
         for finding in _artifact_evidence_gate_findings(state, accepted_report)
     )
@@ -2806,7 +2809,8 @@ def _validate_final_artifact(
 def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
     """Reuse evidence gates, but inspect the final published bytes."""
     return [finding for finding in enforce_agent_output(state, text, "Canonical Final State").findings
-            if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch", *JSF_SCOPE_WARNINGS}]
+            if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch",
+                                   "cross_market_outcome_mismatch", *JSF_SCOPE_WARNINGS}]
 
 
 def _artifact_without_validated_execution(state: Mapping[str, Any], text: str) -> str:
@@ -3013,6 +3017,11 @@ def _finalize_audit(
     finalized: list[dict[str, Any]] = []
     issues: list[str] = []
     seen: set[tuple[Any, ...]] = set()
+    exact_gate_findings = _artifact_evidence_gate_findings(state, accepted_report)
+    unbound_index_subjects = frozenset().union(*(
+        cross_market_subjects(finding.original_claim) for finding in exact_gate_findings
+        if finding.warning == "cross_market_outcome_mismatch"
+    ))
     for raw in audit:
         entry = dict(raw)
         if entry.get("semantic_type") == "PROCESS_NARRATION":
@@ -3023,12 +3032,29 @@ def _finalize_audit(
             entry["execution_blocking"] = surviving
             if surviving:
                 issues.append("UNRESOLVED_PROCESS_NARRATION")
+        elif (entry.get("warning") == "cross_market_outcome_mismatch"
+              or (entry.get("warning") == "unsupported_precise_number"
+                  and cross_market_subjects(str(entry.get("original_claim") or "")))):
+            # Deleting a source percentage cannot close its subject lineage
+            # while an unbound magnitude/issuer outcome survives without it.
+            subjects = cross_market_subjects(str(entry.get("original_claim") or ""))
+            surviving = bool(subjects & unbound_index_subjects)
+            if not surviving and entry.get("warning") == "unsupported_precise_number":
+                surviving = _claim_is_published(str(entry.get("original_claim") or ""), accepted_report)
+            entry["related_index_subjects"] = sorted(subjects)
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = ("UNBOUND_INDEX_OUTCOME_PRESENT_IN_EXACT_ARTIFACT" if surviving
+                                         else "INDEX_CLAIM_AND_UNBOUND_OUTCOME_ABSENT_FROM_EXACT_ARTIFACT")
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append("UNRESOLVED_INDEX_OUTCOME:" + str(entry.get("claim_sha256")))
         elif entry.get("warning") == "jsf_measure_scope_mismatch":
             # Removing one phrasing cannot close the metric-scope violation if
             # the same lending-to-short-interest substitution survives under
             # another wording anywhere in the exact artifact.
             surviving = any(finding.warning == "jsf_measure_scope_mismatch"
-                            for finding in _artifact_evidence_gate_findings(state, accepted_report))
+                            for finding in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
             entry["resolution_basis"] = ("JSF_MEASURE_SCOPE_CLASS_PRESENT_IN_EXACT_ARTIFACT"
@@ -3195,7 +3221,7 @@ def _finalize_audit(
     )
     issues.extend(
         "UNRESOLVED_EVIDENCE_AUTHORITY:" + finding.claim_sha256
-        for finding in _artifact_evidence_gate_findings(state, accepted_report)
+        for finding in exact_gate_findings
     )
     unauthorized = _artifact_without_validated_execution(state, accepted_report) if execution_allowed else accepted_report
     issues.extend("UNRESOLVED_EXECUTION_AUTHORITY:" + hashlib.sha256(claim.encode("utf-8")).hexdigest()
