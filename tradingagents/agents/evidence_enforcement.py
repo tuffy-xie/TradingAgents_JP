@@ -334,6 +334,71 @@ def _independent_macro_statement(state: Mapping[str, Any], assertion: str) -> bo
     )
 
 
+_INTENT_OWNER = r"(?:管理层|管理層|董事会|董事會|公司|企业|企業|経営陣|当社|会社|\b(?:management|board|company)\b)"
+_VALUATION_OBJECT = (
+    r"(?:股价|股價|估值|株価|長期価値|长期价值|\b(?:valuation|stock\s+price|share[ -]price)\b|"
+    r"股票[^。！？；;|]{0,12}(?:低估|投资价值)|\bstock\b[^.;!?|]{0,20}\bundervalued\b)"
+)
+_MANAGEMENT_VALUATION = re.compile(
+    rf"{_INTENT_OWNER}[^。！？；;|]{{0,18}}"
+    rf"(?:认为|認[为為]|认定|相信|看好|觉得|表示|\b(?:believes?|considers?|thinks?|regards?)\b)"
+    rf"[^。！？；;|，,]{{0,45}}{_VALUATION_OBJECT}[^。！？；;|，,]{{0,35}}|"
+    rf"{_INTENT_OWNER}[^。！？；;|]{{0,22}}{_VALUATION_OBJECT}[^。！？；;|]{{0,18}}(?:信心|判断)|"
+    rf"{_INTENT_OWNER}[^.;!?|]{{0,22}}\b(?:confidence|conviction)\b[^.;!?|]{{0,28}}{_VALUATION_OBJECT}",
+    re.I,
+)
+
+
+def _corporate_valuation_statement_bound(state: Mapping[str, Any], proposition: str) -> bool:
+    """Use the existing registry and its issuer-bound official document facts.
+
+    A buyback decision/amount is not a mental-state witness. Do not borrow an
+    unrelated issuer's headline, an Agent inference or an unverified document.
+    The bundle retains structured TDnet key facts even when the registry's
+    presentation value is a serialized dict; no new registry or data path.
+    """
+    symbol = (state.get("market_context") or {}).get("symbol") or state.get("company_of_interest")
+    if not symbol:
+        return False
+    key = _evidence_statement_key(semantic_script(proposition))
+    for entry in state.get("evidence_registry") or []:
+        if (not isinstance(entry, Mapping)
+                or entry.get("verification_status") not in {"VERIFIED_SOURCE", "VERIFIED_TOOL_OUTPUT"}
+                or entry.get("allowed_for_current_decision") is not True or entry.get("claim_type") != "FACT"):
+            continue
+        if (entry.get("ticker") == symbol
+                and _independent_macro_statement({"evidence_registry": [entry]}, proposition)):
+            return True
+        # An explicit contradictory ticker must never inherit a matching URL.
+        if entry.get("ticker") and entry.get("ticker") != symbol:
+            continue
+        if entry.get("source") not in {"TDnet", "Company IR"}:
+            continue
+        for item in (state.get("japan_data_bundle") or {}).get("items") or []:
+            if (not isinstance(item, Mapping) or item.get("ticker") != symbol or item.get("verified") is not True
+                    or item.get("status") != "OK" or item.get("source") != entry.get("source")
+                    or (item.get("metadata") or {}).get("title_body_conflict") is True
+                    or not item.get("url") or item.get("url") != entry.get("source_url")):
+                continue
+            for fact in (item.get("metadata") or {}).get("key_facts") or []:
+                for witness in _MANAGEMENT_VALUATION.finditer(semantic_script(str(fact))):
+                    if _evidence_statement_key(witness[0]) == key:
+                        return True
+    return False
+
+
+def corporate_valuation_intent_violation(state: Mapping[str, Any], clause: str) -> bool:
+    """Action evidence cannot be attributed as an owner's valuation opinion."""
+    plain = semantic_script(re.sub(r"[*`_]", "", clause))
+    for proposition in _MANAGEMENT_VALUATION.finditer(plain):
+        claim = re.split(r"但(?:是)?|然而|\bbut\b", proposition[0], maxsplit=1, flags=re.I)[0]
+        if _outcome_is_hypothetical(plain, proposition.start(), proposition.start() + len(claim)):
+            continue
+        if not _corporate_valuation_statement_bound(state, claim):
+            return True
+    return False
+
+
 # Index identity is separate from an issuer conclusion. These aliases identify
 # the existing Japan Macro inputs, not phrases to blacklist. Numeric observations
 # remain owned by their normal evidence check; a magnitude or causal statement
@@ -793,6 +858,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             # Omit an unbound compound claim/row rather than attach an
             # unavailable message to a supported sibling value or table cell.
             return resolve_claim(clause, "cross_market_outcome_mismatch", "")
+        if corporate_valuation_intent_violation(state, clause):
+            return resolve_claim(clause, "corporate_valuation_intent_mismatch", "")
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
             return resolve_claim(
                 clause,
@@ -1424,6 +1491,7 @@ def _audit_category(warning: str) -> str:
         "critical_gate_bypassed",
         "probability_event_mismatch",
         "cross_market_outcome_mismatch",
+        "corporate_valuation_intent_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:
