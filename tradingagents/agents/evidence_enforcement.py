@@ -207,13 +207,14 @@ _FINANCIAL_ASSERTION_WITHHELD = re.compile(
 # A qualitative heading can assert the result after its numeric support was
 # removed. Its truth/realization predicate needs the same existing Actual gate.
 _REALIZED_FINANCIAL_CHANGE = re.compile(
-    r"(?:业绩|業績|利润率|利潤率|利益率|盈利|利润|earnings|profit|margin)"
+    r"(?:基本面|fundamentals?|业绩|業績|利润率|利潤率|利益率|盈利|利润|earnings|profit|margin)"
     r"[^，,。！？；;|\n]{0,24}?(?:好转|好轉|加速|扩张|擴張|回升|增長|增长|改善|"
-    r"増加|回復|拡大|悪化|転換|转变|轉變|证据[^。！？；;|]{0,8}压倒|growth|improved|accelerated|expanded|recovered|grew)", re.I
+    r"増加|回復|拡大|悪化|転換|转变|轉變|证据[^。！？；;|]{0,8}压倒|growth|improv(?:ed|ing|ement)|accelerated|expanded|recovered|grew)", re.I
 )
 _REALIZED_FINANCIAL_ASSERTION = re.compile(
     r"真实|真實|实际|實際|已经|已經|已|实现|實現|属实|兑现|兌現|压倒|壓倒|"
-    r"が確認|実現|事実|明白|明确|明確|前提[^。！？；;]{0,12}崩れ|\b(?:has|have|realized|actual|confirmed)\b", re.I
+    r"仍(?:然)?在|正在|が確認|実現|事実|明白|明确|明確|"
+    r"前提[^。！？；;]{0,12}崩れ|\b(?:has|have|realized|actual|confirmed|now|underway|ongoing)\b", re.I
 )
 _FINANCIAL_CHANGE_REFERENCE = re.compile(
     r"(?:这(?:一|种)|這(?:一|種)|该|該|此)(?:业绩|業績|盈利)?(?:改善|增长|增長|加速|回升)|"
@@ -754,6 +755,73 @@ def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> b
     return False
 
 
+# A revision changes a forecast, not the issuer's realized performance. This
+# relational rule is deliberately narrower than ordinary fundamental analysis:
+# it needs both an earnings-revision premise and an asserted realized outcome.
+_EARNINGS_REVISION = re.compile(
+    r"(?:盈利|利润|利潤|EPS|营收|営利|利益|業績|earnings|profit|revenue)"
+    r"[^。！？；;|\n]{0,65}?(?:上[调調]|上方修正|修正上升|upward\s+revision|revised\s+(?:up|higher))|"
+    r"(?:上[调調]|raised|upgraded)[^。！？；;|\n]{0,30}(?:盈利|利润|EPS|earnings|profit)", re.I,
+)
+_REVISION_REALIZED_OUTCOME = re.compile(
+    r"(?:基本面|业绩|業績|盈利|利润|利潤|fundamentals?|earnings|profit(?:ability)?)"
+    r"[^，,。！？；;|\n]{0,32}?(?:改善|好转|好轉|增强|增強|回升|回復|改善|"
+    r"improv(?:ing|ed|ement)|recover(?:ing|ed|y))[^，,。！？；;|\n]{0,18}", re.I,
+)
+_ONGOING_REALIZATION = re.compile(
+    r"仍(?:然)?在|正在|持续|持續|已(?:经|經)?|实现|實現|当前|當前|"
+    r"\b(?:now|already|continues?|ongoing|underway|has|have|is|are)\b", re.I,
+)
+
+
+def financial_estimate_realization_claims(state: Mapping[str, Any], clause: str):
+    """Return asserted forecast-to-Actual outcomes, with original offsets.
+
+    A sibling estimate/possibility does not make a realized conclusion a
+    forecast. Conversely historical Actuals, explicit hypotheses, withholding
+    and an available canonical Actual authority are not downgraded.
+    """
+    if _actual_gate_ok(state):
+        return []
+    plain = semantic_script(clause)
+    premise = _EARNINGS_REVISION.search(plain)
+    if not premise:
+        return []
+    claims = []
+    for match in _REVISION_REALIZED_OUTCOME.finditer(plain, premise.end()):
+        start = max(premise.end(), plain.rfind(",", 0, match.start()) + 1,
+                    plain.rfind("，", 0, match.start()) + 1, plain.rfind("|", 0, match.start()) + 1)
+        local = re.split(r"但(?:是)?|然而|\bbut\b", plain[start:match.end()], flags=re.I)[-1]
+        if (_ONGOING_REALIZATION.search(local)
+                and not _FINANCIAL_PROJECTION.search(local)
+                and not _FINANCIAL_ASSERTION_WITHHELD.search(local)
+                and not re.search(r"20\d{2}\s*年|\b20\d{2}\s+Q[1-4]|历史|歷史|historical", local, re.I)
+                and not _outcome_is_hypothetical(plain, match.start(), match.end())):
+            claims.append(match)
+    return claims
+
+
+def _replace_estimate_realization(clause: str, claims) -> str:
+    # Preserve the independent revision counts/window and Markdown cells;
+    # narrow only the unsupported outcome to the premise's expectation type.
+    for match in reversed(claims):
+        closing = re.search(r"[*`_]+\s*$", clause[match.start():match.end()])
+        end = match.start() + closing.start() if closing else match.end()
+        clause = clause[:match.start()] + "盈利预期变化不代表已实现业绩改善" + clause[end:]
+    return re.sub(r"盈利指[标標]", "盈利预期指标", clause)
+
+
+def financial_revision_audit_metadata(state: Mapping[str, Any], warning: str) -> dict[str, Any]:
+    if warning != "financial_estimate_realization_mismatch":
+        return {}
+    assessment = ((state.get("japan_data_bundle") or {}).get("provider_metadata") or {}).get("Japan Financial Authority") or {}
+    return {"semantic_type": "ANALYST_ESTIMATE_AS_REALIZED_ACTUAL", "required_authority": "CURRENT_ACTUAL",
+            "authority_owner": "Japan Financial Authority", "authority_state": (assessment.get("actual") or {}).get("status"),
+            "evidence_ids": [entry["evidence_id"] for entry in state.get("evidence_registry") or []
+                             if isinstance(entry, Mapping) and entry.get("evidence_id")
+                             and entry.get("source_type") == "japan_analyst_expectations"]}
+
+
 _OKU_VALUE = re.compile(r"([\d,]+(?:\.\d+)?)\s*(?:億円|亿元|亿)")
 _EXECUTION_INPUT = re.compile(
     r"(?:\*\*Entry Price\*\*|\*\*Stop Loss\*\*|\*\*Position Sizing\*\*|entry|stop(?:[ -]?loss)?|position sizing|入场|止损|仓位)",
@@ -860,6 +928,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(clause, "cross_market_outcome_mismatch", "")
         if corporate_valuation_intent_violation(state, clause):
             return resolve_claim(clause, "corporate_valuation_intent_mismatch", "")
+        estimate_outcomes = financial_estimate_realization_claims(state, clause)
+        if estimate_outcomes:
+            return resolve_claim(clause, "financial_estimate_realization_mismatch",
+                                 _replace_estimate_realization(clause, estimate_outcomes))
         if _FINANCIAL_GENERIC_PROVENANCE.search(clause):
             return resolve_claim(
                 clause,
@@ -1201,6 +1273,7 @@ def audit_agent_result(
                     "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                     "execution_blocking": True,
                     **jsf_scope_audit_metadata(state, finding.warning),
+                    **financial_revision_audit_metadata(state, finding.warning),
                 }
             )
 
@@ -1492,6 +1565,7 @@ def _audit_category(warning: str) -> str:
         "probability_event_mismatch",
         "cross_market_outcome_mismatch",
         "corporate_valuation_intent_mismatch",
+        "financial_estimate_realization_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:

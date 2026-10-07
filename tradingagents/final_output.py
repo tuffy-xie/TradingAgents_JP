@@ -18,6 +18,7 @@ from tradingagents.agents.evidence_enforcement import (
     JSF_SCOPE_WARNINGS,
     cross_market_subjects,
     enforce_agent_output,
+    financial_revision_audit_metadata,
     jsf_scope_audit_metadata,
 )
 from tradingagents.agents.execution_validation import (
@@ -64,7 +65,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "corporate-valuation-intent-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "estimate-realization-separation-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -765,6 +766,7 @@ def _accept_text(
                 "replacement_claim": finding.replacement_claim,
                 "enforcement_action": finding.action,
                 **jsf_scope_audit_metadata(state, finding.warning),
+                **financial_revision_audit_metadata(state, finding.warning),
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             }
@@ -1125,6 +1127,7 @@ def _category_for_warning(warning: str) -> str:
         "probability_event_mismatch",
         "cross_market_outcome_mismatch",
         "corporate_valuation_intent_mismatch",
+        "financial_estimate_realization_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:
@@ -2796,7 +2799,7 @@ def _validate_final_artifact(
     # not exempt merely because it contains no precise number.
     issues.extend(
         "CROSS_DOMAIN_AUTHORITY:"
-        + ("FINANCIAL:" if finding.warning == "critical_gate_bypassed" else
+        + ("FINANCIAL:" if finding.warning in {"critical_gate_bypassed", "financial_estimate_realization_mismatch"} else
            "JSF:" if finding.warning in JSF_SCOPE_WARNINGS else
            "NEWS_ATTRIBUTION:" if finding.warning == "corporate_valuation_intent_mismatch" else
            "MARKET_FACTOR:" if finding.warning == "cross_market_outcome_mismatch" else "NEWS_PROBABILITY:")
@@ -2813,6 +2816,7 @@ def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
     return [finding for finding in enforce_agent_output(state, text, "Canonical Final State").findings
             if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch",
                                    "cross_market_outcome_mismatch", "corporate_valuation_intent_mismatch",
+                                   "financial_estimate_realization_mismatch",
                                    *JSF_SCOPE_WARNINGS}]
 
 
@@ -3035,6 +3039,16 @@ def _finalize_audit(
             entry["execution_blocking"] = surviving
             if surviving:
                 issues.append("UNRESOLVED_PROCESS_NARRATION")
+        elif entry.get("warning") == "financial_estimate_realization_mismatch":
+            surviving = any(x.warning in {"financial_estimate_realization_mismatch", "critical_gate_bypassed"}
+                            for x in exact_gate_findings)
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = ("ESTIMATE_AS_REALIZED_ACTUAL_PRESENT" if surviving
+                                         else "ESTIMATE_REALIZATION_ABSENT_FROM_EXACT_ARTIFACT")
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append("UNRESOLVED_ESTIMATE_REALIZATION:" + str(entry.get("claim_sha256")))
         elif entry.get("warning") == "corporate_valuation_intent_mismatch":
             surviving = any(x.warning == "corporate_valuation_intent_mismatch" for x in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
