@@ -20,6 +20,7 @@ from tradingagents.agents.evidence_enforcement import (
     enforce_agent_output,
     financial_revision_audit_metadata,
     jsf_scope_audit_metadata,
+    typed_binding_audit_metadata,
 )
 from tradingagents.agents.execution_validation import (
     EXECUTION_PLAN_FIELDS,
@@ -65,7 +66,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "estimate-realization-separation-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "typed-outcome-and-metric-binding-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -140,7 +141,7 @@ _EXECUTION_ACTION = re.compile(
     r"(?:买入|賣出|卖出|增持|減持|减持|加仓|加倉|减仓|減倉|建仓|建倉|"
     r"开仓|開倉|平仓|平倉|清仓|清倉|做多|做空|介入|入场|進場|进场|"
     r"エントリー|新規買い|買い増し|買付|利確|利益確定|損切り|"
-    r"了结|了結|退出|布局|配置|对冲|對沖|高(?:抛|賣|卖)低(?:吸|買|买)|逢高减码|逢高減碼|"
+    r"了结|了結|退出|离场|離場|布局|配置|对冲|對沖|高(?:抛|賣|卖)低(?:吸|買|买)|逢高减码|逢高減碼|"
     r"hedg(?:e|ing)|buy\s+low\s+and\s+sell\s+high|"
     r"调整仓位|調整倉位|调整敞口|調整敞口|"
     r"open\s+(?:a\s+)?position|increase\s+(?:the\s+)?position|"
@@ -153,7 +154,7 @@ _EXECUTION_DIRECTIVE_CONTEXT = re.compile(
     r"(?:建议|建議|应|應|应该|應該|宜|可(?:以)?|考虑|考慮|等待[^。；;\n]{0,20}后|"
     r"确认[^。；;\n]{0,20}后|突破[^。；;\n]{0,20}后|跌破[^。；;\n]{0,20}后|"
     r"逢低|逢高|分批|分层|分層|支持|积极|積極|现有持仓|現有持倉|未投资者|未投資者|"
-    r"目标水平|目標水平|策略|框架|操作|计划|計畫|優位|許容|検討|推奨|すべき|"
+    r"目标水平|目標水平|策略|框架|操作|计划|計畫|唯一|最优|最佳|優位|許容|検討|推奨|すべき|"
     r"plan|recommend|should|consider|if\b)",
     re.I,
 )
@@ -320,6 +321,7 @@ _EXECUTION_WITHHELD = (
     "方向性研究结论不等于已批准交易指令。"
 )
 _PUBLIC_NEWS_TEXT = {
+    "Markdown 总结表": "总结表",
     "Canonical Market authority": "正式行情证据",
     "Canonical Financial authority": "正式财务证据",
     "Market authority": "行情证据",
@@ -364,11 +366,11 @@ _INTERNAL_STATUS = {
 }
 _MACHINE_ENUM = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Z0-9]*)(?:_[A-Z0-9]+)+(?![A-Za-z0-9])")
 _INTERNAL_ENGINEERING_ASSIGNMENT = re.compile(
-    r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\s*=\s*(?:true|false|null|none|unknown|unavailable|\d+(?:\.\d+)?)\b",
+    r"(?<![A-Za-z0-9_])[a-z][a-z0-9]*(?:_[a-z0-9]+)+\s*=\s*(?:true|false|null|none|unknown|unavailable|\d+(?:\.\d+)?)(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 _INTERNAL_TOOL_IDENTIFIER = re.compile(
-    r"\b(?:get|fetch|load|resolve|retrieve|query|search)_[a-z][a-z0-9_]*\b",
+    r"(?<![A-Za-z0-9_])(?:get|fetch|load|resolve|retrieve|query|search)_[a-z][a-z0-9_]*(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 _DEPRECATED_USER_HORIZON_CLAIM = re.compile(
@@ -767,6 +769,7 @@ def _accept_text(
                 "enforcement_action": finding.action,
                 **jsf_scope_audit_metadata(state, finding.warning),
                 **financial_revision_audit_metadata(state, finding.warning),
+                **typed_binding_audit_metadata(state, finding.warning),
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
                 "execution_blocking": True,
             }
@@ -1128,6 +1131,8 @@ def _category_for_warning(warning: str) -> str:
         "cross_market_outcome_mismatch",
         "corporate_valuation_intent_mismatch",
         "financial_estimate_realization_mismatch",
+        "corporate_action_outcome_mismatch",
+        "market_metric_identity_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:
@@ -2649,7 +2654,7 @@ def _publicize_inline_text(text: str) -> str:
         )
     text = text.replace("DATA UNAVAILABLE", "数据不可用")
     for value, label in (("true", "可用于当前判断"), ("false", "不可用于当前判断")):
-        text = re.sub(rf"\bcurrent_eligible\s*=\s*{value}\b", label, text, flags=re.I)
+        text = re.sub(rf"(?<![A-Za-z0-9_])current_eligible\s*=\s*{value}(?![A-Za-z0-9_])", label, text, flags=re.I)
     text = _INTERNAL_ENGINEERING_ASSIGNMENT.sub("", text)
     text = re.sub(r"[（(][\s,，;；/]*[）)]", "", text)
     # All-tool parentheses are omitted; standalone identifiers retain a source label.
@@ -2801,7 +2806,8 @@ def _validate_final_artifact(
         "CROSS_DOMAIN_AUTHORITY:"
         + ("FINANCIAL:" if finding.warning in {"critical_gate_bypassed", "financial_estimate_realization_mismatch"} else
            "JSF:" if finding.warning in JSF_SCOPE_WARNINGS else
-           "NEWS_ATTRIBUTION:" if finding.warning == "corporate_valuation_intent_mismatch" else
+           "MARKET:" if finding.warning == "market_metric_identity_mismatch" else
+           "NEWS_ATTRIBUTION:" if finding.warning in {"corporate_valuation_intent_mismatch", "corporate_action_outcome_mismatch"} else
            "MARKET_FACTOR:" if finding.warning == "cross_market_outcome_mismatch" else "NEWS_PROBABILITY:")
         + finding.claim_sha256
         for finding in _artifact_evidence_gate_findings(state, accepted_report)
@@ -2817,6 +2823,7 @@ def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
             if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch",
                                    "cross_market_outcome_mismatch", "corporate_valuation_intent_mismatch",
                                    "financial_estimate_realization_mismatch",
+                                   "corporate_action_outcome_mismatch", "market_metric_identity_mismatch",
                                    *JSF_SCOPE_WARNINGS}]
 
 
@@ -3049,15 +3056,25 @@ def _finalize_audit(
             entry["execution_blocking"] = surviving
             if surviving:
                 issues.append("UNRESOLVED_ESTIMATE_REALIZATION:" + str(entry.get("claim_sha256")))
-        elif entry.get("warning") == "corporate_valuation_intent_mismatch":
-            surviving = any(x.warning == "corporate_valuation_intent_mismatch" for x in exact_gate_findings)
+        elif entry.get("warning") in {"corporate_valuation_intent_mismatch", "corporate_action_outcome_mismatch",
+                                     "market_metric_identity_mismatch"}:
+            surviving = any(x.warning == entry["warning"] for x in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
-            entry["resolution_basis"] = ("UNBOUND_MANAGEMENT_VALUATION_INTENT_PRESENT" if surviving
-                                         else "UNBOUND_MANAGEMENT_VALUATION_INTENT_ABSENT_FROM_EXACT_ARTIFACT")
+            entry["resolution_basis"] = ("TYPED_EVIDENCE_OUTCOME_CLASS_PRESENT" if surviving
+                                         else "TYPED_EVIDENCE_OUTCOME_CLASS_ABSENT_FROM_EXACT_ARTIFACT")
             entry["execution_blocking"] = surviving
             if surviving:
-                issues.append("UNRESOLVED_CORPORATE_INTENT:" + str(entry.get("claim_sha256")))
+                issues.append("UNRESOLVED_TYPED_EVIDENCE_OUTCOME:" + str(entry.get("claim_sha256")))
+        elif entry.get("warning") in {"critical_gate_bypassed", "probability_event_mismatch"}:
+            surviving = any(x.warning == entry["warning"] for x in exact_gate_findings)
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
+            entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
+            entry["resolution_basis"] = ("REQUIRED_DOMAIN_OUTCOME_CLASS_PRESENT" if surviving
+                                         else "REQUIRED_DOMAIN_OUTCOME_CLASS_ABSENT_FROM_EXACT_ARTIFACT")
+            entry["execution_blocking"] = surviving
+            if surviving:
+                issues.append("UNRESOLVED_DOMAIN_OUTCOME:" + str(entry.get("claim_sha256")))
         elif (entry.get("warning") == "cross_market_outcome_mismatch"
               or (entry.get("warning") == "unsupported_precise_number"
                   and cross_market_subjects(str(entry.get("original_claim") or "")))):

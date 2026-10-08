@@ -535,7 +535,7 @@ def render_japan_report_sections(bundle: Mapping[str, Any] | None) -> str:
                 else "数据不可用：未发现当前公开文件中的 ≥0.5% 申报空卖仓位；这不代表不存在其他空头。"
             ),
             "## 日本市场情绪\n" + "\n".join(_sentiment_report_lines(items)),
-            "## 日本市场补充资料\n以上官方披露与供需数据作为补充上下文，最终研究结论由各 Analyst 报告综合形成；若关键数据不可用，应降低结论置信度，不得补造事实。",
+            "## 日本市场补充资料\n以上官方披露与供需数据作为研究背景；最终投资评级由组合经理综合研究证据形成。",
         ]
     )
 

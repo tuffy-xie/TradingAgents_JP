@@ -21,7 +21,7 @@ _LABEL = re.compile(
     r"(?:final|investment|research)\s+conclusion)\s*[:：|\-—]", re.I
 )
 _RATING_ASSERTION_BEFORE = re.compile(
-    r"(?:给出|给予|评为|定为|推荐为|建议(?:是|为)|选择)\s*$|"
+    r"(?:给出|给予|评为|定为|推荐为|建议(?:是|为)|选择|而是)\s*$|"
     r"\b(?:recommend(?:s|ed)?|assign(?:s|ed)?|choose|chooses|chose|rate(?:s|d)?(?:\s+as)?)\s*$", re.I
 )
 _RATING_ASSERTION_AFTER = re.compile(r"^\s*(?:评级|評級|评价|rating\b)", re.I)
@@ -46,7 +46,7 @@ _ADVICE_SURFACE = re.compile(
 # A report title's role survives suffixes (summary/risk notes/report/issuer).
 # Corporate investment decisions and externally owned advice are not this role.
 _INVESTMENT_SURFACE_ROLE = re.compile(
-    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦|决策|決策|判断)|"
+    r"(?:投资|投資|交易)(?:建议|建議|推荐|推薦|决策|決策|判断|启示|啟示)|"
     r"\b(?:investment|trading)\s+(?:advice|recommendations?|decisions?)\b", re.I
 )
 _CORPORATE_DECISION = re.compile(
@@ -191,6 +191,7 @@ _HOLD_STANCE = re.compile(
 # the value of a label. Ownership still applies, including future conditions.
 # Direction-only technical outlooks are deliberately excluded by the caller.
 _RATING_STANCE_PREDICATE = re.compile(
+    r"^\s*(?:而非|\brather\s+than\b)\s*(?:Buy|Sell|Hold|Overweight|Underweight|买入|卖出|持有|增持|减持)|"
     r"^\s*(?:是|为)[^。！？；;|]{0,24}(?:平衡|权衡)|"
     r"^\s*(?:是|为|為)[^。！？；;|]{0,32}(?:合理|最优|最優|最佳|适当|適當)"
     r"[^。！？；;|]{0,24}(?:立场|立場|策略|选择|選擇|建议|建議)|"
