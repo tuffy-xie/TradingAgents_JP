@@ -462,6 +462,11 @@ def test_verified_financial_authority_value_is_preserved_and_wrong_value_replace
     state = _jp_state(
         evidence_registry=[_financial_evidence("revenue", 365_221)]
     )
+    # A field record alone is not an official Current Actual freshness gate.
+    # Preserve this numeric identity test under an actually approved authority.
+    state['japan_data_bundle']['provider_metadata']['Japan Financial Authority'] = {
+        'actual': {'status': 'OK', 'freshness': 'CURRENT_STRUCTURED_CONFIRMED',
+                   'critical_gate': {'status': 'OK'}}}
 
     exact = enforce_agent_output(
         state,

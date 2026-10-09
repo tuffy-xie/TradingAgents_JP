@@ -12,9 +12,9 @@ from dataclasses import dataclass, replace
 
 from tradingagents.publication_semantics import semantic_script
 
-_VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell|bullish|bearish)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り|看涨|看跌|強気|弱気", re.I)
+_VALUES = re.compile(r"(?<![A-Za-z])(overweight|underweight|buy|hold|sell|bullish|bearish|neutral)(?![A-Za-z])|买入|增持|持有|减持|卖出|買い|売り|看涨|看跌|強気|弱気", re.I)
 _CANONICAL = {"买入": "Buy", "增持": "Overweight", "持有": "Hold", "减持": "Underweight", "卖出": "Sell", "買い": "Buy", "売り": "Sell", "bullish": "Overweight", "bearish": "Underweight", "看涨": "Overweight", "看跌": "Underweight", "強気": "Overweight", "弱気": "Underweight"}
-_OUTLOOK_VALUES = {"bullish", "bearish", "看涨", "看跌", "強気", "弱気"}
+_OUTLOOK_VALUES = {"bullish", "bearish", "neutral", "看涨", "看跌", "強気", "弱気"}
 _LABEL = re.compile(
     r"(?:评级|综合评分|(?:投资|交易|最终|综合)?建议|推荐|rating|recommendation|"
     r"(?:最终|综合|投资|研究|交易)+(?:研究)?结论|投資判断|投資推奨|レーティング|推奨|final\s+transaction\s+proposal|"
@@ -113,6 +113,13 @@ def _research_framing(text: str) -> str | None:
         role = "role" if match["role"] else "english_role"
         replacement = "研究与风险判断" if role == "role" else "research and risk assessments"
         replacements.append((match.start(role), match.end(role), replacement))
+    # A rejected rating is still the internal manager's decision framing,
+    # unlike a plain do-not-trade statement or an externally reported rating.
+    for match in re.finditer(r"(?:为何|为什么)\s*不(?:选择|采纳)\s*"
+                             r"(?:Underweight|Overweight|Buy|Sell|Hold)(?:\s*[/／]\s*(?:Underweight|Overweight|Buy|Sell|Hold))*", text, re.I):
+        replacements.append((match.start(), match.end(), "研究分歧"))
+    for match in re.finditer(r"(?:本|上述|以下)建议(?=依据|基于|基於|的依据)", text):
+        replacements.append((match.start(), match.end(), "上述研究判断"))
     result = text
     for start, end, replacement in sorted(replacements, reverse=True):
         result = result[:start] + replacement + result[end:]
@@ -173,7 +180,9 @@ _TRANSITION_LINK = re.compile(r"^\s*(?:→|⇒|⟶|->|=>|to|至|到|から)\s*$"
 _TRANSITION_BEFORE = re.compile(
     r"(?:\b(?:upgrad(?:e|ed|ing)|downgrad(?:e|ed|ing)|rais(?:e|ed|ing)|lower(?:ed|ing)?)\b"
     r"[^。！？；;|]*\bto\s+|(?:上调|下调|调升|调降|调整|变更|変更|引き上げ|引き下げ)"
-    r"(?:评级|評級|評価|判断)?\s*(?:为|至|到|成|へ|に)\s*)$", re.I
+    r"(?:评级|評級|評価|判断)?\s*(?:为|至|到|成|へ|に)\s*|"
+    r"(?:重新评估|重新評估|再评估|再評估)(?:评级)?\s*(?:至|为|到)\s*|"
+    r"\breassess\s+(?:the\s+)?(?:rating\s+)?to\s*)$", re.I
 )
 _TRANSITION_AFTER = re.compile(r"^\s*(?:へ|に)\s*(?:変更|転換|引き上げ|引き下げ)")
 _TRANSITION_CONSEQUENCE = re.compile(
@@ -185,7 +194,8 @@ _HOLD_STANCE = re.compile(
     r"持有(?:现有)?(?:仓位|头寸).{0,12}(?:最优|最佳)|"
     r"(?:耐心|继续|建议)\s*持有(?:现有|核心)?(?:部位|头寸|仓位)|"
     r"\b(?:worth\s+holding|recommend\s+(?:investors?\s+)?(?:continu(?:e|ing)\s+)?holding|"
-    r"maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b", re.I
+    r"maintaining\s+(?:the\s+)?position\s+is\s+optimal)\b|"
+    r"(?:依然|仍然|继续)?支持(?:继续)?持仓逻辑", re.I
 )
 # A named rating can be the subject of an evaluative predicate, rather than
 # the value of a label. Ownership still applies, including future conditions.
@@ -284,12 +294,15 @@ def normalize_technical_outlook_labels(text: str) -> str:
     formal Buy/Hold/Sell values still go through Portfolio ownership checks.
     """
     def outlook(match):
-        values = list(_VALUES.finditer(match[2]))
+        values = list(_VALUES.finditer(match['value']))
         if values and all(value[0].lower() in _OUTLOOK_VALUES for value in values):
-            return "技术面展望：" + match[2]
+            value = match['value'].strip(' *')
+            return match['prefix'] + "技术面展望：" + ("中性" if value.casefold() == "neutral" else value)
         return match[0]
 
-    return re.sub(r"((?:整体|综合)评级)\s*[:：]([^\n。]+)", outlook, text, flags=re.I)
+    return re.sub(r"(?m)^(?P<prefix>[ \t]*(?:#{1,6}\s+|[-+]\s+)?)"
+                  r"(?:\*\*)?(?:整体评级|综合评级|评级|評級|rating)(?:\*\*)?\s*[:：](?:\*\*)?"
+                  r"(?P<value>[^\n。]+)", outlook, text, flags=re.I)
 
 
 def attributed_rating_fact(text: str) -> bool:
@@ -314,7 +327,8 @@ def _transition_match(text: str):
             # prescribed target. Future target instructions have no such waiver.
             if _TRANSITION_CONSEQUENCE.search(text[target.end():]):
                 continue
-            origin = next((v for v in reversed(values) if v.end() < target.start()), None)
+            origin = next((v for v in reversed(values) if v.end() < target.start()
+                           and re.search(r"(?:\bfrom\s+|(?:从|由)\s*)$", text[:v.start()], re.I)), None)
             return target, _canonical_rating(origin[0]) if origin else None
     return None
 

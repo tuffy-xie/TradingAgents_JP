@@ -63,14 +63,15 @@ _UNVERIFIED_NEWS = re.compile(
 _SHORT_ABSENCE_OVERCLAIM = re.compile(
     r"(?:no\s+(?:reportable\s+)?short(?:s| interest)?|没有(?:机构)?做空|无空头|"
     r"空头(?:全部)?(?:死光|出清)|(?:没有|未见)(?:融券[/／])?做空压力(?:累积)?|"
-    r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)(?:行情|基础|條件|条件|风险|風險)?)",
+    r"(?:无|没有|缺乏)(?:明显|任何)?(?:轧空|軋空|short[ -]?squeeze)(?:行情|基础|條件|条件|风险|風險)?|"
+    r"(?:做空|空头|空頭|short)[^。！？；;|]{0,12}(?:燃料|fuel)[^。！？；;|]{0,12}(?:耗尽|耗盡|消失|depleted|exhausted))",
     re.I,
 )
 _SHORT_PRESSURE_OVERCLAIM = re.compile(
     r"(?:short\s+pressure\s+(?:is\s+)?(?:extremely|very)?\s*low|"
     r"做空压力(?:极低|很低|有限)|空[头頭]压力(?:极低|很低|有限)|"
     r"空[头頭](?:部位)?(?:已)?(?:大幅|大规模|大規模|幾乎|几乎|全部|全數|全数)?(?:回补|回補|出清)|"
-    r"(?:卖压|賣壓)(?:明显|明顯|大幅)?(?:减轻|減輕))",
+    r"(?:卖压|賣壓)(?:明显|明顯|大幅)?(?:减轻|減輕)|空头踩踏|空頭踩踏)",
     re.I,
 )
 # A lending observation cannot acquire a different population/metric merely
@@ -191,14 +192,14 @@ _CURRENT_QUARTER_CONVICTION = re.compile(
     re.I,
 )
 _CURRENT_FINANCIAL_PERIOD = re.compile(
-    r"(?:latest|current|最新|当前|當前)[^\n。！？;|]{0,20}?(?:quarter|季度|四半期)", re.I
+    r"(?:latest|current|最新|当前|當前)[^\n。！？;|]{0,20}?(?:quarter|季度|四半期)|(?<![A-Za-z0-9])Q[1-4](?![A-Za-z0-9])", re.I
 )
 _FINANCIAL_RESULT_METRIC = re.compile(
-    r"盈利(?:能力)?|利润|利潤|营收|營收|收入|毛利|净利|淨利|每股收益|"
+    r"业绩|業績|盈利(?:能力)?|利润|利潤|营收|營收|收入|毛利|净利|淨利|每股收益|"
     r"売上|利益|収益|\b(?:earnings|profit(?:ability)?|revenue|margin|EPS)\b", re.I
 )
 _FINANCIAL_RESULT_PREDICATE = re.compile(
-    r"回升|回落|增长|增長|下降|上升|改善|恶化|惡化|增加|减少|減少|稳健|穩健|强劲|強勁|"
+    r"(?:已验证|已核验|已確認|已确认|事实|事實)|回升|回落|增长|增長|下降|上升|改善|恶化|惡化|增加|减少|減少|稳健|穩健|强劲|強勁|"
     r"(?:増加|減少|改善|回復|上昇|低下)|"
     r"\b(?:improv(?:ed|ing|ement)|recover(?:ed|y)|increas(?:ed|ing)|decreas(?:ed|ing)|"
     r"grew|growth|declin(?:ed|ing)|strong|weak|rose|fell)\b", re.I
@@ -210,7 +211,7 @@ _FINANCIAL_PROJECTION = re.compile(
     r"\b(?:expected|forecast|estimate|potential|could|may|might|future|if)\b", re.I
 )
 _FINANCIAL_ASSERTION_WITHHELD = re.compile(
-    r"(?:不能|无法|無法|尚未|未能)[^。！？；;]{0,12}(?:确认|確認|证明|證明|验证|驗證|声称|断言)|"
+    r"(?:不能|无法|無法|尚未|未能)(?:(?!颠覆|推翻|否定|阻止|阻挡)[^。！？；;]){0,12}(?:确认|確認|证明|證明|验证|驗證|声称|断言)|"
     r"(?:仍|尚)?(?:待|未获|未獲)(?:确认|確認|验证|驗證)|"
     r"\b(?:cannot|can't|unable\s+to)\s+(?:verify|confirm|conclude|assert)\b", re.I
 )
@@ -222,7 +223,7 @@ _REALIZED_FINANCIAL_CHANGE = re.compile(
     r"(?:基本面|fundamentals?|业绩|業績|利润率|利潤率|利益率|毛利率|净利率|淨利率|"
     r"自由现金流|自由現金流|盈利|利润|earnings|profit|margin|free\s+cash\s+flow)"
     r"[^，,。！？；;|\n]{0,24}?(?:好转|好轉|加速|扩张|擴張|回升|增長|增长|改善|"
-    r"恶化|惡化|崩塌|攀升|増加|回復|拡大|悪化|転換|转变|轉變|证据[^。！？；;|]{0,8}压倒|growth|improv(?:ed|ing|ement)|accelerated|expanded|recovered|grew)", re.I
+    r"恶化|惡化|崩塌|攀升|转机|轉機|増加|回復|拡大|悪化|転換|转变|轉變|证据[^。！？；;|]{0,8}压倒|growth|improv(?:ed|ing|ement)|accelerated|expanded|recovered|grew)", re.I
 )
 _REALIZED_FINANCIAL_ASSERTION = re.compile(
     r"真实|真實|实际|實際|已经|已經|已|实现|實現|属实|兑现|兌現|压倒|壓倒|"
@@ -304,8 +305,8 @@ _MONETARY_OUTCOME = re.compile(
     r"\bcarry\s+trade\b[^.;!?|]{0,28}\brisk\b[^.;!?|]{0,24}\b(?:decreased|declined|reduced)\b", re.I
 )
 _GEOPOLITICAL_OUTCOME = re.compile(
-    r"(?:地缘|地緣|台海|地政学)[^。！？；;|]{0,18}(?:风险|風險|紧张|緊張)"
-    r"[^。！？；;|]{0,16}(?:缓和|緩和|缓解|緩解|降低|下降|减轻|減輕|加剧|加劇)|"
+    r"(?:地缘|地緣|台海|地政学)[^，,、。！？；;|]{0,18}(?:风险|風險|紧张|緊張)"
+    r"[^，,、。！？；;|]{0,16}(?:缓和|緩和|缓解|緩解|降低|下降|减轻|減輕|加剧|加劇)|"
     r"\bgeopolitical\s+(?:risk|tensions?)\b[^.;!?|]{0,24}\b(?:eased|declined|reduced|increased)\b", re.I
 )
 _POLICY_ALIGNMENT = re.compile(
@@ -442,8 +443,8 @@ _INDICATOR_LABELS = {
     "macd": r"MACD(?:线|線)?", "macds": r"(?:MACD)?\s*(?:Signal(?:线|線)?|信号线|信號線)",
     "macdh": r"(?:MACD)?\s*(?:Histogram|柱状图|柱狀圖)",
     "rsi": r"RSI(?:值)?", "atr": r"ATR(?:值)?", "vwma": r"VWMA(?:值)?",
-    "close_10_ema": r"10\s*(?:日)?\s*EMA", "close_50_sma": r"50\s*(?:日)?\s*SMA",
-    "close_200_sma": r"200\s*(?:日)?\s*SMA", "boll": r"布林中轨|布林中軌",
+    "close_10_ema": r"10\s*(?:日)?\s*EMA", "close_50_sma": r"50\s*(?:日)?\s*SMA|50日均线|50日均線",
+    "close_200_sma": r"200\s*(?:日)?\s*SMA|200日均线|200日均線", "boll": r"布林中轨|布林中軌",
     "boll_ub": r"布林上轨|布林上軌", "boll_lb": r"布林下轨|布林下軌",
 }
 _INDICATOR_MEASURE = re.compile(
@@ -479,6 +480,8 @@ def market_metric_identity_violation(state: Mapping[str, Any], clause: str) -> b
     if authority["status"] != "CURRENT":
         return False
     current_date = authority["latest_complete_ohlcv_date"]
+    if _dated_signal_cross_violation(state, clause, current_date):
+        return True
     dates = re.findall(r"20\d{2}-\d{2}-\d{2}", clause)
     if dates and current_date not in dates:
         return False
@@ -510,6 +513,90 @@ def market_metric_identity_violation(state: Mapping[str, Any], clause: str) -> b
         if not candidates or any(v.quantize(quantum) != value for v in candidates):
             return True
     return False
+
+
+def _dated_signal_cross_violation(state: Mapping[str, Any], clause: str, current_date: str) -> bool:
+    """Having two series does not prove a crossing on a specified date.
+
+    Bind the event to its two dated inputs and previous common trading bar,
+    skipping source-native holiday rows. No snapshot or new calculation feed.
+    """
+    if (not re.search(r'MACD', clause, re.I) or _REGIME_MODAL.search(clause)
+            or not re.search(r'シグナル|信号线|信號線|signal', clause, re.I)):
+        return False
+    cross = re.search(r'金叉|ゴールデンクロス|golden\s+cross|bullish\s+cross|死叉|デッドクロス|death\s+cross|bearish\s+cross', clause, re.I)
+    if not cross:
+        return False
+    date = re.search(r'20\d{2}-\d{2}-\d{2}', clause)
+    local_date = re.search(r'(\d{1,2})月(\d{1,2})日', clause)
+    if not date and not local_date:
+        return False
+    year = re.search(r'20\d{2}年', clause)
+    event_date = date[0] if date else f"{year[0][:4] if year else current_date[:4]}-{int(local_date[1]):02d}-{int(local_date[2]):02d}"
+    series = {'macd': {}, 'macds': {}}
+    for entry in state.get('evidence_registry') or []:
+        metadata = (entry.get('derivation') or {}).get('market_data') or {}
+        metric = metadata.get('indicator')
+        if (metric not in series or entry.get('source') != 'get_indicators'
+                or entry.get('allowed_for_current_decision') is not True
+                or metadata.get('underlying_latest_complete_date') != current_date):
+            continue
+        for row in re.finditer(r'(?m)^(20\d{2}-\d{2}-\d{2}):\s*([-+]?\d+(?:\.\d+)?)\s*$', str(entry.get('value', ''))):
+            series[metric][row[1]] = Decimal(row[2])
+    dates = set(series['macd']) & set(series['macds'])
+    earlier = sorted(d for d in dates if d < event_date)
+    if event_date not in dates or not earlier:
+        return True
+    before = series['macd'][earlier[-1]] - series['macds'][earlier[-1]]
+    after = series['macd'][event_date] - series['macds'][event_date]
+    golden = bool(re.search(r'金叉|ゴールデンクロス|golden|bullish', cross[0], re.I))
+    return not (before <= 0 < after if golden else before >= 0 > after)
+
+
+def macro_observation_identity_violation(state: Mapping[str, Any], clause: str) -> bool:
+    """A national payroll count cannot borrow an unemployment rate or cash value.
+
+    Read verified observations in the existing FRED tool response. No new
+    source, calculation, or macro authority is introduced.
+    """
+    plain = re.sub(r"[*`_]", "", clause)
+    match = re.search(r"(?:美国)?非农(?:就业(?:人数)?|就业总数)|\b(?:US\s+)?nonfarm\s+payrolls?\b", plain, re.I)
+    if not match:
+        return False
+    value = re.match(r"\s*(?:\|\s*|[:：=]\s*)([-+]?\d[\d,]*(?:\.\d+)?)", plain[match.end():])
+    if not value:
+        return False
+    shown = Decimal(value[1].replace(',', ''))
+    if re.match(r"\s*%", plain[match.end() + value.end():]):
+        return True
+    observations = []
+    as_of = str(state.get('trade_date') or '')
+    for entry in state.get('evidence_registry') or []:
+        if (entry.get('claim_type') == 'INFERENCE' or entry.get('allowed_for_current_decision') is not True
+                or entry.get('verification_status') not in {'VERIFIED_TOOL_OUTPUT', 'VERIFIED_SOURCE'}):
+            continue
+        if (isinstance(entry.get('value'), (int, float)) and entry.get('metric') in {'PAYEMS', 'nonfarm_payrolls', 'us_nonfarm_employment'}
+                and str(entry.get('unit', '')).casefold() in {'thousands of persons', '千人'}
+                and re.fullmatch(r'20\d{2}-\d{2}-\d{2}', str(entry.get('data_date', '')))
+                and (not as_of or entry['data_date'] <= as_of)):
+            observations.append((entry['data_date'], Decimal(str(entry['value']))))
+            continue
+        if entry.get('source') != 'get_macro_indicators':
+            continue
+        text = str(entry.get('value') or '')
+        if not re.search(r'(?m)^## FRED:.*\(PAYEMS\)', text):
+            continue
+        if not re.search(r'(?im)^- Units:\s*Thousands of Persons\s*$', text):
+            continue
+        for row in re.finditer(r'(?m)^\|\s*(20\d{2}-\d{2}-\d{2})\s*\|\s*(\d+(?:\.\d+)?)\s*\|', text):
+            if not as_of or row[1] <= as_of:
+                observations.append((row[1], Decimal(row[2])))
+    if not observations:
+        return True
+    dates = re.findall(r'20\d{2}-\d{2}-\d{2}', plain)
+    date = dates[-1] if dates else max(date for date, _ in observations)
+    values = {v for d, v in observations if d == date}
+    return len(values) != 1 or next(iter(values)).quantize(Decimal(1).scaleb(shown.as_tuple().exponent)) != shown
 
 
 _INFLATION_METRICS = {
@@ -714,7 +801,7 @@ def _outcome_is_hypothetical(clause: str, start: int, end: int) -> bool:
     left = max(prefix.rfind("，"), prefix.rfind(","), prefix.rfind("|")) + 1
     local = clause[left:end]
     local = re.split(r"但(?:是)?|然而|\bbut\b", local, flags=re.I)[-1]
-    if _REGIME_MODAL.search(local):
+    if _REGIME_MODAL.search(local) or re.search(r"将(?:有助于|有利于)|將(?:有助於|有利於)", local):
         return True
     antecedent = re.sub(r"^[\s>*`|]+", "", clause)
     return bool(re.match(r"(?:若|如果|假如|\bif\b)", antecedent, re.I)
@@ -805,9 +892,10 @@ def _probability_row_outcomes(state: Mapping[str, Any], clause: str) -> list[int
     if not event_columns:
         return []
     event_column = event_columns[0]
+    event_regimes = {key for key, pattern in _ECONOMIC_REGIMES.items() if pattern.search(cells[event_column])}
     return [i for i, cell in enumerate(cells)
             if i != event_column and not _REGIME_MODAL.search(cell)
-            and (any(pattern.search(cell) for pattern in _ECONOMIC_REGIMES.values())
+            and (any(pattern.search(cell) and key not in event_regimes for key, pattern in _ECONOMIC_REGIMES.items())
                  or _ECONOMIC_STATE.search(cell) or _DEMAND_OUTCOME.search(cell)
                  or _MONETARY_OUTCOME.search(cell) or _PROBABILITY_DERIVED_ASSET_STATE.search(cell))
             and not _independent_macro_statement(state, clause)]
@@ -953,6 +1041,14 @@ def probability_event_gate_violation(state: Mapping[str, Any], clause: str,
     return not _source_regime_odds_bound(state, binding_clause, regime, float(probability[1]))
 
 
+def _financial_projection(text: str) -> bool:
+    # "Actual, not an analyst forecast" asserts Actual. A negated forecast
+    # must not exempt the realized predicate in that same proposition.
+    return any(not re.search(r"(?:不是|并非|而非|非|\bnot\b)\s*(?:(?:分析师|券商|市场|公司)|[A-Za-z ]+)?\s*$",
+                             text[:match.start()], re.I)
+               for match in _FINANCIAL_PROJECTION.finditer(text))
+
+
 def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> bool:
     """Undated current-quarter actuals need the existing official Actual gate.
 
@@ -971,13 +1067,19 @@ def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> b
         metric_result = re.match(r"(?:毛利率|净利率|淨利率|利润率|自由现金流|free\s+cash\s+flow|.*?\bmargin\b)", change[0], re.I)
         conceptual = re.search(r"(?:是|属于|作为)[^。！？；;]{0,12}(?:因素|风险|信号)|"
                                r"(?:需|需要|值得)(?:监控|观察|关注)|\b(?:risk|factor|monitor)\b", proposition, re.I)
-        if (not historical and not _FINANCIAL_PROJECTION.search(proposition)
+        if (not historical and not _financial_projection(proposition)
                 and not _FINANCIAL_ASSERTION_WITHHELD.search(proposition)
                 and (_REALIZED_FINANCIAL_ASSERTION.search(proposition) or (metric_result and not conceptual))):
             return True
     if (re.search(r"(?:已核实|已验证|已核验|已确认)[^。！？；;|]{0,12}(?:财报|财务实绩|实绩数据)", clause)
             and not re.search(r"(?:20\d{2}|历史|供应商|historical)", clause, re.I)
             and not _FINANCIAL_ASSERTION_WITHHELD.search(clause)):
+        return True
+    if (re.search(r"(?:公司)?基本面[^。！？；;|]{0,12}(?:硬证据|硬證據)|"
+                  r"(?:盈利|利润|利润率|现金流)[^。！？；;|]{0,16}(?:已验证事实|已核验事实)", clause)
+            and not _financial_projection(clause)
+            and not _FINANCIAL_ASSERTION_WITHHELD.search(clause)
+            and not re.search(r"历史|历史性|歷史|\bFY\s*20\d{2}", clause, re.I)):
         return True
     periods = list(_CURRENT_FINANCIAL_PERIOD.finditer(clause))
     for index, period in enumerate(periods):
@@ -987,15 +1089,23 @@ def current_financial_gate_violation(state: Mapping[str, Any], clause: str) -> b
         boundary = max(clause.rfind(",", 0, period.start()), clause.rfind("，", 0, period.start())) + 1
         end = periods[index + 1].start() if index + 1 < len(periods) else len(clause)
         proposition = clause[boundary:end]
+        years = [int(y) for y in re.findall(r"(20\d{2})年", proposition)]
+        current_year = int(str(state.get('trade_date') or '0000')[:4])
+        if (re.search(r"\bFY\s*20\d{2}|历史|歷史", proposition, re.I)
+                or (years and max(years) < current_year)):
+            continue
         if _FINANCIAL_ASSERTION_WITHHELD.search(proposition):
             continue
         if _CURRENT_QUARTER_CONVICTION.search(proposition):
             return True
-        if _FINANCIAL_PROJECTION.search(proposition):
+        if _financial_projection(proposition):
             continue
         result = clause[period.end():end]
         metric = _FINANCIAL_RESULT_METRIC.search(result)
         if metric and _FINANCIAL_RESULT_PREDICATE.search(result[metric.end():]):
+            return True
+        if re.search(r"(?:净利润|纯利润|营业利润|营收|收入|EPS|net\s+income|revenue)"
+                     r"\s*(?:为|是|[:：=])?\s*[¥￥$]?\s*\d", result, re.I):
             return True
     return False
 
@@ -1075,6 +1185,7 @@ def typed_binding_audit_metadata(state: Mapping[str, Any], warning: str) -> dict
         "probability_event_mismatch": ("EVENT_OUTCOME_BINDING", "MACRO", "Source event and independent outcome evidence"),
         "critical_gate_bypassed": ("CURRENT_ACTUAL_ASSERTION", "CURRENT_ACTUAL", "Japan Financial Authority"),
         "macro_rate_identity_mismatch": ("PRICE_INDEX_AS_ANNUAL_INFLATION_RATE", "MACRO", "Typed source series/date/unit"),
+        "macro_observation_identity_mismatch": ("NATIONAL_EMPLOYMENT_METRIC_IDENTITY", "MACRO", "Typed source series/date/unit"),
     }
     if warning not in kinds:
         return {}
@@ -1092,7 +1203,9 @@ _EXECUTION_INPUT = re.compile(
 )
 _COLLAPSED_PROVENANCE = re.compile(
     r"(?:以下(?:数据|事实|证据).*均来自.*VERIFIED_TOOL_OUTPUT|"
-    r"all\s+(?:data|facts|evidence).*VERIFIED_TOOL_OUTPUT)",
+    r"all\s+(?:data|facts|evidence).*VERIFIED_TOOL_OUTPUT|"
+    r"(?:论点|论据|证据|优势|风险)[^。！？；;]{0,24}(?:都|均|全部)[^。！？；;]{0,20}"
+    r"verified\s*(?:tool\s*(?:data|facts)|工具(?:数据|事实)))",
     re.I,
 )
 _FINANCIAL_GENERIC_PROVENANCE = re.compile(
@@ -1185,6 +1298,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         return replacement
 
     def clean_clause(clause: str, *, heading: bool = False) -> str:
+        if macro_observation_identity_violation(state, clause):
+            return resolve_claim(clause, "macro_observation_identity_mismatch", "")
         if macro_rate_identity_violation(state, clause, measure_context):
             return resolve_claim(clause, "macro_rate_identity_mismatch", "")
         if market_metric_identity_violation(state, clause):
@@ -1215,7 +1330,7 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
             return resolve_claim(
                 clause,
                 "collapsed_provenance_types",
-                "行情、新闻与财务信息具有不同来源，应分别理解。",
+                "研究证据概述" if heading else "行情、新闻与财务信息具有不同来源，应分别理解。",
             )
         if _UNVERIFIED_MARKET.search(clause):
             if _has_verified_domain(state, "MARKET"):
@@ -1236,13 +1351,15 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 "verified_news_fact_downgraded",
                 "新闻事实以注明的来源为准，未经确认的内容仅供参考。",
             )
-        if _SHORT_ABSENCE_OVERCLAIM.search(clause):
+        if (_SHORT_ABSENCE_OVERCLAIM.search(clause) and not _FINANCIAL_ASSERTION_WITHHELD.search(clause)
+                and not _JSF_SCOPE_DISCLAIMER.search(clause)):
             return resolve_claim(
                 clause,
                 "short_absence_overclaim",
                 "可观察借券余额或官方可申报仓位并不覆盖全部空头；无申报记录不代表不存在空头。",
             )
-        if _SHORT_PRESSURE_OVERCLAIM.search(clause):
+        if (_SHORT_PRESSURE_OVERCLAIM.search(clause) and not _FINANCIAL_ASSERTION_WITHHELD.search(clause)
+                and not _JSF_SCOPE_DISCLAIMER.search(clause)):
             return resolve_claim(
                 clause,
                 "short_pressure_overclaim",
@@ -1277,13 +1394,17 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                 cells = [cell.strip() for cell in clause.strip().strip("|").split("|")]
                 for index in outcome_cells:
                     cells[index] = "不据此推断宏观状态"
-                return resolve_claim(clause, "probability_event_mismatch",
-                                     "| " + " | ".join(cells) + " |")
+                replacement = "| " + " | ".join(cells) + " |"
+                # The transform may not erase event identity then keep its
+                # numeric odds. Require its own output to pass the same gate.
+                if probability_event_gate_violation(state, replacement, jurisdiction_context=macro_jurisdiction):
+                    replacement = ""
+                return resolve_claim(clause, "probability_event_mismatch", replacement)
             if clause.lstrip().startswith("|"):
                 # An unbound probability row is removed, not replaced with a
                 # prose paragraph in the middle of its valid sibling rows.
                 return resolve_claim(clause, "probability_event_mismatch", "")
-            replacement = "该宏观情景尚无法确认。"
+            replacement = "经济情景观察" if heading else "该宏观情景尚无法确认。"
             if _unsupported_market_pricing(state, clause):
                 replacement = "当前市场定价情况尚无法确认。"
             if _unsupported_macro_outcome(state, clause):
@@ -1853,6 +1974,7 @@ def _audit_category(warning: str) -> str:
         "corporate_action_outcome_mismatch",
         "market_metric_identity_mismatch",
         "macro_rate_identity_mismatch",
+        "macro_observation_identity_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:

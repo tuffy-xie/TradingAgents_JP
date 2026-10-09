@@ -67,7 +67,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "execution-zero-target-and-macro-rate-identity-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "idempotent-outcome-and-quarter-ownership-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -617,7 +617,7 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 )
                 for issue in artifact_issues
             ),
-            "presentation_valid": not any(
+            "presentation_valid": not validate_rendered_html(render_markdown_fragment(accepted_report)) and not any(
                 issue.startswith(
                     ("PROCESS_PROSE", "UNLOCALIZED_", "EMPTY_", "INTERNAL_")
                 )
@@ -1681,6 +1681,7 @@ def normalize_markdown_structure(text: str) -> str:
         return ""
     lines = [line + "\n" for line in text.splitlines()]
     lines = _strip_inert_markdown_inside_fences(lines)
+    lines = _normalize_emphasis_spacing(lines)
     lines = _normalize_markdown_tables(lines)
     lines = _normalize_heading_numbers(lines)
     lines = _normalize_heading_count_claims(lines)
@@ -1705,6 +1706,23 @@ def normalize_markdown_structure(text: str) -> str:
             if line.strip():
                 last_nonblank_separator = False
     return re.sub(r"\n{3,}", "\n\n", "".join(output)).strip()
+
+
+def _normalize_emphasis_spacing(lines: list[str]) -> list[str]:
+    """Repair paired emphasis delimiters, preserving code and business text."""
+    output = []
+    fence = None
+    for line in lines:
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if marker:
+            fence = None if fence else marker[1][0]
+        if not fence and not marker:
+            parts = re.split(r"(`[^`\n]*`)", line)
+            line = "".join(part if part.startswith("`") else re.sub(
+                r"\*\*([^*\n]+)\*\*", lambda m: "**" + m[1].strip() + "**", part
+            ) for part in parts)
+        output.append(line)
+    return output
 
 
 def _normalize_bold_numbered_leadins(lines: list[str]) -> list[str]:
@@ -2747,6 +2765,8 @@ def _localize_presentation_labels(text: str) -> str:
     )
     for line in text.splitlines():
         match = pattern.search(line)
+        line = re.sub(r"^(\s*#{1,6}\s+(?:[一二三四五六七八九十\d]+\s*)?)Markdown\s*(汇总表|总结表|Summary Table)",
+                      r"\1汇总表", line, flags=re.I)
         if match:
             source = match.group("label").casefold()
             translated = _PRESENTATION_HEADING_TRANSLATIONS[source]
@@ -2832,6 +2852,8 @@ def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
                                    "cross_market_outcome_mismatch", "corporate_valuation_intent_mismatch",
                                    "financial_estimate_realization_mismatch",
                                    "corporate_action_outcome_mismatch", "market_metric_identity_mismatch", "macro_rate_identity_mismatch",
+                                   "macro_observation_identity_mismatch",
+                                   "collapsed_provenance_types",
                                    *JSF_SCOPE_WARNINGS}]
 
 
@@ -3072,7 +3094,8 @@ def _finalize_audit(
             if surviving:
                 issues.append("UNRESOLVED_ESTIMATE_REALIZATION:" + str(entry.get("claim_sha256")))
         elif entry.get("warning") in {"corporate_valuation_intent_mismatch", "corporate_action_outcome_mismatch",
-                                     "market_metric_identity_mismatch", "macro_rate_identity_mismatch"}:
+                                     "market_metric_identity_mismatch", "macro_rate_identity_mismatch", "macro_observation_identity_mismatch",
+                                     "collapsed_provenance_types"}:
             surviving = any(x.warning == entry["warning"] for x in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
@@ -3107,11 +3130,11 @@ def _finalize_audit(
             entry["execution_blocking"] = surviving
             if surviving:
                 issues.append("UNRESOLVED_INDEX_OUTCOME:" + str(entry.get("claim_sha256")))
-        elif entry.get("warning") == "jsf_measure_scope_mismatch":
+        elif entry.get("warning") in JSF_SCOPE_WARNINGS:
             # Removing one phrasing cannot close the metric-scope violation if
             # the same lending-to-short-interest substitution survives under
             # another wording anywhere in the exact artifact.
-            surviving = any(finding.warning == "jsf_measure_scope_mismatch"
+            surviving = any(finding.warning in JSF_SCOPE_WARNINGS
                             for finding in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
