@@ -24,6 +24,7 @@ from tradingagents.agents.evidence_enforcement import (
 )
 from tradingagents.agents.execution_validation import (
     EXECUTION_PLAN_FIELDS,
+    execution_plan_authority_issues,
     parse_execution_action,
     reconcile_execution_authority,
     validate_execution_plan,
@@ -66,7 +67,7 @@ _REPORT_FIELDS = (
 )
 _DEBATE_FIELDS = ("investment_debate_state", "risk_debate_state")
 _CONTRACT_VERSION = "v5"
-_CONTRACT_SEMANTIC_REVISION = "typed-outcome-and-metric-binding-2026-10"
+_CONTRACT_SEMANTIC_REVISION = "execution-zero-target-and-macro-rate-identity-2026-10"
 _VIOLATION_CATEGORIES = {
     "UNSUPPORTED_CLAIM",
     "STALE_EVIDENCE_USE",
@@ -495,6 +496,8 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
         prior_validation,
         trader_action=trader_action,
         portfolio_rating=portfolio_rating,
+        portfolio_text=str(raw_portfolio or ""),
+        portfolio_context=str(result.get("portfolio_context") or ""),
     )
     result["validated_execution"] = reconciled
     if (state.get("validated_execution") or {}).get("status") == "OK" and reconciled.get(
@@ -506,6 +509,11 @@ def build_canonical_final_state(state: Mapping[str, Any]) -> dict[str, Any]:
                 "agent": "Canonical Final State",
                 "field": "validated_execution",
                 "detail": reconciled.get("detail"),
+                "original_claim": str(raw_trader or ""),
+                "claim_sha256": hashlib.sha256(str(raw_trader or "").encode("utf-8")).hexdigest(),
+                "semantic_type": reconciled.get("execution_intent", "EXECUTION_ACTION_CONSISTENCY"),
+                "authority_owner": "validated_execution",
+                "enforcement_action": "WITHHOLD_EXECUTABLE_PLAN",
                 "trader_action": trader_action,
                 "portfolio_rating": portfolio_rating,
                 "resolution": "PENDING_FINAL_ARTIFACT_VALIDATION",
@@ -2823,7 +2831,7 @@ def _artifact_evidence_gate_findings(state: Mapping[str, Any], text: str):
             if finding.warning in {"critical_gate_bypassed", "probability_event_mismatch",
                                    "cross_market_outcome_mismatch", "corporate_valuation_intent_mismatch",
                                    "financial_estimate_realization_mismatch",
-                                   "corporate_action_outcome_mismatch", "market_metric_identity_mismatch",
+                                   "corporate_action_outcome_mismatch", "market_metric_identity_mismatch", "macro_rate_identity_mismatch",
                                    *JSF_SCOPE_WARNINGS}]
 
 
@@ -2903,6 +2911,13 @@ def _execution_cross_state_issues(state: Mapping[str, Any], execution_allowed: b
             validation.get(field) is not None for field in EXECUTION_PLAN_FIELDS
         ) else []
     validation = state.get("validated_execution") or {}
+    if validation.get("status") != "OK":
+        return ["EXECUTION_PERMISSION_STATUS_CONFLICT"]
+    plan_issues = execution_plan_authority_issues(
+        validation, str((state.get("raw_agent_outputs") or {}).get("final_trade_decision") or "")
+    )
+    if plan_issues:
+        return plan_issues
     action = validation.get("action")
     rating = validation.get("portfolio_rating") or parse_explicit_rating(
         str(state.get("final_trade_decision") or "")
@@ -3057,7 +3072,7 @@ def _finalize_audit(
             if surviving:
                 issues.append("UNRESOLVED_ESTIMATE_REALIZATION:" + str(entry.get("claim_sha256")))
         elif entry.get("warning") in {"corporate_valuation_intent_mismatch", "corporate_action_outcome_mismatch",
-                                     "market_metric_identity_mismatch"}:
+                                     "market_metric_identity_mismatch", "macro_rate_identity_mismatch"}:
             surviving = any(x.warning == entry["warning"] for x in exact_gate_findings)
             entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             entry["resolution"] = "UNRESOLVED" if surviving else "CLAIM_REMOVED_OR_REPLACED"
@@ -3183,6 +3198,8 @@ def _finalize_audit(
                     if issue.startswith(("UNAPPROVED_", "UNVALIDATED_", "POSITION_SIZE_"))
                 ]
             )
+            execution_issues.extend(_execution_cross_state_issues(state, execution_allowed))
+            entry["accepted_artifact_sha256"] = hashlib.sha256(accepted_report.encode("utf-8")).hexdigest()
             if execution_issues:
                 entry["resolution"] = "UNRESOLVED"
                 entry["execution_blocking"] = True

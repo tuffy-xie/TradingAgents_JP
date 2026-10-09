@@ -517,6 +517,79 @@ _INFLATION_METRICS = {
     "core": re.compile(r"core\s+CPI|核心CPI|コアCPI", re.I),
     "headline": re.compile(r"(?<![A-Za-z])CPI(?![A-Za-z])", re.I),
 }
+
+# A price index level, a window change, and a year-on-year rate are different
+# measurements, even when the number catalogue happens to contain all tokens.
+_PCE_IDENTITY = re.compile(r"PCE|个人消费(?:支出)?|個人消費", re.I)
+_CORE_PCE = re.compile(r"核心|コア|core|PCEPILFE|excluding\s+food\s+and\s+energy", re.I)
+_ANNUAL_RATE = re.compile(r"同比|年率|前年(?:同月)?比|\byoy\b|year[ -]on[ -]year|year\s+ago", re.I)
+_RATE_TARGET_COMPARISON = re.compile(r"(?:高于|高於|超过|超過|低于|低於|above|below)[^。；;|]{0,25}(?:目标|目標|target)|"
+                                     r"(?:目标|目標|target)[^。；;|]{0,25}(?:高于|高於|超过|超過|above|below)", re.I)
+
+
+def macro_rate_identity_violation(state: Mapping[str, Any], clause: str, context: str = "") -> bool:
+    """Require an observed annual rate for an annual/target PCE assertion.
+
+    Accept only same-series verified observations whose unit explicitly means
+    YoY. Do not derive a rate from one level, a window change, another series,
+    a prediction probability, or an Agent's inference. No new data is fetched.
+    """
+    plain = re.sub(r"[*`_]", "", clause)
+    identity = plain if _PCE_IDENTITY.search(plain) else context
+    if not _PCE_IDENTITY.search(identity):
+        return False
+    if not (_ANNUAL_RATE.search(plain) or _RATE_TARGET_COMPARISON.search(plain)):
+        return False
+    if re.search(r"若|如果|假设|假設|\b(?:if|assuming)\b|仮に", plain, re.I):
+        return False
+    if re.search(r"无法|無法|不能|尚未|未能|cannot|not\s+(?:known|confirmed)", plain, re.I):
+        return False
+    core = bool(_CORE_PCE.search(identity))
+    dates = re.findall(r"20\d{2}-\d{2}-\d{2}", plain)
+    as_of = str(state.get("trade_date") or (state.get("run_manifest") or {}).get("analysis_as_of") or "")
+    candidates: list[tuple[str, Decimal]] = []
+    for entry in state.get("evidence_registry") or []:
+        if (not isinstance(entry, Mapping) or entry.get("claim_type") == "INFERENCE"
+                or entry.get("verification_status") not in {"VERIFIED_TOOL_OUTPUT", "VERIFIED_SOURCE"}
+                or entry.get("allowed_for_current_decision") is not True):
+            continue
+        value = entry.get("value")
+        if isinstance(value, str):
+            # Each FRED response has one explicit series identity and unit.
+            title = re.search(r"(?m)^## FRED:\s*(.+)$", value)
+            units = re.search(r"(?im)^- Units:\s*(.+)$", value)
+            if not title or not units or not _ANNUAL_RATE.search(units[1]):
+                continue
+            series = title[1]
+            if not re.search(r"PCE|Personal Consumption Expenditures", series, re.I):
+                continue
+            if bool(_CORE_PCE.search(series)) != core:
+                continue
+            for row in re.finditer(r"(?m)^\|\s*(20\d{2}-\d{2}-\d{2})\s*\|\s*([-+]?\d+(?:\.\d+)?)\s*%?\s*\|", value):
+                if not as_of or row[1] <= as_of:
+                    candidates.append((row[1], Decimal(row[2])))
+        elif isinstance(value, (int, float)):
+            metric = str(entry.get("metric", ""))
+            unit = str(entry.get("unit", ""))
+            date = str(entry.get("data_date", ""))[:10]
+            if (_PCE_IDENTITY.search(metric) and bool(_CORE_PCE.search(metric)) == core
+                    and _ANNUAL_RATE.search(unit) and re.fullmatch(r"20\d{2}-\d{2}-\d{2}", date)
+                    and (not as_of or date <= as_of)):
+                candidates.append((date, Decimal(str(value))))
+    if not candidates:
+        return True
+    date = dates[-1] if dates else max(date for date, _ in candidates)
+    rates = {value for when, value in candidates if when == date}
+    if len(rates) != 1:
+        return True
+    rate = next(iter(rates))
+    amounts = [Decimal(x) for x in re.findall(r"([-+]?\d+(?:\.\d+)?)\s*%", plain)]
+    comparison = _RATE_TARGET_COMPARISON.search(plain)
+    if comparison:
+        if len(amounts) != 1:
+            return True
+        return not (rate > amounts[0] if re.search(r"高于|高於|超过|超過|above", plain, re.I) else rate < amounts[0])
+    return len(amounts) != 1 or rate.quantize(Decimal(1).scaleb(amounts[0].as_tuple().exponent)) != amounts[0]
 _INFLATION_INTERVAL = re.compile(r"(\d+(?:\.\d+)?)\s*%?\s*(?:~|～|–|-|至|到|and)\s*(\d+(?:\.\d+)?)\s*%", re.I)
 
 
@@ -1001,6 +1074,7 @@ def typed_binding_audit_metadata(state: Mapping[str, Any], warning: str) -> dict
         "corporate_action_outcome_mismatch": ("CORPORATE_ACTION_AS_REALIZED_MARKET_OUTCOME", "NEWS", "Source proposition"),
         "probability_event_mismatch": ("EVENT_OUTCOME_BINDING", "MACRO", "Source event and independent outcome evidence"),
         "critical_gate_bypassed": ("CURRENT_ACTUAL_ASSERTION", "CURRENT_ACTUAL", "Japan Financial Authority"),
+        "macro_rate_identity_mismatch": ("PRICE_INDEX_AS_ANNUAL_INFLATION_RATE", "MACRO", "Typed source series/date/unit"),
     }
     if warning not in kinds:
         return {}
@@ -1008,7 +1082,7 @@ def typed_binding_audit_metadata(state: Mapping[str, Any], warning: str) -> dict
     return {"semantic_type": semantic_type, "required_authority": domain, "authority_owner": owner,
             "evidence_ids": [e["evidence_id"] for e in state.get("evidence_registry") or []
                              if isinstance(e, Mapping) and e.get("evidence_id")
-                             and (e.get("domain") == domain or (domain == "MACRO" and e.get("source") == "get_prediction_markets"))]}
+                             and (e.get("domain") == domain or (domain == "MACRO" and e.get("source") in {"get_prediction_markets", "get_macro_indicators"}))]}
 
 
 _OKU_VALUE = re.compile(r"([\d,]+(?:\.\d+)?)\s*(?:億円|亿元|亿)")
@@ -1090,6 +1164,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
     findings: list[EvidenceFinding] = []
     macro_headings: list[tuple[int, str | None]] = []
     macro_jurisdiction: str | None = None
+    measure_headings: list[tuple[int, str]] = []
+    measure_context = ""
     financial_headings: list[tuple[int, bool]] = []
     base_heading = 0
 
@@ -1109,6 +1185,8 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
         return replacement
 
     def clean_clause(clause: str, *, heading: bool = False) -> str:
+        if macro_rate_identity_violation(state, clause, measure_context):
+            return resolve_claim(clause, "macro_rate_identity_mismatch", "")
         if market_metric_identity_violation(state, clause):
             return resolve_claim(clause, "market_metric_identity_mismatch", "")
         if jsf_measure_scope_violation(state, clause):
@@ -1335,6 +1413,10 @@ def enforce_agent_output(state: Mapping[str, Any], text: str, agent_name: str) -
                                  if pattern.search(heading[2])), None)
             macro_headings.append((level, jurisdiction))
             macro_jurisdiction = next((country for _, country in reversed(macro_headings) if country), None)
+            while measure_headings and measure_headings[-1][0] >= level:
+                measure_headings.pop()
+            measure_headings.append((level, heading[2]))
+            measure_context = next((title for _, title in reversed(measure_headings) if _PCE_IDENTITY.search(title)), "")
         # Emphasized financial section titles carry the same evidence role as
         # # headings. A linked "this improvement" cannot outlive its blocked
         # result premise; independent business facts and forecasts still can.
@@ -1770,6 +1852,7 @@ def _audit_category(warning: str) -> str:
         "financial_estimate_realization_mismatch",
         "corporate_action_outcome_mismatch",
         "market_metric_identity_mismatch",
+        "macro_rate_identity_mismatch",
         "collapsed_provenance_types",
         "financial_provenance_collapsed",
     }:

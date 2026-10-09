@@ -10,6 +10,19 @@ from typing import Any
 _ENTRY = re.compile(r"(?:\*\*Entry Price\*\*|entry(?: price)?|入场(?:价)?|建仓价)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _STOP = re.compile(r"(?:\*\*Stop Loss\*\*|stop(?:[ -]?loss)?|止损(?:价)?)\s*[:：=]?\s*[¥￥]?\s*([\d,]+(?:\.\d+)?)", re.I)
 _POSITION = re.compile(r"(?:\*\*Maximum Position\*\*|\*\*Position Sizing\*\*|position(?: sizing)?|maximum position|仓位上限|仓位)\s*[:：=]?\s*([\d.]+)\s*%", re.I)
+_ZERO_TARGET = re.compile(
+    r"(?:减持|減持|减仓|減倉|仓位|倉位|目标仓位|目标配置)[^。；;\n]{0,12}(?:至|到|归零|歸零|[:：=])\s*0\s*%|"
+    r"(?:exit|close|reduce|target)[^.;\n]{0,45}(?:position|exposure|allocation)[^.;\n]{0,12}(?:to|:)\s*0\s*%", re.I,
+)
+
+
+def _targets_flat(text: str) -> bool:
+    for unit in re.split(r"[。；;\n]|\bbut\b|但", text, flags=re.I):
+        for match in _ZERO_TARGET.finditer(unit):
+            prefix = unit[max(0, match.start() - 20):match.start()]
+            if not re.search(r"不(?:应|應|要|建议|建議|得)?|禁止|\b(?:do\s+not|must\s+not|avoid)\s*$", prefix, re.I):
+                return True
+    return False
 _ACTION_LABELS = {
     "action",
     "recommendation",
@@ -76,6 +89,14 @@ def validate_execution_plan(text: str) -> dict[str, Any]:
     entry = _first_decimal(_ENTRY, text)
     stop = _first_decimal(_STOP, text)
     position = _first_decimal(_POSITION, text)
+    # Sizing is traded exposure, NOT a target account balance. A zero-size
+    # proposal cannot acquire permission just because its entry/stop exist.
+    if action in {"Buy", "Sell"} and (position == 0 or _targets_flat(text)):
+        return _withheld_plan({
+            "version": "v2", "status": "DATA_UNAVAILABLE",
+            "detail": "ZERO_EXPOSURE_IS_NOT_AN_EXECUTABLE_TRADE",
+            "action": action, "execution_intent": "TARGET_FLAT" if action == "Sell" else "ZERO_SIZE",
+        })
     if action == "Hold":
         return _withheld_plan({
             "version": "v2",
@@ -162,6 +183,8 @@ def reconcile_execution_authority(
     *,
     trader_action: str | None,
     portfolio_rating: str | None,
+    portfolio_text: str = "",
+    portfolio_context: str = "",
 ) -> dict[str, Any]:
     """Require compatible explicit Trader and Portfolio decisions.
 
@@ -197,7 +220,24 @@ def reconcile_execution_authority(
                 "detail": detail,
             }
         )
+    if not detail and (result.get("position_pct") == 0 or _targets_flat(portfolio_text)):
+        # The current price/stop calculator has no closing quantity or account
+        # transition validator. Even a supplied book cannot make a zero target
+        # a positive trade size. Keep the rating, withhold the unsupported plan.
+        result.update(status="DATA_UNAVAILABLE", execution_intent="TARGET_FLAT",
+                      detail="CLOSING_HOLDINGS_UNVERIFIED" if not portfolio_context.strip()
+                      else "TARGET_POSITION_NOT_TRADE_SIZE")
     return _withheld_plan(result) if result.get("status") != "OK" else result
+
+
+def execution_plan_authority_issues(validation: Mapping[str, Any], portfolio_text: str = "") -> list[str]:
+    """Independent publisher check: zero target/size is never a new risk trade."""
+    if validation.get("status") == "OK" and (
+        validation.get("position_pct") == 0 or _targets_flat(portfolio_text)
+        or validation.get("execution_intent") in {"TARGET_FLAT", "ZERO_SIZE"}
+    ):
+        return ["EXECUTION_ZERO_EXPOSURE_NOT_AUTHORIZED"]
+    return []
 
 
 def _plain_field(value: str) -> str:
